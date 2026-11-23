@@ -322,7 +322,9 @@ pixel head: MLP(h_t) ──► (μ, log σ²)
 
 **Cold start:** five to ten natural clicks, not a dot grid. Each click gives a target label; the pixel head and scorer are initialised from those labels plus a weak geometric prior. A short warm-up is allowed, but it is a *training set*, never a global offset.
 
-**Online adaptation:** last-layer update or a small adapter per user, with a replay buffer and a conservative learning rate. Full refits only after a batch and only if held-out target accuracy does not degrade (the old CV gate was a good idea; keep the principle, not the code).
+**Online adaptation:** last-layer update or a small adapter per user, with a replay buffer and a conservative learning rate. During cold start, updates run live with no frozen-eval gate — the guardrails are reversibility and the correction-rate stream (every user click tests the previous top-1 for free). From Phase 4, full refits additionally require a frozen held-out set that does not degrade (the old CV gate was a good idea; keep the principle, not the code, once enough sessions exist to build one).
+
+**Live preview (cold start):** the app shows its current best guess in real time from Phase 1 onward, using whatever scorer exists — even the nearest-candidate-to-pixel baseline is a usable preview. Preview is display-only (the overlay ring/highlight); the pointer never moves without an explicit action, which is what makes an unvalidated cold-start model safe to show. The prerequisite is a live gaze source publishing to the shared-memory channel; until it exists, there is nothing to preview.
 
 ---
 
@@ -613,5 +615,5 @@ If the target mapping satisfies \(g^\*(gx)\ne g^\*(x)\), then no \(q\circ f\) ca
 2. Do not use `legacy-gaze-v1` as a source of design ideas; it is an audit trail.
 3. Every new model component must have a baseline, a held-out metric, and a kill criterion.
 4. Every label must be traceable to a user action or a verified observation.
-5. Every online update must be reversible and must not degrade the frozen evaluation set.
+5. Online updates must always be reversible (retain recent checkpoints; support rollback). A frozen held-out eval gate on updates is required only from Phase 4, once sessions have accumulated; during cold start (Phases 1–3) updates are allowed without it, but the running correction-rate signal must be logged, never silenced.
 6. The cursor is a renderer. The decision is the product.

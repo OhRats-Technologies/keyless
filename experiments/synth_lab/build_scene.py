@@ -260,6 +260,11 @@ def main() -> None:
         if "--outdir" in rest:
             outdir = rest[rest.index("--outdir") + 1]
     outdir = os.path.abspath(outdir)
+    blend_path = None
+    if "--" in argv:
+        rest = argv[argv.index("--") + 1:]
+        if "--blend" in rest:
+            blend_path = os.path.abspath(rest[rest.index("--blend") + 1])
 
     clear_scene()
     add_monitor()

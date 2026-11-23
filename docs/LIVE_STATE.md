@@ -15,6 +15,16 @@ block. It is scratch/live state; `docs/HANDOFF.md` remains the polished handoff.
    prior synthetic-scene code. Consider making the lab a web (HTML/three.js)
    thing if that is easier.
 
+## Decisions
+
+- 2026-11-23 (user): cold-start rule relaxed — online updates always
+  reversible, but the frozen held-out eval gate defers to Phase 4 (no
+  dataset yet); correction-rate stream must keep logging.
+- 2026-11-23 (user): live preview from Phase 1 — show top-k guess in real
+  time during use, display-only, using whatever scorer exists (baseline
+  included). Pointer actuation stays explicit-only. GREENFIELD.md §6.3 +
+  Appendix C.5 updated.
+
 ## Block log
 
 - [x] Probe scaffold tests green (`tests/unit/test_gaze_experiment.py`) — 45 gaze tests, 296 full suite
