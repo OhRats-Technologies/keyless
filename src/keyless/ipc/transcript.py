@@ -1,4 +1,4 @@
-"""Latest Parakeet transcript shared between the daemon and screen overlay."""
+"""Latest Parakeet transcript (final or provisional) shared with the overlay."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ class TranscriptState:
     timestamp_ns: int
     seq: int
     source: str = "parakeet"
+    final: bool = True
 
     @property
     def age_s(self) -> float:
@@ -32,6 +33,7 @@ def read_transcript(path: Path) -> TranscriptState | None:
             timestamp_ns=int(data.get("timestamp_ns", 0)),
             seq=int(data.get("seq", 0)),
             source=str(data.get("source", "parakeet")),
+            final=bool(data.get("final", True)),
         )
     except (OSError, ValueError, TypeError):
         return None
@@ -42,6 +44,7 @@ def write_transcript(
     text: str,
     *,
     source: str = "parakeet",
+    final: bool = True,
     timestamp_ns: int | None = None,
 ) -> TranscriptState | None:
     clean = " ".join(str(text).split())
@@ -53,6 +56,7 @@ def write_transcript(
         timestamp_ns=time.monotonic_ns() if timestamp_ns is None else int(timestamp_ns),
         seq=(previous.seq + 1) if previous is not None else 1,
         source=source,
+        final=bool(final),
     )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,6 +68,7 @@ def write_transcript(
                     "timestamp_ns": state.timestamp_ns,
                     "seq": state.seq,
                     "source": state.source,
+                    "final": state.final,
                 }
             )
         )

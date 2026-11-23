@@ -109,6 +109,8 @@ class TranscriptOverlay(QWidget):
 
     def _show_text(self, state: TranscriptState, now: float) -> None:
         self.text.setText(state.text)
+        color = "#efede5" if state.final else "#b9b5ab"
+        self.text.setStyleSheet(f"color: {color}; background: transparent;")
         self.text.adjustSize()
         metrics = self.text.fontMetrics()
         text_height = metrics.boundingRect(

@@ -285,9 +285,10 @@ def run_combined_daemon(
             def _speak_result(res) -> None:
                 if speaker is None or not config.tts_speak_replies:
                     return
-                if res.payload.get("spoken") or res.route == "assistant":
+                payload = res.payload or {}
+                if payload.get("spoken") or res.route == "assistant":
                     speaker.speak(res.detail, interrupt=True)
-                elif res.route == "terminal" and res.payload.get("command"):
+                elif res.route == "terminal" and payload.get("command"):
                     speaker.speak("Typed shell command.", interrupt=True)
 
             if config.always_on_voice:
@@ -295,6 +296,9 @@ def run_combined_daemon(
 
                 def _publish_transcript(text: str) -> None:
                     write_transcript(transcript_path, text)
+
+                def _publish_partial(text: str) -> None:
+                    write_transcript(transcript_path, text, final=False)
 
                 active_listener = ActiveVoiceListener(
                     on_speech_onset=_prewarm_gaze_vlm,
@@ -304,6 +308,7 @@ def run_combined_daemon(
                     audio_device=config.audio_device,
                     stt_engine=stt,
                     on_transcript=_publish_transcript,
+                    on_partial=_publish_partial if config.transcript_overlay else None,
                 )
                 if speaker is not None:
                     speaker._on_speaking_changed = active_listener.set_muted
@@ -350,6 +355,7 @@ def run_combined_daemon(
                     min_peak=config.pop_min_peak,
                     min_rms=config.pop_min_rms,
                 )
+                transcript_path = current_paths().transcript_path
 
                 def _on_pop() -> None:
                     out.print("[green]POP -> click[/green]")
@@ -362,6 +368,7 @@ def run_combined_daemon(
                     if not transcript:
                         return
                     out.print(f"[cyan]STT ({dt_ms:.0f}ms):[/cyan] {transcript!r}")
+                    write_transcript(transcript_path, transcript)
                     try:
                         res = router.dispatch(transcript)
                         out.print(f"  -> [bold]{res.route}[/bold]: {res.detail}")

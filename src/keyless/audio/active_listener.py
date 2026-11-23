@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 16000
 BLOCK_SIZE = 512  # 32ms per audio frame at 16kHz
 
+# Provisional captions: re-transcribe the utterance in progress at this cadence, capped to
+# the newest seconds so one long utterance cannot make the live text progressively slower.
+PARTIAL_INTERVAL_S = 0.6
+MIN_PARTIAL_FRAMES = 12
+MAX_PARTIAL_FRAMES = int(6.0 * SAMPLE_RATE / BLOCK_SIZE)
+
 # Common STT hallucinations on silence, sighs, or mic bumps
 _WHISPER_HALLUCINATIONS = {
     "thank you",
@@ -268,11 +274,13 @@ class ActiveVoiceListener:
         audio_device: int | str | None = None,
         stt_engine: SttEngine | None = None,
         on_transcript: Callable[[str], None] | None = None,
+        on_partial: Callable[[str], None] | None = None,
     ) -> None:
         self.on_speech_onset = on_speech_onset
         self.is_user_attending = is_user_attending
         self.require_command_prefix = require_command_prefix
         self.on_transcript = on_transcript
+        self.on_partial = on_partial
         self.audio_device = audio_device
         self.sleeping = False
         self._muted = False
@@ -360,6 +368,8 @@ class ActiveVoiceListener:
         consecutive_speech = 0
         trailing_silence_frames = 0
         noise_floor = 0.005
+        last_partial_at = 0.0
+        last_partial_text = ""
 
         # Adaptive endpointing: 25 frames (800ms) for short (<1.1s) utterances, 15 frames (480ms) after
         max_speech_frames = int(8.0 * SAMPLE_RATE / BLOCK_SIZE)
@@ -405,6 +415,8 @@ class ActiveVoiceListener:
                         in_speech = True
                         speech_onset_ts = now
                         trailing_silence_frames = 0
+                        last_partial_at = now
+                        last_partial_text = ""
                         self.pop_detector.cancel_pending()
                         speech_buf = list(pre_roll)
 
@@ -422,6 +434,24 @@ class ActiveVoiceListener:
                     trailing_silence_frames = 0
                 else:
                     trailing_silence_frames += 1
+
+                if (
+                    self.on_partial is not None
+                    and now - last_partial_at >= PARTIAL_INTERVAL_S
+                    and len(speech_buf) >= MIN_PARTIAL_FRAMES
+                ):
+                    last_partial_at = now
+                    partial_audio = np.concatenate(speech_buf[-MAX_PARTIAL_FRAMES:], axis=0)
+                    try:
+                        partial_text = self.stt_engine.transcribe(partial_audio).strip()
+                    except Exception:
+                        partial_text = ""
+                    if partial_text and partial_text != last_partial_text:
+                        last_partial_text = partial_text
+                        try:
+                            self.on_partial(partial_text)
+                        except Exception:
+                            logger.debug("Partial transcript callback failed", exc_info=True)
 
                 # Adaptive endpointing:
                 # If utterance so far is short (< 1.1s, e.g. user said "click" and paused to think),

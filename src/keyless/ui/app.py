@@ -351,6 +351,14 @@ class HomePanel(QWidget):
         if self.window.transcript_overlay.error and not running:
             self.transcript_note.setText(self.window.transcript_overlay.error)
             self.transcript_note.setVisible(True)
+        elif running and self.window.controller.status.state is not SessionState.LISTENING:
+            paused = self.window.controller.status.state is SessionState.PAUSED
+            self.transcript_note.setText(
+                "Captions appear as you speak. Press Resume to start listening."
+                if paused
+                else "Captions appear as you speak."
+            )
+            self.transcript_note.setVisible(True)
         else:
             self.transcript_note.setVisible(False)
 
