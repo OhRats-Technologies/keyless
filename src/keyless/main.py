@@ -959,7 +959,7 @@ def gaze_eval_candidates(
         ordered = sorted(latencies)
         p50 = ordered[len(ordered) // 2]
         p95 = ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]  # nearest-rank
-        console.print(f"Generator latency: p50 {p50:.2f} ms · p95 {p95:.2f} ms ({len(ordered)} samples)")
+        console.print(f"Generator latency: p50 {p50:.2f} ms / p95 {p95:.2f} ms ({len(ordered)} samples)")
     else:
         console.print("Generator latency: n/a (run with --regenerate and stored screenshots)")
     if skipped:

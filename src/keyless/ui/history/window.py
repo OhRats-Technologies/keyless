@@ -76,7 +76,7 @@ class HistoryPanel(QWidget):
             result = str(row["result"] or "").strip()
             outcome = f"{result} {target}".strip() if target and target.lower() not in result.lower() else (result or target or str(row["route"] or ""))
             latency = f"{float(row['latency_ms']):.0f} ms" if row.get("latency_ms") else ""
-            tooltip = " · ".join(p for p in (str(row["route"] or ""), latency) if p)
+            tooltip = " | ".join(p for p in (str(row["route"] or ""), latency) if p)
 
             values = [timestamp, transcript, outcome]
             for column, value in enumerate(values):
@@ -101,7 +101,7 @@ class HistoryPanel(QWidget):
             self.table.item(row, column).text() if self.table.item(row, column) else ""
             for column in range(self.table.columnCount())
         ]
-        QGuiApplication.clipboard().setText(" · ".join(v for v in values if v))
+        QGuiApplication.clipboard().setText(" | ".join(v for v in values if v))
 
     def clear(self) -> None:
         self.store.clear()

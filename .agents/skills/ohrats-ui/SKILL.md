@@ -45,15 +45,18 @@ value in a widget.
    `docs/plans/ui-unification-goal.md` and `src/keyless/ui/contract.py`). New UI
    behavior belongs in the contract first, then in the shell.
 
-## Copy
+## Copy & Anti-Slop Standard
 
 - Say what is true and what the user can do now. If a capability is not shipped,
   omit it; if the user asks, the honest line is "not installed yet".
 - Gaze v2 learns from natural clicks and voice corrections. There is no
   calibration grid, no "steer to mouse", and no "recenter gaze" step. Do not
   reintroduce that vocabulary.
-- Prefer a short headline plus one supporting sentence. Delete any paragraph
-  that only restates the headline.
+- **Never use Unicode middle-dot (`·`) separators, decorative emoji/bullets, or filler prose.**
+  Use layout spacing, real borders, colons, slashes, or parentheses instead of `·` chains.
+- **Never truncate errors into a bottom bar.** Render actionable errors inline next to the
+  control that failed, with a full readable message and a Copy button so the user can inspect
+  or copy the exact command/error.
 
 ## Visual finish gate (mandatory)
 

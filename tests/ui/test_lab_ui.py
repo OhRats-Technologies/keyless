@@ -1,10 +1,11 @@
-"""Offscreen Qt tests for Keyless Lab (Guide, Curator, Recall, Dream-RSI, MainWindow launch)."""
+"""Offscreen Qt tests for Keyless Lab (Setup, Curator, Recall, Dream-RSI, inline error callout)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
+from PySide6.QtGui import QGuiApplication
 
 from keyless.config.paths import HOME_ENV, AppPaths, default_paths
 from keyless.config.schema import AppConfig
@@ -51,15 +52,17 @@ def populated_paths(tmp_path: Path) -> AppPaths:
     return paths
 
 
-def test_lab_window_guide_curates_events_and_navigates_tabs(qapp, populated_paths: AppPaths) -> None:
+def test_lab_window_setup_curates_events_and_navigates_tabs(qapp, populated_paths: AppPaths) -> None:
     win = LabWindow(paths=populated_paths, theme=ThemeName.DARK)
     win.show()
     qapp.processEvents()
 
-    # Starts on Guide (0), then switches to Curator (1)
+    # Starts on Setup (0), then switches to Curator (1)
     assert win.pages.currentIndex() == 0
+    assert win.page_title.text() == "Setup"
     win._select_tab(1)
     qapp.processEvents()
+    assert win.page_title.text() == "Curator"
 
     assert win.session_list.count() == 1
     assert win.event_list.count() == 2
@@ -84,7 +87,7 @@ def test_lab_window_guide_curates_events_and_navigates_tabs(qapp, populated_path
     win.delete_event_btn.click()
     qapp.processEvents()
     assert win.event_list.count() == 1
-    assert "GATE  MET" in win.gate_badge.text()
+    assert "GATE MET" in win.gate_badge.text()
 
     # Switch through Recall & Replay (2) and Dream-RSI (3) tabs cleanly
     win._select_tab(2)
@@ -97,7 +100,7 @@ def test_lab_window_guide_curates_events_and_navigates_tabs(qapp, populated_path
     win.close()
 
 
-def test_lab_window_seeds_sample_session_and_opens_from_main_window(qapp, tmp_path: Path) -> None:
+def test_lab_window_seeds_sample_session_and_copies_error_callout(qapp, tmp_path: Path) -> None:
     paths = default_paths(env={HOME_ENV: str(tmp_path)}, platform_name="linux")
     paths.ensure_directories()
 
@@ -114,7 +117,24 @@ def test_lab_window_seeds_sample_session_and_opens_from_main_window(qapp, tmp_pa
         assert lab.isVisible()
         assert lab.session_list.count() == 0
 
-        # Newcomer clicks Create sample session on Guide tab -> populates and switches to Curator
+        # Inline copyable error callout shows full message + command without truncation
+        lab._show_error(
+            "Global click capture is locked",
+            "no readable /dev/input/event* pointer devices",
+            show_input_fix=True,
+            command='sudo usermod -aG input "$USER"',
+        )
+        qapp.processEvents()
+        assert not lab.error_banner.isHidden()
+        assert not lab.error_cmd_row.isHidden()
+        lab.error_copy_cmd_btn.click()
+        cb = QGuiApplication.clipboard()
+        if cb is not None:
+            assert cb.text() == 'sudo usermod -aG input "$USER"'
+        lab.error_dismiss_btn.click()
+        assert lab.error_banner.isHidden()
+
+        # Newcomer clicks Create sample session on Setup tab -> populates and switches to Curator
         lab.guide_sample_btn.click()
         qapp.processEvents()
         assert lab.session_list.count() == 1

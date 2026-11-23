@@ -1,46 +1,46 @@
 {
   "schema_version": 1,
-  "description": "Single source of truth for the Keyless desktop design tokens. Warm-neutral palette; no widget owns a raw color.",
+  "description": "Single source of truth for the Keyless desktop design tokens, aligned with OhRats-Technologies/ui/css/tokens.css.",
   "themes": {
     "light": {
-      "background": "#f4f2ec",
+      "background": "#efede5",
       "surface": "#ffffff",
-      "surface_alt": "#eceae2",
-      "sidebar": "#eae7df",
-      "text": "#19191a",
-      "muted": "#6b6862",
-      "accent": "#19191a",
-      "accent_text": "#f7f6f2",
-      "border": "#dad6cb",
-      "danger": "#cc4b4b",
-      "success": "#278952",
+      "surface_alt": "#f5f3ec",
+      "sidebar": "#efede5",
+      "text": "#1a1a1b",
+      "muted": "#595550",
+      "accent": "#c95b2b",
+      "accent_text": "#ffffff",
+      "border": "#634936",
+      "danger": "#d95555",
+      "success": "#2f9e62",
       "warning": "#9c6500",
-      "selected": "#dfdbd0"
+      "selected": "#f5f3ec"
     },
     "dark": {
-      "background": "#141415",
-      "surface": "#1c1c1e",
-      "surface_alt": "#252528",
-      "sidebar": "#111112",
-      "text": "#f2f0ea",
-      "muted": "#928f87",
-      "accent": "#f2f0ea",
-      "accent_text": "#141415",
-      "border": "#2c2c30",
+      "background": "#1a1a1b",
+      "surface": "#202021",
+      "surface_alt": "#2a2a2b",
+      "sidebar": "#1a1a1b",
+      "text": "#efede5",
+      "muted": "#a3a393",
+      "accent": "#e27a3b",
+      "accent_text": "#1a1a1b",
+      "border": "#634936",
       "danger": "#e26464",
-      "success": "#3fb975",
+      "success": "#43b777",
       "warning": "#e0b25c",
-      "selected": "#252528"
+      "selected": "#2a2a2b"
     }
   },
   "accent": {
     "role": "accent",
     "text_role": "accent_text",
-    "note": "One accent per theme. Filled primary actions only; everything else is ghost or link."
+    "note": "Canonical OhRats terracotta-amber signal accent (#c95b2b light / #e27a3b dark) with espresso structural hairlines (#634936)."
   },
   "typography": {
     "font_family": "Inter, \"Noto Sans\", \"DejaVu Sans\", sans-serif",
-    "mono_family": "\"Space Mono\", \"MesloLGS Nerd Font Mono\", monospace",
+    "mono_family": "\"MesloLGS Nerd Font Mono\", \"Space Mono\", monospace",
     "sizes": {
       "body": 14,
       "title": 26,
@@ -64,7 +64,7 @@
   },
   "radii": {
     "default": 10,
-    "small": 7,
+    "small": 4,
     "pill": 14
   },
   "elevation": {

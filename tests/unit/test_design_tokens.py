@@ -109,3 +109,14 @@ def test_stylesheet_renders_for_both_themes_with_telemetry_rule() -> None:
         assert tokens.background in qss
         assert "QLabel#Telemetry" in qss
         assert tokens.mono_family in qss
+
+
+def test_tokens_match_canonical_ohrats_palette() -> None:
+    from keyless.ui.theme.tokens import DARK, LIGHT
+
+    assert LIGHT.background == "#efede5"
+    assert LIGHT.border == "#634936"
+    assert LIGHT.accent == "#c95b2b"
+    assert DARK.background == "#1a1a1b"
+    assert DARK.border == "#634936"
+    assert DARK.accent == "#e27a3b"

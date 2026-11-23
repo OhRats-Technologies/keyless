@@ -300,7 +300,7 @@ class HomePanel(QWidget):
         cams_txt = "2 cameras" if cam2 else "1 camera"
         mons = len(self.window.display_layout.monitors)
         mon_txt = f"{mons} displays" if mons > 1 else "1 display"
-        self.hardware_summary.setText(f"{cams_txt} · {mon_txt}")
+        self.hardware_summary.setText(f"{cams_txt}, {mon_txt}")
 
         self.setup_link.setVisible(not self.window.flow.is_complete)
 

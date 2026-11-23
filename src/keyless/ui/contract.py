@@ -245,7 +245,7 @@ def _home_rows(
         "stopped": ("Ready", "idle"),
     }
     engine_title, engine_state = engine_states.get(state, ("Ready", "idle"))
-    status_rows.append(StatusRow(title=f"Engine · {engine_title}", state=engine_state, detail=detail))
+    status_rows.append(StatusRow(title=f"Engine: {engine_title}", state=engine_state, detail=detail))
     sections.append(Section("Status", tuple(status_rows)))
 
     readiness: list[Row] = []
@@ -441,7 +441,7 @@ def _settings_sections(
             rows.append(PickerRow(title=label, options=options, selected=str(value)))
         else:
             rows.append(
-                TextRow(title=label, detail=f"{_display_value(value)} · {_apply_suffix(spec)}")
+                TextRow(title=label, detail=f"{_display_value(value)} ({_apply_suffix(spec)})")
             )
     sections = [Section(group, tuple(rows)) for group, rows in grouped.items()]
     sections.append(

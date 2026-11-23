@@ -51,9 +51,9 @@ class ThemeTokens:
     spacing_md: int = 16
     spacing_lg: int = 24
     radius: int = 10
-    radius_sm: int = 7
+    radius_sm: int = 4
     font_family: str = 'Inter, "Noto Sans", "DejaVu Sans", sans-serif'
-    mono_family: str = '"Space Mono", "MesloLGS Nerd Font Mono", monospace'
+    mono_family: str = '"MesloLGS Nerd Font Mono", "Space Mono", monospace'
     font_size: int = 14
     title_size: int = 26
     heading_size: int = 16

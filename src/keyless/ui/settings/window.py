@@ -594,7 +594,7 @@ class SettingsPanel(QWidget):
         tts_row.addStretch(1)
         voice_card.layout.addLayout(tts_row)
 
-        self.tts_status = _wrap_label(QLabel("Voice by Underdog Woof · non-commercial license"))
+        self.tts_status = _wrap_label(QLabel("Voice by Underdog Woof (non-commercial license)"))
         self.tts_status.setObjectName("Muted")
         voice_card.layout.addWidget(self.tts_status)
         layout.addWidget(voice_card)
@@ -1042,9 +1042,9 @@ class SettingsPanel(QWidget):
                 self.tts_dl_button.setVisible(not t_ready)
                 self.tts_preview_btn.setEnabled(t_ready)
                 self.tts_status.setText(
-                    "Voice by Underdog Woof (ready offline · non-commercial license)"
+                    "Voice by Underdog Woof (ready offline, non-commercial license)"
                     if t_ready
-                    else "Voice by Underdog Woof (optional 40 MB download · non-commercial license)"
+                    else "Voice by Underdog Woof (optional 40 MB download, non-commercial license)"
                 )
             except Exception:
                 pass
