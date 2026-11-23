@@ -74,6 +74,9 @@ class AppConfig:
     audio_device: int | str | None = None
     # Phase 3: gaze overlay + voice grounding & always-on VAD
     gaze_cursor_control: bool = False
+    # Gaze v2 Phase 0/1: opt-in local session recording (GREENFIELD.md §7).
+    gaze_collect_enabled: bool = False
+    gaze_collect_redact_text: bool = False
     # macOS: draw eye-driven motion on cua-driver's per-session agent cursor
     # (click-through overlay) instead of warping the real mouse pointer.
     # Unavailable platforms keep their existing pointer behavior.
