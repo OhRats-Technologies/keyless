@@ -860,6 +860,143 @@ def gaze_replay(
     console.print(table)
 
 
+@gaze_app.command("probe")
+def gaze_probe(
+    sessions_dir: Path | None = typer.Argument(
+        None,
+        file_okay=False,
+        help="Directory of sessions written by keyless.gaze.collect (defaults to <data_dir>/sessions).",
+    ),
+    extractor: str = typer.Option(
+        ...,
+        "--extractor",
+        help=(
+            "Frozen feature extractor as 'module:callable'. The callable takes "
+            "(event, candidate) and returns a fixed-length 1-D numeric array or "
+            "None. Example for EmbeddingGemma 2: write a small module wrapping "
+            "your ONNX runtime and point here at it."
+        ),
+    ),
+    test_fraction: float = typer.Option(
+        0.2, "--test-fraction", min=0.0, max=0.9, help="Fraction of sessions held out."
+    ),
+    seed: int = typer.Option(42, help="Split seed (splits are session-level)."),
+) -> None:
+    """Frozen-embedding linear probe versus the nearest-candidate baseline.
+
+    Fits per-candidate class centroids on training sessions and scores
+    session-held-out sessions (GREENFIELD.md §6.3, §9).  The backbone
+    hypothesis survives only if test ``top1`` beats test ``baseline_top1``;
+    this command prints that verdict, nothing more.
+    """
+    from keyless.config.paths import current_paths
+    from keyless.gaze.experiment import evaluate_experiment
+    from keyless.gaze.replay import SchemaError, iter_sessions, load_session, split_sessions
+
+    extract = _probe_extractor(extractor)
+
+    target_dir = sessions_dir if sessions_dir is not None else (current_paths().data_dir / "sessions")
+    if not target_dir.exists():
+        typer.echo(
+            f"error: no sessions directory at {target_dir}. "
+            "Record one first with `keyless gaze record`.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    session_dirs = iter_sessions(target_dir)
+    if not session_dirs:
+        typer.echo(f"error: no sessions found under {target_dir}", err=True)
+        raise typer.Exit(1)
+    splits = split_sessions(
+        session_dirs,
+        train=1.0 - test_fraction,
+        val=0.0,
+        test=test_fraction,
+        seed=seed,
+    )
+    train_dirs, test_dirs = splits["train"], splits["test"]
+    if not test_dirs:
+        typer.echo("error: the split holds out zero sessions; record more sessions", err=True)
+        raise typer.Exit(1)
+
+    def events_of(dirs):
+        collected = []
+        for session_dir in dirs:
+            try:
+                collected.extend(load_session(session_dir).events)
+            except (SchemaError, FileNotFoundError) as exc:
+                typer.echo(f"warning: skipping {session_dir.name}: {exc}", err=True)
+        return collected
+
+    try:
+        report = evaluate_experiment(extract, events_of(train_dirs), events_of(test_dirs))
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"Train {len(train_dirs)} session(s) / test {len(test_dirs)} session(s); "
+        f"probe fitted {len(report['extractor']['fitted_ids'])} candidate id(s) "
+        f"on {report['extractor']['n_train_samples']} labelled sample(s)"
+    )
+    table = Table(title="Embedding probe vs Baseline 0", show_header=True)
+    table.add_column("Metric", style="bold")
+    table.add_column("Train", justify="right")
+    table.add_column("Test", justify="right")
+    for key in ("top1", "top3", "candidate_recall@3", "hit@25", "abstention", "baseline_top1"):
+        train_value = report["train"].get(key)
+        test_value = report["test"].get(key)
+        table.add_row(
+            key,
+            "n/a" if train_value is None else f"{train_value:.3f}",
+            "n/a" if test_value is None else f"{test_value:.3f}",
+        )
+    console.print(table)
+
+    test_top1 = report["test"].get("top1")
+    test_baseline = report["test"].get("baseline_top1")
+    if test_top1 is None or test_baseline is None:
+        console.print("[yellow]No labelled clicks in the held-out split; no verdict[/yellow]")
+    elif test_top1 > test_baseline:
+        console.print("[green]Probe beats baseline_top1 on held-out sessions[/green]")
+    else:
+        console.print(
+            "[yellow]Probe does NOT beat baseline_top1 on held-out sessions — "
+            "this backbone/feature hypothesis is falsified at this stage "
+            "(GREENFIELD.md §9)[/yellow]"
+        )
+
+
+def _probe_extractor(spec: str):
+    """Import a 'module:callable' frozen-feature extractor, honestly."""
+    import importlib
+
+    module_name, separator, attribute = spec.partition(":")
+    if not separator or not module_name or not attribute:
+        typer.echo(f"error: --extractor must be 'module:callable', got {spec!r}", err=True)
+        raise typer.Exit(1)
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        typer.echo(f"error: cannot import extractor module {module_name!r}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    try:
+        callable_object = getattr(module, attribute)
+    except AttributeError as exc:
+        typer.echo(f"error: {module_name!r} has no attribute {attribute!r}", err=True)
+        raise typer.Exit(1) from exc
+    if isinstance(callable_object, type):
+        try:
+            callable_object = callable_object()
+        except TypeError as exc:
+            typer.echo(f"error: cannot instantiate extractor class {spec!r}: {exc}", err=True)
+            raise typer.Exit(1) from exc
+    if not callable(callable_object):
+        typer.echo(f"error: {spec!r} is not callable", err=True)
+        raise typer.Exit(1)
+    return callable_object
+
+
 @gaze_app.command("eval-candidates")
 def gaze_eval_candidates(
     sessions_dir: Path | None = typer.Argument(

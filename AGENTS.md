@@ -28,6 +28,13 @@ Do not merge to `main` unless the user explicitly asks.
 8. **`docs/platform-matrix.md`** — per-OS capability status.
 9. **`CONCERNS.md`** — historical concerns; not a plan.
 
+## Live state tracking
+
+Context windows run short on this project. Keep `docs/LIVE_STATE.md` as the
+running scratch log during multi-block autonomous work: standing instructions,
+block checklist, findings. Update it after every completed block. `docs/HANDOFF.md`
+stays the polished end-of-session handoff; LIVE_STATE feeds it.
+
 ## Non-negotiable rules
 
 1. **No old model.** Do not import, copy, or paraphrase `legacy-gaze-v1` code, losses, gates, anchors, or calibration UX. The old stack was deleted for a reason.

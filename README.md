@@ -5,8 +5,14 @@
 </p>
 
 <p align="center">
-  <em>Local-first stereo gaze, acoustic pop-click, and low-latency voice control for the Linux desktop.</em>
+  <em>An experimental, local-first desktop-control project for Linux: low-latency voice control today, stereo-gaze target intent under active research.</em>
 </p>
+
+> **Experimental.** Keyless is in an active research phase, not a shipped gaze product.
+> Voice control, STT, the platform seams, and Linux packaging are implemented and usable.
+> The gaze engine is being rebuilt from first principles as *target-level intent* (see
+> [`docs/GREENFIELD.md`](docs/GREENFIELD.md)); no gaze model is trained or running yet, and the
+> real pointer is never moved implicitly. Expect breaking changes.
 
 <p align="center">
   <a href="https://keyless.ohrats.party">Website</a> ·
@@ -15,7 +21,7 @@
   <a href="docs/RELEASES.md">Releases</a>
 </p>
 
-Look at a target, say what you mean, and Keyless does the rest. Stereo cameras, speech recognition (Parakeet TDT 0.6B v2 int8), and command history all stay on your machine.
+Say what you mean, and Keyless acts on it. Speech recognition (Parakeet TDT 0.6B v2 int8), command history, and camera capture all stay on your machine. Gaze-based target selection is the research goal: the project is instrumenting the data flywheel and measuring perception before any gaze model is trained.
 
 ## Install (Linux)
 

@@ -1,7 +1,7 @@
 [project]
 name = "keyless"
 version = "0.1.2"
-description = "Dual-camera stereo gaze tracking, pop-click detection, and voice/AI control (Linux + macOS)"
+description = "Experimental local-first desktop control (Linux): voice/AI control today, stereo-gaze target intent under research"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
