@@ -89,21 +89,28 @@ def load_woof_engine(paths: AppPaths | None = None, *, voice: str = "juno") -> A
     return Woof(weights=str(weights_path), voice=normalize_voice(voice))
 
 
+_PA_LOCK = threading.Lock()
+
+
 def _default_play_audio(samples: np.ndarray, sample_rate: int, stop_event: threading.Event) -> None:
     import sounddevice as sd
 
     arr = np.asarray(samples, dtype=np.float32).reshape(-1)
     if arr.size == 0 or stop_event.is_set():
         return
-    sd.play(arr, samplerate=sample_rate, blocking=False)
-    duration_s = float(arr.size) / float(max(1, sample_rate))
-    deadline = time.monotonic() + duration_s + 0.08
-    while time.monotonic() < deadline:
-        if stop_event.is_set():
-            sd.stop()
-            return
-        time.sleep(0.03)
-    sd.wait()
+    with _PA_LOCK:
+        sd.play(arr, samplerate=sample_rate, blocking=False)
+    try:
+        duration_s = float(arr.size) / float(max(1, sample_rate))
+        deadline = time.monotonic() + duration_s + 0.08
+        while time.monotonic() < deadline and not stop_event.is_set():
+            time.sleep(0.03)
+    finally:
+        with _PA_LOCK:
+            try:
+                sd.stop()
+            except Exception:
+                pass
 
 
 @dataclass(frozen=True)
@@ -181,12 +188,14 @@ class WoofSpeaker:
         """Stop active playback immediately and drop queued speech."""
         self._clear_pending()
         self._interrupt.set()
-        try:
-            import sounddevice as sd
+        if self._worker is None or not self._worker.is_alive():
+            with _PA_LOCK:
+                try:
+                    import sounddevice as sd
 
-            sd.stop()
-        except Exception:
-            pass
+                    sd.stop()
+                except Exception:
+                    pass
 
     def close(self) -> None:
         self._closed = True

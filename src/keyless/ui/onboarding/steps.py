@@ -214,8 +214,8 @@ class _DownloadWorker(QThread):
     done = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, asset_id: str = "parakeet-tdt-0.6b-v2") -> None:
-        super().__init__()
+    def __init__(self, asset_id: str = "parakeet-tdt-0.6b-v2", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
         self.asset_id = asset_id
 
     def run(self) -> None:
@@ -563,7 +563,7 @@ class DevicesPage(StepPage):
         self.dl_progress.setValue(0)
         self.download_button.setEnabled(False)
         self.download_button.setText("Downloading…")
-        worker = _DownloadWorker(self)
+        worker = _DownloadWorker(parent=self)
         worker.progress.connect(lambda p: self.dl_progress.setValue(int(p.percent)))
         worker.done.connect(self._on_dl_done)
         worker.failed.connect(self._on_dl_failed)

@@ -431,3 +431,32 @@ def test_overlay_cursor_hides_without_live_gaze_and_daemon_error_is_readable(tmp
     msg = _extract_daemon_error(log, 1)
     assert "Camera is currently in use" in msg
     assert "/home/" not in msg
+
+
+def test_commands_help_dialog_and_search(qapp, tmp_path: Path) -> None:
+    from keyless.ui.app import MainWindow
+    from keyless.ui.commands_help import COMMAND_CATEGORIES, filter_command_categories
+
+    assert len(COMMAND_CATEGORIES) >= 5
+    scroll_cats = filter_command_categories("auto scroll")
+    assert len(scroll_cats) == 1
+    assert scroll_cats[0].title == "Scrolling & Reading"
+    assert filter_command_categories("nonexistent_command_xyz_123") == []
+
+    paths = _paths(tmp_path)
+    window = MainWindow(
+        paths=paths,
+        config=AppConfig(),
+        controller=NullController(),
+        theme=ThemeName.DARK,
+        enable_previews=False,
+    )
+    try:
+        dlg = window.open_commands_help()
+        assert dlg.isVisible()
+        dlg.help_widget.search_input.setText("terminal")
+        qapp.processEvents()
+        dlg.close()
+    finally:
+        window.shutdown()
+        window.close()

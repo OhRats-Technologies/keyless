@@ -323,6 +323,14 @@ class SettingsPanel(QWidget):
         self.cam2.currentIndexChanged.connect(self._auto_save)
         gform.addRow(self.cam2_label, self.cam2)
 
+        self.gaze_model = _compact_combo(QComboBox())
+        self.gaze_model.addItem("Precision RBF (recommended)", "rbf")
+        self.gaze_model.addItem("3-D Geometric (experimental)", "geo")
+        gm_idx = self.gaze_model.findData(getattr(self.config, "gaze_model", "rbf"))
+        self.gaze_model.setCurrentIndex(gm_idx if gm_idx >= 0 else 0)
+        self.gaze_model.currentIndexChanged.connect(self._auto_save)
+        gform.addRow("Gaze model", self.gaze_model)
+
         self.eye_mouse = QCheckBox("Move the mouse pointer with gaze")
         self.eye_mouse.setChecked(self.config.gaze_cursor_control)
         self.eye_mouse.toggled.connect(self._auto_save)
@@ -343,14 +351,45 @@ class SettingsPanel(QWidget):
         gaze_card.layout.addLayout(gform)
 
         calib_row = QHBoxLayout()
+        calib_row.setSpacing(8)
         self.calib_status = _wrap_label(QLabel(""))
         self.calib_status.setObjectName("Muted")
         calib_row.addWidget(self.calib_status, 1)
+        self.clear_calib_button = QPushButton("Clear data")
+        self.clear_calib_button.setObjectName("Ghost")
+        self.clear_calib_button.clicked.connect(self._clear_calibration_data)
+        calib_row.addWidget(self.clear_calib_button)
         self.calibrate_button = QPushButton("Calibrate")
         self.calibrate_button.clicked.connect(self._trigger_calibrate)
         calib_row.addWidget(self.calibrate_button)
         gaze_card.layout.addLayout(calib_row)
         layout.addWidget(gaze_card)
+
+        # ------------------------------------------------------------------ Firefox DOM Bridge
+        from pathlib import Path
+
+        ff_card = Card()
+        ff_card.layout.addWidget(eyebrow("Firefox extension (DOM clicking & scrolling)"))
+        ff_desc = _wrap_label(
+            QLabel(
+                "For instant, pixel-accurate clicking, tab switching, and smooth scrolling in Firefox, "
+                "open about:debugging#/runtime/this-firefox → Load Temporary Add-on and select firefox_ext/manifest.json."
+            )
+        )
+        ff_desc.setObjectName("Muted")
+        ff_card.layout.addWidget(ff_desc)
+        manifest_path = Path(__file__).resolve().parents[4] / "firefox_ext" / "manifest.json"
+        self._ff_manifest_path = str(manifest_path) if manifest_path.exists() else "firefox_ext/manifest.json"
+        ff_row = QHBoxLayout()
+        ff_row.setSpacing(8)
+        self.ff_copy_btn = QPushButton("Copy manifest path")
+        self.ff_copy_btn.clicked.connect(self._copy_firefox_manifest)
+        ff_row.addWidget(self.ff_copy_btn)
+        ff_path_lbl = _wrap_label(QLabel(self._ff_manifest_path))
+        ff_path_lbl.setObjectName("Muted")
+        ff_row.addWidget(ff_path_lbl, 1)
+        ff_card.layout.addLayout(ff_row)
+        layout.addWidget(ff_card)
 
         # ------------------------------------------------------------------ Optional AI
         ai_card = Card()
@@ -361,6 +400,7 @@ class SettingsPanel(QWidget):
 
         self.provider_kind = _compact_combo(QComboBox())
         self.provider_kind.addItem("Automatic", "auto")
+        self.provider_kind.addItem("Ollama (local)", "ollama")
         self.provider_kind.addItem("API provider", "openai_compat")
         self.provider_kind.addItem("Local ACP agent", "acp")
         p_idx = self.provider_kind.findData(self.config.llm_provider)
@@ -418,6 +458,13 @@ class SettingsPanel(QWidget):
 
         ai_card.layout.addLayout(aform)
         layout.addWidget(ai_card)
+
+        # ------------------------------------------------------------------ Collapsible Voice Commands Reference
+        from keyless.ui.commands_help import CommandsHelpWidget
+
+        self.commands_help = DisclosureSection("Voice commands reference")
+        self.commands_help.body_layout.addWidget(CommandsHelpWidget(self, scrollable=False))
+        layout.addWidget(self.commands_help)
 
         # ------------------------------------------------------------------ Collapsible Diagnostics & About
         self.diagnostics = DisclosureSection(
@@ -574,8 +621,10 @@ class SettingsPanel(QWidget):
         self.speech_test.setEnabled(ready)
 
         calibrated = self.paths.calibration_path.exists()
+        dataset_exists = (self.paths.calibration_path.parent / "calib_dataset.npz").exists()
         self.calib_status.setText("Eye tracking calibrated" if calibrated else "Not calibrated yet")
         self.calibrate_button.setText("Recalibrate" if calibrated else "Calibrate")
+        self.clear_calib_button.setVisible(calibrated or dataset_exists)
 
         try:
             from keyless.voice.tts import tts_report
@@ -602,14 +651,19 @@ class SettingsPanel(QWidget):
     def _sync_ai_visibility(self) -> None:
         kind = str(self.provider_kind.currentData() or "auto")
         is_api = kind == "openai_compat"
+        is_ollama = kind == "ollama"
         is_acp = kind == "acp"
         self.provider_preset_label.setVisible(is_api)
         self.provider_preset.setVisible(is_api)
         self.api_key_label.setVisible(is_api)
         self.api_key.setVisible(is_api)
         self.save_key_button.setVisible(is_api)
-        self.llm_model_label.setVisible(is_api)
-        self.llm_model.setVisible(is_api)
+        self.llm_model_label.setVisible(is_api or is_ollama)
+        self.llm_model.setVisible(is_api or is_ollama)
+        if is_ollama and not self.llm_model.text().strip():
+            self.llm_model.setPlaceholderText(self.config.gaze_vlm_model or self.config.ollama_model or "gemma4:e4b")
+        else:
+            self.llm_model.setPlaceholderText("Provider default")
         self.acp_label.setVisible(is_acp)
         self.acp_agent.setVisible(is_acp)
         if is_acp:
@@ -647,6 +701,20 @@ class SettingsPanel(QWidget):
     def _trigger_calibrate(self) -> None:
         if self._on_calibrate is not None:
             self._on_calibrate()
+
+    def _clear_calibration_data(self) -> None:
+        for path in (
+            self.paths.calibration_path,
+            self.paths.calibration_path.parent / "calib_dataset.npz",
+        ):
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+        self.refresh()
+        if self._on_config_changed is not None:
+            self._on_config_changed()
 
     def _trigger_setup(self) -> None:
         if self._on_run_setup is not None:
@@ -811,6 +879,11 @@ class SettingsPanel(QWidget):
 
     # ------------------------------------------------------------------ Diagnostics
 
+    def _copy_firefox_manifest(self) -> None:
+        QGuiApplication.clipboard().setText(self._ff_manifest_path)
+        self.ff_copy_btn.setText("Copied ✓")
+        QTimer.singleShot(1800, lambda: self.ff_copy_btn.setText("Copy manifest path"))
+
     def _copy_error(self) -> None:
         from keyless.ui.session import inspect_daemon_error
 
@@ -896,6 +969,7 @@ class SettingsPanel(QWidget):
         cfg.require_command_prefix = self.require_prefix.isChecked()
         cfg.enable_pop_click = self.pop_click.isChecked()
         cfg.gaze_cursor_control = self.eye_mouse.isChecked()
+        cfg.gaze_model = str(self.gaze_model.currentData() or "rbf")
         cfg.gaze_online_ekf = self.online_adapt.isChecked()
         cfg.gaze_online_chase = self.online_adapt.isChecked()
         cfg.camera_backend = "pipewire" if self.share_camera.isChecked() else "v4l2"

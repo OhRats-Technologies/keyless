@@ -1326,8 +1326,8 @@ def run_calibration_ui(
     samples_per_point: int = 22,
     settle_sec: float = 2.0,
     pose_settle_sec: float = 3.8,
-    sweep1_duration_sec: float = 30.0,
-    sweep2_duration_sec: float = 28.0,
+    sweep1_duration_sec: float = 52.0,
+    sweep2_duration_sec: float = 44.0,
     connector: str | None = None,
     legacy_cv: bool = False,
 ) -> StereoGazeModel:

@@ -72,9 +72,9 @@ class AppConfig:
     pop_min_rms: float = 0.032
     audio_device: int | str | None = None
     # Phase 3: Gaze-Foveated Voice + Vision Grounding & Always-On VAD
-    gaze_model: str = "geo"
-    gaze_online_ekf: bool = True
-    gaze_online_chase: bool = True
+    gaze_model: str = "rbf"
+    gaze_online_ekf: bool = False
+    gaze_online_chase: bool = False
     gaze_cursor_control: bool = False
     gaze_vlm_enabled: bool = True
     gaze_vlm_provider: str = "auto"

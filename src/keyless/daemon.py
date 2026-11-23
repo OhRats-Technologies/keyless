@@ -170,7 +170,12 @@ def run_combined_daemon(
                     out.print("[dim]Vision loop not active; gaze coordinates unavailable.[/dim]")
 
             vlm_provider = None
+            detector = GazeUIDetector()
+            desktop_atspi = LinuxDesktopAccessibilityBridge()
+            vlm_enabled = False
             if config.gaze_vlm_enabled:
+                from keyless.models.providers.ollama import OllamaProvider
+
                 vlm_role = resolve_gaze_vlm_role(config)
                 if vlm_role.reasons:
                     out.print(
@@ -179,34 +184,37 @@ def run_combined_daemon(
                         + " Tier-0 DOM, Tier-1 OCR, and AT-SPI still active.[/yellow]"
                     )
                 else:
-                    vlm_provider = vlm_role.provider
-                    detector = GazeUIDetector()
-                    desktop_atspi = LinuxDesktopAccessibilityBridge()
-                    vlm_clicker = GazeVLMClicker(
-                        detector=detector,
-                        model_name=config.gaze_vlm_model,
-                        layout=layout,
-                        crop_w=config.gaze_crop_w,
-                        crop_h=config.gaze_crop_h,
-                        keyword_threshold=config.gaze_keyword_threshold,
-                        firefox_bridge=firefox_bridge,
-                        desktop_atspi=desktop_atspi,
-                        vlm_provider=vlm_provider,
-                    )
+                    vlm_enabled = True
+                    # For local Ollama, leave vlm_provider=None so GazeVLMClicker uses its
+                    # strict Pydantic JSON-schema ollama.chat(..., format=schema) path.
+                    if not isinstance(vlm_role.provider, OllamaProvider):
+                        vlm_provider = vlm_role.provider
+            vlm_clicker = GazeVLMClicker(
+                detector=detector,
+                model_name=config.gaze_vlm_model,
+                layout=layout,
+                crop_w=config.gaze_crop_w,
+                crop_h=config.gaze_crop_h,
+                keyword_threshold=config.gaze_keyword_threshold,
+                firefox_bridge=firefox_bridge,
+                desktop_atspi=desktop_atspi,
+                vlm_provider=vlm_provider,
+                enable_vlm=vlm_enabled,
+            )
+            if vlm_enabled:
+                def _warm_vlm() -> None:
+                    assert vlm_clicker is not None
+                    if not vlm_clicker.warm_model_in_vram():
+                        out.print(
+                            f"[yellow]Warning: VLM '{config.gaze_vlm_model}' warmup failed. "
+                            "Tier-0 DOM & Tier-1 OCR still active.[/yellow]"
+                        )
 
-                    def _warm_vlm() -> None:
-                        assert vlm_clicker is not None
-                        if not vlm_clicker.warm_model_in_vram():
-                            out.print(
-                                f"[yellow]Warning: VLM '{config.gaze_vlm_model}' warmup failed. "
-                                "Tier-0 DOM & Tier-1 OCR still active.[/yellow]"
-                            )
-
-                    threading.Thread(
-                        target=_warm_vlm,
-                        name="vlm-warmup",
-                        daemon=True,
-                    ).start()
+                threading.Thread(
+                    target=_warm_vlm,
+                    name="vlm-warmup",
+                    daemon=True,
+                ).start()
 
             text_role = resolve_text_role(config)
             if text_role.reasons:

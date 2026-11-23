@@ -11,6 +11,7 @@ from keyless.models.providers.acp_registry import fetch_registry
 from keyless.models.providers.base import (
     Provider,
     ProviderBinding,
+    ProviderState,
     Role,
     check_provider_for_role,
 )
@@ -45,11 +46,21 @@ def resolve_text_role(config: AppConfig) -> RoleResolution:
     if backend in ("gemini", "openai_compat", "openai"):
         preset = "gemini" if backend == "gemini" else (config.llm_preset or "openai")
         model = config.gemini_model if backend == "gemini" else (config.llm_model or "")
+        if preset == "ollama_openai" and not model:
+            model = config.gaze_vlm_model or config.ollama_model or "gemma4:e4b"
         provider: Provider = OpenAICompatProvider(preset, model)
     elif backend == "acp":
         provider = _acp(config.acp_agent_id)
     else:
-        provider = OllamaProvider(config.ollama_model)
+        chosen = config.llm_model or config.ollama_model
+        provider = OllamaProvider(chosen)
+        st = provider.status()
+        if st.state is ProviderState.MODEL_MISSING:
+            avail = list(st.extra.get("models") or [])
+            if config.gaze_vlm_model and config.gaze_vlm_model in avail:
+                provider = OllamaProvider(config.gaze_vlm_model)
+            elif avail:
+                provider = OllamaProvider(str(avail[0]))
     return RoleResolution(Role.TEXT_LLM, provider, check_provider_for_role(provider, Role.TEXT_LLM))
 
 

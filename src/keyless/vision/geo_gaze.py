@@ -142,10 +142,15 @@ def _unpack(p: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarr
     return rv, c, g, a_th, a_ph
 
 
-def camera_rays(p: np.ndarray, obs: HeadObs) -> tuple[np.ndarray, np.ndarray]:
+def camera_rays(
+    p: np.ndarray,
+    obs: HeadObs,
+    feats: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """Gaze ray ``(origin, direction)`` in the camera frame for block parameters ``p``."""
     _, _, g, a_th, a_ph = _unpack(p)
-    feats = obs_terms(obs)
+    if feats is None:
+        feats = obs_terms(obs)
     theta = feats @ a_th
     phi = feats @ a_ph
     d_h = np.column_stack([np.sin(theta) * np.cos(phi), np.sin(phi), np.cos(theta) * np.cos(phi)])
@@ -184,10 +189,11 @@ def rays_to_m0(
     p: np.ndarray,
     obs: HeadObs,
     delta: np.ndarray | None = None,
+    feats: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Gaze rays in the reference-monitor frame, with optional drift ``[rx, ry, sx, sy]``."""
     rv, c, _, _, _ = _unpack(p)
-    o_c, d_c = camera_rays(p, obs)
+    o_c, d_c = camera_rays(p, obs, feats=feats)
     rot = _rotvec_to_mat(rv)
     o = o_c @ rot.T + c
     d = d_c @ rot.T
@@ -483,6 +489,7 @@ def _solve_angle_map(rot: np.ndarray, cam_pos: np.ndarray, obs: HeadObs, targets
 def _residuals(
     p: np.ndarray,
     obs: HeadObs,
+    feats: np.ndarray,
     targets_ab: np.ndarray,
     w: np.ndarray,
     n_eff: float,
@@ -491,13 +498,13 @@ def _residuals(
     ref_w_cm: float,
     ref_h_cm: float,
 ) -> np.ndarray:
-    o, d = rays_to_m0(p, obs)
+    o, d = rays_to_m0(p, obs, feats=feats)
     dz = np.where(d[:, 2] > 1e-3, d[:, 2], 1e-3)
     s = -o[:, 2] / dz
     hit = o[:, :2] + s[:, None] * d[:, :2]
     data = ((hit - targets_ab) * w[:, None]).ravel()
     rv, c, g, a_th, a_ph = _unpack(p)
-    rot = Rotation.from_rotvec(rv).as_matrix()
+    rot = _rotvec_to_mat(rv)
     # Physical soft priors eliminate the 6-DOF gauge freedom on a single calibration plane:
     # 1. During calibration on the reference monitor, the user's head roughly faces M0 (+z, up=-y).
     head_facing = np.diag([-1.0, -1.0, 1.0])
@@ -560,21 +567,42 @@ def _fit_block(obs: HeadObs, targets_m0: np.ndarray, ref: MonitorGeom, weights: 
             scored.append((cost, p))
     scored.sort(key=lambda it: it[0])
 
-    targets_ab = targets_m0[:, :2]
-    n_eff = float(np.sum(weights))
+    # Subsample large replay datasets for the 24-param nonlinear fit so least_squares stays <1s.
+    n_all = len(obs.yaw)
+    if n_all > 900:
+        idx = np.linspace(0, n_all - 1, 900, dtype=np.intp)
+        fit_obs = HeadObs(
+            yaw=obs.yaw[idx],
+            pitch=obs.pitch[idx],
+            roll=obs.roll[idx],
+            t_cm=obs.t_cm[idx],
+            dx=obs.dx[idx],
+            dy=obs.dy[idx],
+            valid=obs.valid[idx],
+        )
+        fit_targets_ab = targets_m0[idx, :2]
+        fit_weights = weights[idx]
+    else:
+        fit_obs = obs
+        fit_targets_ab = targets_m0[:, :2]
+        fit_weights = weights
+
+    fit_feats = obs_terms(fit_obs)
+    n_eff = float(np.sum(fit_weights))
     best_p, best_cost = scored[0][1], np.inf
-    for _, p0 in scored[:3]:
+    for _, p0 in scored[:2]:
         sol = least_squares(
             _residuals,
             p0,
-            args=(obs, targets_ab, weights, n_eff, r_h_mean, head_mean, w_cm, h_cm),
+            args=(fit_obs, fit_feats, fit_targets_ab, fit_weights, n_eff, r_h_mean, head_mean, w_cm, h_cm),
             loss="soft_l1",
             f_scale=2.0,
-            max_nfev=400,
+            max_nfev=160,
             x_scale="jac",
         )
         if sol.cost < best_cost:
             best_p, best_cost = sol.x, sol.cost
+    targets_ab = targets_m0[:, :2]
     o, d = rays_to_m0(best_p, obs)
     s = -o[:, 2] / np.where(d[:, 2] > 1e-3, d[:, 2], 1e-3)
     err_cm = np.linalg.norm(o[:, :2] + s[:, None] * d[:, :2] - targets_ab, axis=1)

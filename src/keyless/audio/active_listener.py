@@ -443,7 +443,7 @@ class ActiveVoiceListener:
                     speech_buf.clear()
                     pre_roll.clear()
 
-                    if len(audio_np) >= int(0.32 * SAMPLE_RATE):
+                    if len(audio_np) >= int(0.20 * SAMPLE_RATE):
                         self._transcribe_and_filter(audio_np, speech_onset_ts)
 
     def _transcribe_and_filter(self, audio_np: np.ndarray, onset_ts: float) -> None:
@@ -458,6 +458,9 @@ class ActiveVoiceListener:
             return
 
         clean = text.lower().strip(" .,!?\"'")
+        clean = clean.replace("-", " ")
+        clean = " ".join(clean.split())
+        clean = clean.replace("re center", "recenter")
         if not clean or clean in _WHISPER_HALLUCINATIONS or len(clean) < 3:
             return
         if self.on_transcript is not None:
@@ -478,14 +481,50 @@ class ActiveVoiceListener:
         if self.sleeping:
             return
 
-        # Gate 2: Require command prefix OR "<app> window/app" suffix so casual speech is ignored
+        # Strip common spoken hesitation fillers before checking command intent
+        stripped = clean
+        for _ in range(3):
+            prev = stripped
+            for filler in ("uh ", "um ", "mm ", "hmm ", "hey ", "please ", "can you ", "could you "):
+                if stripped.startswith(filler):
+                    stripped = stripped[len(filler) :].strip()
+            if stripped == prev:
+                break
+
+        # Gate 2: Allow known command prefixes, "<app> window/app" suffixes, OR natural phrases
+        # containing desktop action keywords so the LLM intent router can handle them.
         is_window_suffix = (
-            clean.endswith((" window", " app")) and 2 <= len(clean.split()) <= 5
+            stripped.endswith((" window", " app", " tab")) and 2 <= len(stripped.split()) <= 6
         )
+        _action_keywords = (
+            "click",
+            "press",
+            "tap",
+            "scroll",
+            "recenter",
+            "window",
+            "tab",
+            "minimize",
+            "maximize",
+            "play",
+            "pause",
+            "mute",
+            "fullscreen",
+            "focus",
+            "switch",
+            "open",
+            "close",
+            "type",
+            "terminal",
+            "ask",
+            "explain",
+        )
+        has_action_keyword = any(kw in stripped.split() for kw in _action_keywords)
         if (
             self.require_command_prefix
-            and not clean.startswith(_VALID_COMMAND_PREFIXES)
+            and not stripped.startswith(_VALID_COMMAND_PREFIXES)
             and not is_window_suffix
+            and not has_action_keyword
         ):
             logger.debug("Voice ignored (not a command prefix): %r", text)
             return

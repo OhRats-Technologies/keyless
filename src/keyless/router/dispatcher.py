@@ -34,8 +34,12 @@ class DispatchResult:
 
 
 def _normalize_command(text: str) -> str:
-    cleaned = re.sub(r"[^\w\s]", "", text.lower()).strip()
-    return re.sub(r"\s+", " ", cleaned)
+    lowered = text.lower().replace("-", " ")
+    cleaned = re.sub(r"[^\w\s]", "", lowered).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"\bre center\b", "recenter", cleaned)
+    cleaned = re.sub(r"^(?:(?:uh|um|mm|hmm|please|can you|could you)\s+)+", "", cleaned)
+    return cleaned.strip()
 
 
 class VoiceCommandRouter:
@@ -312,17 +316,24 @@ class VoiceCommandRouter:
         )
 
     def _cycle_next_window(self) -> None:
-        """Rotate through ALL open windows without MRU ping-pong.
+        """Step through individual open windows via Alt+Tab (hold Alt, tap Tab N times).
 
-        In an MRU list [A, B, C, D], picking index 1 (Alt+Escape / Alt+Tab) swaps A <-> B forever,
-        whereas picking the tail (Shift+Alt+Escape: cycle-windows-backward) rotates the entire
-        ring [D, A, B, C] -> [C, D, A, B] -> [B, C, D, A] -> [A, B, C, D], visiting every window!
+        Incrementing the tap count on consecutive 'next window' commands within 8s visits every
+        individual window in GNOME's `switch-windows` list without treating tiled/paired windows
+        as one and without A<->B MRU ping-pong.
         """
-        self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
+        now = time.monotonic()
+        if now - self._window_cycle_last_t <= 8.0 and self._window_cycle_step > 0:
+            self._window_cycle_step = (self._window_cycle_step % 8) + 1
+        else:
+            self._window_cycle_step = 1
+        self._window_cycle_last_t = now
+        self.pointer.hold_and_tap(ecodes.KEY_LEFTALT, ecodes.KEY_TAB, count=self._window_cycle_step)
 
     def _cycle_prev_window(self) -> None:
-        """Jump back to the immediately preceding window in MRU order (Alt+Escape)."""
-        self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_ESC)
+        """Jump back to the immediately preceding window in MRU order (Alt+Shift+Tab)."""
+        self._window_cycle_step = 0
+        self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_TAB)
 
     _APP_SEARCH_ALIASES: dict[str, str] = {
         "vscode": "visual studio code",
@@ -386,7 +397,7 @@ class VoiceCommandRouter:
                 self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_T)
                 return DispatchResult("deterministic", raw, "new_tab")
 
-        # 0.5. Close active OS window ("close window", "close this window", "close app")
+        # 0.5. Close / minimize / maximize active OS window
         if norm in (
             "close window",
             "close this window",
@@ -399,6 +410,14 @@ class VoiceCommandRouter:
         ):
             self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_F4)
             return DispatchResult("deterministic", raw, "close_window")
+
+        if norm in ("minimize window", "minimize this window", "minimize the window", "minimize"):
+            self.pointer.key_combo(ecodes.KEY_LEFTMETA, ecodes.KEY_H)
+            return DispatchResult("deterministic", raw, "minimize_window")
+
+        if norm in ("maximize window", "maximize this window", "maximize the window", "maximize"):
+            self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_F10)
+            return DispatchResult("deterministic", raw, "maximize_window")
 
         # 0.6. Explicit next/previous window cycling: strip leading fillers ("a", "the", "and",
         # "uh", "go to", "switch to", "move to") AND catch common STT near-homophones
@@ -489,15 +508,21 @@ class VoiceCommandRouter:
             if browser_target in ordinal_keys:
                 self.pointer.key_combo(ecodes.KEY_LEFTALT, ordinal_keys[browser_target])
                 return DispatchResult("deterministic", raw, f"tab_ordinal:{browser_target}")
+            if self.gaze_vlm_clicker is not None:
+                vlm_tab = self._execute_vlm_intent(f"click {browser_target}", f"click {browser_target}")
+                if vlm_tab is not None and vlm_tab.route == "gaze_vlm_click":
+                    return vlm_tab
             return DispatchResult("tab_miss", raw, f"No matching browser tab: {browser_target}")
 
-        # 3. Ambiguous "switch to X" or "switch tab to X": prefer matching Firefox tab if connected, else OS app!
+        # 3. Ambiguous "switch to X" or "switch tab to X": prefer matching Firefox tab if connected, else click tab / OS app!
         m_ambig = re.match(
-            r"^(?:switch\s+(?:tab\s+)?to\s+|switch\s+tab\s+|go\s+to\s+)(.+)$",
+            r"^(?:switch\s+(?:tab\s+)?to\s+|switch\s+tab\s+|go\s+to\s+)(?:the\s+)?(.+)$",
             norm,
         )
         if m_ambig:
-            target = re.sub(r"\s+tab$", "", m_ambig.group(1).strip()).strip()
+            raw_target = m_ambig.group(1).strip()
+            wants_tab = raw_target.endswith(" tab")
+            target = re.sub(r"\s+tab$", "", raw_target).strip()
             if target in ("next", "next tab"):
                 self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_TAB)
                 return DispatchResult("deterministic", raw, "next_tab")
@@ -508,6 +533,10 @@ class VoiceCommandRouter:
                 title = self.firefox_bridge.switch_tab(target)
                 if title is not None:
                     return DispatchResult("tab_switch", raw, f"Firefox tab: {title}")
+            if target and wants_tab and self.gaze_vlm_clicker is not None:
+                vlm_tab = self._execute_vlm_intent(f"click {target}", f"click {target}")
+                if vlm_tab is not None and vlm_tab.route == "gaze_vlm_click":
+                    return vlm_tab
             if target:
                 self._focus_os_app_via_overview(target)
                 return DispatchResult("os_window_switch", raw, f"OS switch/focus: {target}")
@@ -533,7 +562,7 @@ class VoiceCommandRouter:
             payload={"steps": [r.__dict__ for r in results]},
         )
 
-    def _dispatch_single(self, transcript: str) -> DispatchResult:
+    def _dispatch_single(self, transcript: str, *, _from_llm: bool = False) -> DispatchResult:
         """Route a single transcribed utterance into deterministic, Gaze-VLM, Type, Terminal, or Browser actions."""
         raw = transcript.strip()
         if not raw:
@@ -543,15 +572,72 @@ class VoiceCommandRouter:
 
         norm = _normalize_command(raw)
 
-        # 1. Zero-latency deterministic control layer
-        if norm == "click":
+        # 1. Zero-latency deterministic control layer.
+        # In-place click words click at the live gaze point (not wherever the physical mouse is).
+        _gaze_click_words = {
+            "click": ("click_left", ecodes.BTN_LEFT, False),
+            "click here": ("click_left", ecodes.BTN_LEFT, False),
+            "click now": ("click_left", ecodes.BTN_LEFT, False),
+            "click it": ("click_left", ecodes.BTN_LEFT, False),
+            "click that": ("click_left", ecodes.BTN_LEFT, False),
+            "tap": ("click_left", ecodes.BTN_LEFT, False),
+            "tap here": ("click_left", ecodes.BTN_LEFT, False),
+            "left click": ("click_left", ecodes.BTN_LEFT, False),
+            "right click": ("click_right", ecodes.BTN_RIGHT, False),
+            "middle click": ("click_middle", ecodes.BTN_MIDDLE, False),
+            "double click": ("double_click", ecodes.BTN_LEFT, True),
+        }
+        if norm in _gaze_click_words:
             if self.gaze_vlm_clicker is not None:
                 self.gaze_vlm_clicker.clear_pending_snapshot()
-            return DispatchResult(
-                "ignored",
-                raw,
-                "Ignored bare 'click' (say 'click <target>' or 'click here').",
-            )
+            action_name, button, is_double = _gaze_click_words[norm]
+            has_live_gaze = self.gaze_state_provider is not None or self.gaze_provider is not None
+            where = "at pointer"
+            if has_live_gaze:
+                gx, gy, _ = self._current_gaze_and_feat()
+                tx, ty = int(gx), int(gy)
+                # If Firefox DOM bridge is active and a green-highlighted DOM element is under gaze,
+                # click that exact DOM element directly so slight gaze jitter never misses the button.
+                if (
+                    button == ecodes.BTN_LEFT
+                    and not is_double
+                    and self.firefox_bridge is not None
+                    and self.firefox_bridge.is_connected
+                    and (
+                        self.gaze_vlm_clicker is None
+                        or self.gaze_vlm_clicker._is_firefox_active()
+                    )
+                ):
+                    mon_x, mon_y, mon_w, mon_h = (
+                        self.gaze_vlm_clicker._monitor_rect(gx, gy)
+                        if self.gaze_vlm_clicker is not None
+                        else (0, 0, 0, 0)
+                    )
+                    cands = self.firefox_bridge.get_dom_candidates(gx, gy, mon_x, mon_y, mon_w, mon_h)
+                    if cands:
+                        best = min(cands, key=lambda c: float(getattr(c, "gaze_dist_px", 9999.0)))
+                        if float(getattr(best, "gaze_dist_px", 9999.0)) <= 165.0:
+                            cx, cy = int(best.center_x), int(best.center_y)
+                            if self.on_before_click is not None:
+                                self.on_before_click(cx, cy)
+                            self.pointer.move_absolute(cx, cy)
+                            if self.firefox_bridge.click_candidate(best.dom_id, action="click"):
+                                return DispatchResult(
+                                    "deterministic",
+                                    raw,
+                                    f"click_dom ({best.label or best.tag}) at ({cx}, {cy})",
+                                )
+                if self.on_before_click is not None:
+                    self.on_before_click(tx, ty)
+                self.pointer.move_absolute(tx, ty)
+                if not isinstance(self.pointer, DryRunPointerBackend):
+                    time.sleep(0.025)
+                where = f"at gaze ({tx}, {ty})"
+            if is_double:
+                self.pointer.double_click(button)
+            else:
+                self.pointer.click(button)
+            return DispatchResult("deterministic", raw, f"{action_name} {where}")
 
         if norm in self._media_map:
             if self.gaze_vlm_clicker is not None:
@@ -563,7 +649,7 @@ class VoiceCommandRouter:
             self.pointer.key_combo(fallback_key)
             return DispatchResult("deterministic", raw, f"media_key:{dom_action}")
 
-        if norm not in ("switch tab", "switch window", "switch app", "cycle window", "next window", "previous window", "prev window", "last window"):
+        if not norm.endswith("window") and norm not in ("switch tab", "switch app"):
             self._window_cycle_step = 0
 
         # Explicit manual window-origin sync ("sync window" / "align window") for floating Wayland Firefox
@@ -740,7 +826,13 @@ class VoiceCommandRouter:
                 self.browser_callback(payload)
             return DispatchResult("browser", raw, instruction, payload=payload)
 
-        # 5. Unprefixed fallback
+        # 5. LLM intelligent intent router fallback (before giving up as unmatched)
+        if not _from_llm and self.llm_agent is not None:
+            llm_res = self._dispatch_via_llm(raw)
+            if llm_res is not None:
+                return llm_res
+
+        # 6. Unprefixed dictation fallback
         if self.dictate_unprefixed:
             self.pointer.type_text(raw + " ")
             return DispatchResult("type_fallback", raw, f"Dictated {len(raw)} chars")
@@ -750,3 +842,75 @@ class VoiceCommandRouter:
             raw,
             "No prefix matched (say 'Type ...', 'Terminal ...', 'Browser ...', or a command).",
         )
+
+    def _dispatch_via_llm(self, raw: str) -> DispatchResult | None:
+        """Use the configured LLM backend to interpret natural-language voice intent."""
+        assert self.llm_agent is not None
+        active_app = ""
+        if self.gaze_vlm_clicker is not None and self.gaze_vlm_clicker.desktop_atspi is not None:
+            try:
+                app_name, _ = self.gaze_vlm_clicker.desktop_atspi.get_active_window_info()
+                active_app = str(app_name or "")
+            except Exception:
+                pass
+        try:
+            plan = self.llm_agent.route_voice_intent(raw, active_app=active_app)
+        except Exception as exc:
+            logger.debug("LLM intent routing failed (%s); falling back.", exc)
+            return None
+
+        intent = str(plan.get("intent") or "").strip().lower()
+        target = str(plan.get("target") or "").strip()
+        text = str(plan.get("text") or "").strip()
+
+        if not intent or intent == "ignore":
+            return None
+        if intent == "click_target" and target:
+            btn = str(plan.get("button") or "left").lower()
+            prefix = "right click" if btn == "right" else "double click" if btn == "double" else "click"
+            return self._dispatch_single(f"{prefix} {target}", _from_llm=True)
+        if intent == "click_here":
+            btn = str(plan.get("button") or "left").lower()
+            phrase = "right click" if btn == "right" else "double click" if btn == "double" else "click"
+            return self._dispatch_single(phrase, _from_llm=True)
+        if intent == "switch_tab" and target:
+            return self._dispatch_single(f"go to tab {target}", _from_llm=True)
+        if intent == "focus_app" and target:
+            return self._dispatch_single(f"focus {target}", _from_llm=True)
+        if intent in ("next_window", "prev_window", "close_window", "minimize_window", "maximize_window"):
+            phrase_map = {
+                "next_window": "next window",
+                "prev_window": "previous window",
+                "close_window": "close window",
+                "minimize_window": "minimize window",
+                "maximize_window": "maximize window",
+            }
+            return self._dispatch_single(phrase_map[intent], _from_llm=True)
+        if intent == "recenter":
+            return self._dispatch_single("recenter gaze", _from_llm=True)
+        if intent == "scroll":
+            direction = str(plan.get("direction") or "down").lower()
+            amount = str(plan.get("amount") or "normal").lower()
+            mod = " a little" if amount == "small" else " a lot" if amount == "large" else ""
+            if direction in ("top", "bottom"):
+                return self._dispatch_single(f"scroll to {direction}", _from_llm=True)
+            return self._dispatch_single(f"scroll {direction}{mod}", _from_llm=True)
+        if intent == "type_into" and target and text:
+            return self._dispatch_single(f"type {text} in {target}", _from_llm=True)
+        if intent == "type_text" and text:
+            return self._dispatch_single(f"type {text}", _from_llm=True)
+        if intent == "key_press":
+            key = str(plan.get("key") or "").lower()
+            if key:
+                return self._dispatch_single(key, _from_llm=True)
+        if intent == "media":
+            action = str(plan.get("action") or "").lower().replace("_", " ")
+            if action:
+                return self._dispatch_single(action, _from_llm=True)
+        if intent == "terminal":
+            instr = str(plan.get("instruction") or target or text or raw).strip()
+            return self._dispatch_single(f"terminal {instr}", _from_llm=True)
+        if intent == "ask":
+            q = str(plan.get("question") or text or raw).strip()
+            return self._dispatch_single(f"ask {q}", _from_llm=True)
+        return None

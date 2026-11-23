@@ -67,6 +67,10 @@ _HUD_STAGES = {
         "Follow the dot while gently turning and tilting your head.",
         "Keep your eyes on the dot while gently turning and tilting your head.",
     ),
+    "fitting": _CalibrationStageText(
+        "Fitting gaze model…",
+        "Computing your 3-D gaze model. This only takes a moment.",
+    ),
     "refine": _CalibrationStageText(
         "Interactive check & refine",
         "Left-drag while looking to teach · Right-click to spot-fix.",
@@ -150,9 +154,9 @@ class CalibrationOverlayWindow(QWidget):
         samples_per_point: int = 22,
         settle_sec: float = 2.0,
         pose_settle_sec: float = 3.8,
-        sweep1_duration_sec: float = 30.0,
-        sweep2_duration_sec: float = 28.0,
-        sweep_lead_in_sec: float = 2.3,
+        sweep1_duration_sec: float = 52.0,
+        sweep2_duration_sec: float = 44.0,
+        sweep_lead_in_sec: float = 2.5,
         speaker: Any = None,
         on_finished: Callable[[Any], None] | None = None,
         on_cancelled: Callable[[], None] | None = None,
@@ -250,6 +254,7 @@ class CalibrationOverlayWindow(QWidget):
         self._pending_fit: Future[Any] | None = None
         self._pending_fit_action = ""
         self._pending_fit_msg = ""
+        self._save_when_fit_done = False
 
         # Current dot display
         self._dot_local_x = target_mon.width * 0.5
@@ -301,6 +306,9 @@ class CalibrationOverlayWindow(QWidget):
         self.quick_btn = QPushButton("Quick refine")
         self.quick_btn.clicked.connect(self._on_quick_refine)
 
+        self.clear_data_btn = QPushButton("Clear saved data")
+        self.clear_data_btn.clicked.connect(self._on_clear_saved_data)
+
         self.spot_btn = QPushButton("Spot-fix")
         self.spot_btn.clicked.connect(self._trigger_spot_fix)
 
@@ -323,6 +331,7 @@ class CalibrationOverlayWindow(QWidget):
         for btn in (
             self.primary_btn,
             self.quick_btn,
+            self.clear_data_btn,
             self.spot_btn,
             self.undo_btn,
             self.redo_btn,
@@ -417,6 +426,8 @@ class CalibrationOverlayWindow(QWidget):
         self.primary_btn.setVisible(p in ("intro", "refine"))
         self.primary_btn.setText("Save" if p == "refine" else "Start")
         self.quick_btn.setVisible(p == "intro" and has_replay)
+        has_saved_files = has_replay or self.dataset_path.exists() or self.calib_path.exists()
+        self.clear_data_btn.setVisible(p == "intro" and has_saved_files)
         self.spot_btn.setVisible(p == "refine")
         self.undo_btn.setVisible(p == "refine")
         self.undo_btn.setEnabled(bool(self._refinement_batches))
@@ -451,7 +462,9 @@ class CalibrationOverlayWindow(QWidget):
     def _begin_anchors(self) -> None:
         from keyless.vision.calibrator import ANCHOR_CALIBRATION_POINTS
 
-        self._reset_session_buffers(keep_replay=True)
+        # A fresh full calibration must start clean so stale/bumped/mono sessions never poison it.
+        # (Quick Refine still passes keep_replay=True.)
+        self._reset_session_buffers(keep_replay=False)
         self._calib_points = list(ANCHOR_CALIBRATION_POINTS)
         self._pt_idx = 0
         self._start_current_anchor()
@@ -493,6 +506,9 @@ class CalibrationOverlayWindow(QWidget):
             mon_x=self.target_mon.x,
             mon_y=self.target_mon.y,
         )
+        self._sweep_feats = []
+        self._sweep_times = []
+        self._sweep_cursor_hist = []
         grp_id = 50 if idx == 1 else 51
         self._all_features.extend(feats)
         self._all_targets.extend(targs)
@@ -501,6 +517,7 @@ class CalibrationOverlayWindow(QWidget):
         if idx == 1:
             self._begin_pursuit(2)
         else:
+            self._set_phase("fitting")
             self._begin_fitting_model(action="enter_refine", message="Fitting 3-D gaze model…")
 
     def _gather_all_data(self) -> tuple[list[np.ndarray], list[tuple[float, float]], list[int], list[float]]:
@@ -522,6 +539,8 @@ class CalibrationOverlayWindow(QWidget):
         if not feats:
             self._set_phase("intro")
             return
+        if self._pending_fit is not None and not self._pending_fit.done():
+            self._pending_fit.cancel()
         self._pending_fit_action = action
         self._pending_fit_msg = message
         self.title_lbl.setText("Fitting gaze model…")
@@ -551,7 +570,21 @@ class CalibrationOverlayWindow(QWidget):
     def _on_quick_refine(self) -> None:
         if self._phase == "intro" and self.saved_replay is not None and self._cam1_ok and self._cam2_ok:
             self._reset_session_buffers(keep_replay=True)
+            self._set_phase("fitting")
             self._begin_fitting_model(action="enter_refine", message="Loading previous calibration for refinement…")
+
+    def _on_clear_saved_data(self) -> None:
+        self.saved_replay = None
+        self._model = None
+        self._reset_session_buffers(keep_replay=False)
+        for path in (self.dataset_path, self.calib_path):
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+        self._sync_hud_buttons()
+        self.sub_lbl.setText("Cleared all previous calibration data. Press Start for a fresh calibration.")
 
     def _trigger_spot_fix(self) -> None:
         if self._phase != "refine":
@@ -579,8 +612,16 @@ class CalibrationOverlayWindow(QWidget):
 
     def _save_and_finish(self) -> None:
         if self._pending_fit is not None:
+            if not self._pending_fit.done():
+                # Never block the Qt GUI main thread waiting for a background fit.
+                self._save_when_fit_done = True
+                self.primary_btn.setEnabled(False)
+                self.primary_btn.setText("Saving…")
+                self.sub_lbl.setText("Finishing model fit before saving…")
+                return
             self._model = self._pending_fit.result()
             self._pending_fit = None
+        self._save_when_fit_done = False
         if self._model is None:
             return
         from keyless.vision.calibrator import _save_replay_dataset
@@ -725,20 +766,34 @@ class CalibrationOverlayWindow(QWidget):
 
     def _tick(self) -> None:
         if self._pending_fit is not None and self._pending_fit.done():
-            self._model = self._pending_fit.result()
+            fut = self._pending_fit
             self._pending_fit = None
-            rmse_x = getattr(self._model, "rmse_x", 0.0)
-            rmse_y = getattr(self._model, "rmse_y", 0.0)
-            samples = getattr(self._model, "n_train_samples", 0)
-            self._status_msg = f"Updated · {rmse_x:.0f} × {rmse_y:.0f} px error · {samples} samples"
-            self._status_until = time.monotonic() + 4.0
-            if self._pending_fit_action == "enter_refine":
-                self._set_phase("refine")
-            self.title_lbl.setText(
-                f"Interactive refine · {rmse_x:.0f} × {rmse_y:.0f} px ({samples} samples)"
-            )
-            self.sub_lbl.setText(self._status_msg)
-            self._sync_hud_buttons()
+            try:
+                self._model = fut.result()
+            except Exception as exc:
+                self._save_when_fit_done = False
+                self._status_msg = f"Model fit failed: {exc}"
+                self._status_until = time.monotonic() + 5.0
+                if self._phase == "fitting":
+                    self._set_phase("intro")
+                self.sub_lbl.setText(self._status_msg)
+                self._sync_hud_buttons()
+            else:
+                rmse_x = getattr(self._model, "rmse_x", 0.0)
+                rmse_y = getattr(self._model, "rmse_y", 0.0)
+                samples = getattr(self._model, "n_train_samples", 0)
+                self._status_msg = f"Updated · {rmse_x:.0f} × {rmse_y:.0f} px error · {samples} samples"
+                self._status_until = time.monotonic() + 4.0
+                if self._pending_fit_action == "enter_refine":
+                    self._set_phase("refine")
+                self.title_lbl.setText(
+                    f"Interactive refine · {rmse_x:.0f} × {rmse_y:.0f} px ({samples} samples)"
+                )
+                self.sub_lbl.setText(self._status_msg)
+                self._sync_hud_buttons()
+                if self._save_when_fit_done:
+                    self._save_and_finish()
+                    return
 
         pair = self.stereo.read_pair() if self.stereo is not None else None
         now = time.monotonic()
@@ -1031,8 +1086,8 @@ def run_translucent_calibration_overlay(
     samples_per_point: int = 22,
     settle_sec: float = 2.0,
     pose_settle_sec: float = 3.8,
-    sweep1_duration_sec: float = 30.0,
-    sweep2_duration_sec: float = 28.0,
+    sweep1_duration_sec: float = 52.0,
+    sweep2_duration_sec: float = 44.0,
 ) -> Any:
     """Run the translucent Qt calibration overlay on the target monitor."""
     # Ensure XWayland positioning works when running interactively under Wayland.

@@ -211,15 +211,16 @@ def test_router_and_gimbal_warp_hold_and_harvest_persistence(tmp_path) -> None:
             on_before_click=lambda tx, ty: ctrl.warp_and_hold(tx, ty, hold_sec=0.2),
         )
 
-        # Bare "click" is ignored so truncated phrases never blind-click; "click here" clicks in place
+        # Bare "click" and "click here" click at the live gaze point
         r_bare = router.dispatch("click")
-        assert r_bare.route == "ignored"
-        assert ptr.clicks == []
+        assert r_bare.route == "deterministic"
+        assert ptr.last_abs == (950, 530)
+        assert ptr.clicks == [ecodes.BTN_LEFT]
 
         r_det = router.dispatch("click here")
         assert r_det.route == "deterministic"
-        assert ptr.last_abs is None
-        assert ptr.clicks == [ecodes.BTN_LEFT]
+        assert ptr.last_abs == (950, 530)
+        assert ptr.clicks == [ecodes.BTN_LEFT, ecodes.BTN_LEFT]
 
         # Explicit "Type: ..." stays literal typing
         r_type = router.dispatch("Type: Hello in world")
@@ -791,52 +792,30 @@ def test_os_window_and_browser_tab_switching() -> None:
     tb = _FakeTabBridge()
     router = VoiceCommandRouter(pointer=ptr, firefox_bridge=tb)  # type: ignore[arg-type]
 
-    # Full MRU ring rotation via Shift+Alt+Escape (visits every open window without A<->B ping-pong)
+    # Individual window stepping via Alt+Tab (hold Alt, tap Tab N times) so tiled/paired windows
+    # are never collapsed into one and repeated calls step through every window without ping-pong.
     assert router.dispatch("next window").detail == "os_window_next"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
+    assert ptr.hold_taps[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB, 1)
 
     assert router.dispatch("the next window").detail == "os_window_next"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
+    assert ptr.hold_taps[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB, 2)
 
     assert router.dispatch("go to next window").detail == "os_window_next"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
+    assert ptr.hold_taps[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB, 3)
 
-    for variant in ("a next window", "uh next window", "move to next window", "text window", "net window"):
+    for variant in ("a next window", "uh next window", "mm next window", "move to next window", "text window", "net window"):
         assert router.dispatch(variant).detail == "os_window_next"
-        assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
-
-    assert router.dispatch("next window").detail == "os_window_next"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
-
-    assert router.dispatch("the next window").detail == "os_window_next"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
-
-    assert router.dispatch("go to next window").detail == "os_window_next"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
-
-    for variant in ("a next window", "uh next window", "move to next window", "text window", "net window"):
-        assert router.dispatch(variant).detail == "os_window_next"
-        assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
+        assert ptr.hold_taps[-1][0:2] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB)
 
     assert router.dispatch("switch tab").detail == "os_window_next"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
+    assert ptr.hold_taps[-1][0:2] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB)
 
     assert router.dispatch("previous window").detail == "os_window_prev"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_ESC)
+    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_TAB)
 
     router.dispatch("scroll down")
     assert router.dispatch("next window").detail == "os_window_next"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
-
-    assert router.dispatch("the next window").detail == "os_window_next"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
-
-    assert router.dispatch("go to next window").detail == "os_window_next"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
-
-    for variant in ("a next window", "uh next window", "move to next window", "text window", "net window"):
-        assert router.dispatch(variant).detail == "os_window_next"
-        assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_ESC)
+    assert ptr.hold_taps[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB, 1)
 
     assert router.dispatch("alt tab").detail == "os_alt_tab"
     assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB)

@@ -48,7 +48,7 @@ class SharedGazeWriter:
         try:
             self._shm = shared_memory.SharedMemory(name=shm_name, create=True, size=SHM_SIZE)
         except FileExistsError:
-            self._shm = shared_memory.SharedMemory(name=shm_name, create=False)
+            self._shm = shared_memory.SharedMemory(name=shm_name, create=False, track=False)
         self._buf = self._shm.buf
         self._buf[:SHM_SIZE] = b"\x00" * SHM_SIZE
 
@@ -99,7 +99,7 @@ class SharedGazeReader:
 
     def __init__(self, shm_name: str = SHM_NAME) -> None:
         self.shm_name = shm_name
-        self._shm = shared_memory.SharedMemory(name=shm_name, create=False)
+        self._shm = shared_memory.SharedMemory(name=shm_name, create=False, track=False)
         self._buf = self._shm.buf
 
     def read(self, max_retries: int = 8) -> GazeState | None:

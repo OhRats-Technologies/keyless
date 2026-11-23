@@ -159,6 +159,39 @@ class LLMAgent:
         raw = _strip_code_fences(self.complete(system, user, json_mode=True))
         return dict(json.loads(raw))
 
+    def route_voice_intent(
+        self,
+        transcript: str,
+        *,
+        active_app: str = "",
+    ) -> dict[str, Any]:
+        """Classify a natural-language voice utterance into a structured desktop intent JSON."""
+        system = (
+            "You are the intent router for Keyless, a Linux hands-free gaze+voice controller. "
+            "Given a spoken utterance (which may contain ASR typos or hyphens like 're-center' or 'geeless' for 'keyless'), "
+            "return ONLY valid JSON with key `intent` and any relevant fields.\n"
+            "Allowed intents:\n"
+            "- `click_target`: {\"intent\": \"click_target\", \"target\": \"<short UI element label>\", \"button\": \"left|right|double\"}\n"
+            "- `click_here`: {\"intent\": \"click_here\", \"button\": \"left|right|double\"}\n"
+            "- `switch_tab`: {\"intent\": \"switch_tab\", \"target\": \"<tab name or number>\"}\n"
+            "- `focus_app`: {\"intent\": \"focus_app\", \"target\": \"<app name>\"}\n"
+            "- `next_window` / `prev_window` / `close_window` / `minimize_window` / `maximize_window`\n"
+            "- `recenter`: recenter eye gaze calibration\n"
+            "- `scroll`: {\"intent\": \"scroll\", \"direction\": \"down|up|left|right|top|bottom\", \"amount\": \"small|normal|large\"}\n"
+            "- `type_text`: {\"intent\": \"type_text\", \"text\": \"<literal text>\"}\n"
+            "- `type_into`: {\"intent\": \"type_into\", \"target\": \"<field name>\", \"text\": \"<literal text>\"}\n"
+            "- `key_press`: {\"intent\": \"key_press\", \"key\": \"enter|escape|tab|space|backspace|copy|paste|undo|redo\"}\n"
+            "- `media`: {\"intent\": \"media\", \"action\": \"play|pause|mute|unmute|fullscreen|exit_fullscreen\"}\n"
+            "- `terminal`: {\"intent\": \"terminal\", \"instruction\": \"<shell request>\"}\n"
+            "- `ask`: {\"intent\": \"ask\", \"question\": \"<question>\"}\n"
+            "- `ignore`: {\"intent\": \"ignore\"} ONLY if clearly casual conversation not aimed at the computer.\n"
+            "Prefer `click_target` when the user wants to press/click a named button, link, or tab."
+        )
+        ctx = f"Active app: {active_app}\n" if active_app else ""
+        user = f"{ctx}Spoken utterance: {transcript}"
+        raw = _strip_code_fences(self.complete(system, user, json_mode=True))
+        return dict(json.loads(raw))
+
     @property
     def api_key_configured(self) -> bool:
         if isinstance(self.provider, OpenAICompatProvider):

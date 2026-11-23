@@ -152,3 +152,69 @@ def test_translucent_overlay_calibration_end_to_end(qapp, tmp_path, monkeypatch)
         assert calib_path.exists()
     finally:
         win.close()
+
+
+def test_pursuit2_transitions_to_fitting_and_submits_once(qapp, tmp_path, monkeypatch) -> None:
+    paths = default_paths(env={HOME_ENV: str(tmp_path)}, platform_name="linux")
+    paths.ensure_directories()
+    mon = MonitorInfo(
+        connector="DP-1",
+        x=0,
+        y=0,
+        width=1280,
+        height=720,
+        physical_width=1280,
+        physical_height=720,
+        scale=1.0,
+        is_primary=True,
+        width_mm=530,
+        height_mm=300,
+    )
+    layout = DisplayLayout(monitors=[mon], total_width=1280, total_height=720)
+    fit_calls: list[int] = []
+
+    class _SlowModel:
+        rmse_x = 12.0
+        rmse_y = 14.0
+        n_train_samples = 40
+
+        def predict(self, feat: np.ndarray) -> tuple[float, float]:
+            return (640.0, 360.0)
+
+    def _slow_fit(X, *args, **kwargs):
+        fit_calls.append(len(X))
+        time.sleep(0.15)
+        return _SlowModel()
+
+    monkeypatch.setattr("keyless.vision.calibrator._fit_gaze_model", _slow_fit)
+
+    win = CalibrationOverlayWindow(
+        stereo=_FakeStereo(),
+        config=AppConfig(gaze_model="geo", tts_onboarding_help=False),
+        target_mon=mon,
+        layout=layout,
+        calib_path=paths.calibration_path,
+        samples_per_point=4,
+        settle_sec=0.01,
+        pose_settle_sec=0.01,
+        sweep1_duration_sec=0.05,
+        sweep2_duration_sec=0.05,
+        sweep_lead_in_sec=0.02,
+    )
+    try:
+        win._tick()
+        win._on_primary_clicked()
+        saw_fitting = False
+        deadline = time.monotonic() + 5.0
+        while win._phase != "refine" and time.monotonic() < deadline:
+            win._tick()
+            if win._phase == "fitting":
+                saw_fitting = True
+            qapp.processEvents()
+            time.sleep(0.01)
+
+        assert saw_fitting is True
+        assert win._phase == "refine"
+        assert len(fit_calls) == 1
+    finally:
+        win.close()

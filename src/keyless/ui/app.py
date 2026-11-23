@@ -160,6 +160,11 @@ class HomePanel(QWidget):
         self.calibrate_button = QPushButton("Calibrate")
         self.calibrate_button.clicked.connect(window.launch_calibration)
         actions.addWidget(self.calibrate_button)
+
+        self.commands_button = QPushButton("Commands")
+        self.commands_button.setObjectName("Ghost")
+        self.commands_button.clicked.connect(window.open_commands_help)
+        actions.addWidget(self.commands_button)
         actions.addStretch(1)
         left.addLayout(actions)
 
@@ -475,6 +480,7 @@ class MainWindow(QMainWindow):
         self.tray = None
         self.overlay = None
         self._flow_window: OnboardingWindow | None = None
+        self._commands_dialog = None
         self._inline_setup: OnboardingWidget | None = None
         self._calib_proc: subprocess.Popen[bytes] | None = None
         self._update_worker: _UpdateWorker | None = None
@@ -577,6 +583,11 @@ class MainWindow(QMainWindow):
         self._calib_timer.setInterval(500)
         self._calib_timer.timeout.connect(self._poll_calibration)
 
+        self._restart_timer = QTimer(self)
+        self._restart_timer.setSingleShot(True)
+        self._restart_timer.setInterval(400)
+        self._restart_timer.timeout.connect(self._restart_listening_daemon)
+
         # Background auto-update check (t3code cadence: 12s after start, then every 4 hours)
         self._update_poll_timer = QTimer(self)
         self._update_poll_timer.setInterval(4 * 60 * 60 * 1000)
@@ -595,9 +606,24 @@ class MainWindow(QMainWindow):
         self.config = AppConfig.load(self.paths.settings_path)
         self.home.refresh()
         if self.controller.status.state is SessionState.LISTENING:
-            self.controller.pause()
-            self.controller.start()
-            self.home.poll_state()
+            self._restart_timer.start()
+
+    def _restart_listening_daemon(self) -> None:
+        if self._shutdown or self.controller.status.state is not SessionState.LISTENING:
+            return
+        self.controller.pause()
+        self.controller.start()
+        self.home.poll_state()
+
+    def open_commands_help(self):
+        from keyless.ui.commands_help import CommandsHelpDialog
+
+        if self._commands_dialog is None:
+            self._commands_dialog = CommandsHelpDialog(self)
+        self._commands_dialog.show()
+        self._commands_dialog.raise_()
+        self._commands_dialog.activateWindow()
+        return self._commands_dialog
 
     def check_for_updates(self, *, force: bool = True) -> None:
         if self._shutdown or (self._update_worker is not None and self._update_worker.isRunning()):
@@ -718,6 +744,8 @@ class MainWindow(QMainWindow):
         return widget
 
     def _on_inline_setup_complete(self) -> None:
+        if self._inline_setup is not None:
+            self._inline_setup.close_resources()
         self.config = AppConfig.load(self.paths.settings_path)
         self.root_stack.setCurrentIndex(0)
         self.show_page("Home")
@@ -835,6 +863,7 @@ class MainWindow(QMainWindow):
         self._shutdown = True
         self._status_timer.stop()
         self._calib_timer.stop()
+        self._restart_timer.stop()
         self._update_poll_timer.stop()
         self.stop_calibration()
         if self._update_worker is not None and self._update_worker.isRunning():

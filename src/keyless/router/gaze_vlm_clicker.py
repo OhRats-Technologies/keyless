@@ -163,6 +163,7 @@ class GazeVLMClicker:
         keyword_threshold: float = 82.0,
         ollama_client: Any | None = None,
         vlm_provider: Provider | None = None,
+        enable_vlm: bool = True,
         on_harvest: Callable[[np.ndarray, tuple[float, float]], None] | None = None,
         firefox_bridge: FirefoxDOMBridge | None = None,
         desktop_atspi: LinuxDesktopAccessibilityBridge | None = None,
@@ -177,6 +178,7 @@ class GazeVLMClicker:
         self.keyword_threshold = float(keyword_threshold)
         self._ollama = ollama_client if ollama_client is not None else ollama
         self._vlm_provider = vlm_provider
+        self.enable_vlm = bool(enable_vlm)
         self._on_harvest = on_harvest
         self.firefox_bridge = firefox_bridge
         self.desktop_atspi = desktop_atspi
@@ -201,7 +203,7 @@ class GazeVLMClicker:
                     messages=[{"role": "user", "content": "ready"}],
                     keep_alive=-1,
                     think=False,
-                    options={"num_predict": 1},
+                    options={"num_predict": 1, "draft_num_predict": 0},
                 )
             return True
         except Exception as exc:
@@ -312,7 +314,9 @@ class GazeVLMClicker:
             clean_lbl_ns = clean_lbl.replace(" ", "")
 
             exact_sim = fuzz.ratio(clean_q, clean_lbl)
-            len_ratio = min(1.0, (len(clean_q) + 2) / max(1, len(clean_lbl) + 2))
+            short_len = min(len(clean_q), len(clean_lbl))
+            long_len = max(1, max(len(clean_q), len(clean_lbl)))
+            len_ratio = min(1.0, (short_len + 1) / (long_len + 1))
 
             if all(qt in lbl_tokens for qt in q_tokens):
                 # Whole-word match: exact short button beats multi-word sentence
@@ -323,8 +327,12 @@ class GazeVLMClicker:
                 ratio_ns = len(clean_q_ns) / max(1, len(clean_lbl_ns))
                 sim = 86.0 if ratio_ns >= 0.35 else 74.0
             else:
-                token_sim = fuzz.token_set_ratio(clean_q, clean_lbl) * (0.65 + 0.35 * len_ratio)
-                partial_sim = fuzz.partial_ratio(clean_q, raw_lbl.lower()) * (0.45 + 0.55 * len_ratio)
+                token_sim = fuzz.token_set_ratio(clean_q, clean_lbl) * (0.55 + 0.45 * len_ratio)
+                partial_sim = (
+                    fuzz.partial_ratio(clean_q, raw_lbl.lower()) * (0.40 + 0.60 * len_ratio)
+                    if len(clean_lbl) >= 3 or len(clean_q) <= 3
+                    else 0.0
+                )
                 sim = max(exact_sim, token_sim, partial_sim)
 
             if exact_sim >= 88.0:
@@ -355,7 +363,7 @@ class GazeVLMClicker:
         app_id: str = "",
     ) -> tuple[int, int] | None:
         """Query local Ollama gemma4:e4b with the Set-of-Marks crop and box directory."""
-        if not snapshot.boxes or not snapshot.som_png_bytes:
+        if not self.enable_vlm or not snapshot.boxes or not snapshot.som_png_bytes:
             return None
 
         box_lines: list[str] = []
@@ -404,6 +412,7 @@ class GazeVLMClicker:
                         "temperature": 0.0,
                         "num_ctx": 4096,
                         "num_predict": 48,
+                        "draft_num_predict": 0,
                     },
                 )
                 raw_content = (resp.message.content or "").strip()

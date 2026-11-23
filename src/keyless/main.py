@@ -802,6 +802,27 @@ def _model_asset(which: str):
         raise typer.BadParameter(str(exc)) from exc
 
 
+@app.command("commands")
+def commands_cmd(
+    search: str = typer.Option("", "--search", "-s", help="Filter voice commands by keyword"),
+) -> None:
+    """List all built-in voice commands grouped by category."""
+    from keyless.ui.commands_help import filter_command_categories
+
+    categories = filter_command_categories(search)
+    if not categories:
+        console.print(f"[yellow]No voice commands matching {search!r}.[/yellow]")
+        return
+    for cat in categories:
+        table = Table(title=f"{cat.title} — {cat.summary}")
+        table.add_column("Say", style="bold cyan", width=38)
+        table.add_column("What it does")
+        table.add_column("Examples", style="dim")
+        for cmd in cat.commands:
+            table.add_row(cmd.phrase, cmd.description, cmd.example)
+        console.print(table)
+
+
 @app.command("update")
 def update_cmd(
     check: bool = typer.Option(False, "--check", help="Only check for a newer release"),

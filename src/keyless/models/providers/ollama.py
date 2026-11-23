@@ -98,6 +98,8 @@ class OllamaProvider(BaseProvider):
         payload: dict[str, Any] = {
             "model": self.model,
             "stream": False,
+            "think": False,
+            "options": {"draft_num_predict": 0},
             "messages": [
                 {"role": "system", "content": system},
                 message,
@@ -123,7 +125,14 @@ class OllamaProvider(BaseProvider):
         with self._client(timeout=30.0) as client:
             client.post(
                 "/api/generate",
-                json={"model": self.model, "prompt": "", "stream": False, "keep_alive": "10m"},
+                json={
+                    "model": self.model,
+                    "prompt": "",
+                    "stream": False,
+                    "think": False,
+                    "keep_alive": "10m",
+                    "options": {"draft_num_predict": 0},
+                },
             )
 
     def pull(
