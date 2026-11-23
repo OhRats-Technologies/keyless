@@ -168,7 +168,7 @@ class LLMAgent:
         """Classify a natural-language voice utterance into a structured desktop intent JSON."""
         system = (
             "You are the intent router for Keyless, a Linux hands-free gaze+voice controller. "
-            "Given a spoken utterance (which may contain ASR typos or hyphens like 're-center' or 'geeless' for 'keyless'), "
+            "Given a spoken utterance (which may contain ASR typos like 'geeless' for 'keyless'), "
             "return ONLY valid JSON with key `intent` and any relevant fields.\n"
             "Allowed intents:\n"
             "- `click_target`: {\"intent\": \"click_target\", \"target\": \"<short UI element label>\", \"button\": \"left|right|double\"}\n"
@@ -176,8 +176,6 @@ class LLMAgent:
             "- `switch_tab`: {\"intent\": \"switch_tab\", \"target\": \"<tab name or number>\"}\n"
             "- `focus_app`: {\"intent\": \"focus_app\", \"target\": \"<app name>\"}\n"
             "- `next_window` / `prev_window` / `close_window` / `minimize_window` / `maximize_window`\n"
-            "- `recenter`: recenter eye gaze calibration\n"
-            "- `steer_to_mouse`: align the eye cursor to the current real mouse position (the user is looking at the mouse)\n"
             "- `scroll`: {\"intent\": \"scroll\", \"direction\": \"down|up|left|right|top|bottom\", \"amount\": \"small|normal|large\"}\n"
             "- `type_text`: {\"intent\": \"type_text\", \"text\": \"<literal text>\"}\n"
             "- `type_into`: {\"intent\": \"type_into\", \"target\": \"<field name>\", \"text\": \"<literal text>\"}\n"
