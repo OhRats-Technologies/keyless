@@ -213,6 +213,12 @@ def get_display_layout() -> DisplayLayout:
         # its own window (the overlay's xcb child, headless tests) must not make
         # the helper report an empty screen list.
         env = {key: value for key, value in os.environ.items() if key != "QT_QPA_PLATFORM"}
+        if not env.get("WAYLAND_DISPLAY"):
+            runtime_dir = Path(env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+            sockets = sorted(runtime_dir.glob("wayland-[0-9]*"))
+            sockets = [s for s in sockets if not s.name.endswith(".lock")]
+            if sockets:
+                env["WAYLAND_DISPLAY"] = sockets[0].name
         res = subprocess.run(
             ["kscreen-doctor", "-j"],
             capture_output=True,

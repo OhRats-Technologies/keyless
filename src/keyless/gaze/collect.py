@@ -66,8 +66,19 @@ def _git_commit() -> str:
 
 
 def _config_hash(settings_path: Path) -> str:
-    """Hash the effective :class:`AppConfig` so metrics can be attributed."""
-    return canonical_hash(asdict(AppConfig.load(settings_path)))
+    """Hash the effective :class:`AppConfig` so metrics can be attributed.
+
+    Falls back to hashing the raw file bytes if ``settings.json`` is corrupt
+    so instrumentation never crashes a recording session.
+    """
+    try:
+        return canonical_hash(asdict(AppConfig.load(settings_path)))
+    except Exception:
+        try:
+            raw = settings_path.read_bytes()
+            return hashlib.sha256(raw).hexdigest()
+        except OSError:
+            return canonical_hash({"corrupt_settings": True})
 
 
 def _redact(event: dict[str, Any]) -> dict[str, Any]:

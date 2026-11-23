@@ -751,6 +751,7 @@ def gaze_record(
     ),
 ) -> None:
     """Record live desktop clicks and screen candidates for Phase 1 recall eval."""
+    from keyless.config.paths import current_paths
     from keyless.gaze.collect import SessionCollector
     from keyless.gaze.recorder import (
         LinuxClickObserver,

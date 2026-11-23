@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 import hashlib
 import json
 import os
@@ -127,6 +128,77 @@ def check_control_no_ui_import(repo_root: Path = REPO_ROOT) -> CheckResult:
         detail="clean" if not bad else "; ".join(bad[:5]),
     )
 
+_BUILTIN_NAMES = set(dir(builtins)) | {
+    "__name__",
+    "__file__",
+    "__doc__",
+    "__package__",
+    "__loader__",
+    "__spec__",
+    "__annotations__",
+    "__builtins__",
+}
+
+
+def _collect_bound_names(nodes: list[ast.stmt]) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(ast.Module(body=nodes, type_ignores=[])):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name != "*":
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Param)):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+    return names
+
+
+def check_no_undefined_names(repo_root: Path = REPO_ROOT) -> CheckResult:
+    """Static AST check catching NameError bugs across src/keyless/**/*.py."""
+    t0 = time.monotonic()
+    issues: list[str] = []
+    src_dir = repo_root / "src" / "keyless"
+    if src_dir.exists():
+        for py_file in sorted(src_dir.rglob("*.py")):
+            tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+            if any(
+                isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names)
+                for n in ast.walk(tree)
+            ):
+                continue
+            module_bound = _collect_bound_names(tree.body) | _BUILTIN_NAMES
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    local_bound = _collect_bound_names(node.body)
+                    for arg in (
+                        node.args.posonlyargs
+                        + node.args.args
+                        + node.args.kwonlyargs
+                        + ([node.args.vararg] if node.args.vararg else [])
+                        + ([node.args.kwarg] if node.args.kwarg else [])
+                    ):
+                        local_bound.add(arg.arg)
+                    known = module_bound | local_bound
+                    for sub in ast.walk(node):
+                        if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                            if sub.id not in known:
+                                rel = py_file.relative_to(repo_root).as_posix()
+                                issues.append(f"{rel}:{sub.lineno} ({sub.id})")
+    return CheckResult(
+        name="no_undefined_names",
+        passed=len(issues) == 0,
+        duration_s=round(time.monotonic() - t0, 3),
+        detail="clean" if not issues else "; ".join(issues[:5]),
+    )
+
 
 def _run_subprocess_check(name: str, cmd: list[str], repo_root: Path) -> CheckResult:
     t0 = time.monotonic()
@@ -143,6 +215,7 @@ def run_eval(repo_root: Path = REPO_ROOT, *, include_ui: bool = True) -> dict[st
     checks: list[CheckResult] = [
         check_no_legacy_leakage(repo_root),
         check_control_no_ui_import(repo_root),
+        check_no_undefined_names(repo_root),
         _run_subprocess_check("compileall", [py, "-m", "compileall", "-q", "src"], repo_root),
         _run_subprocess_check(
             "pytest_core",

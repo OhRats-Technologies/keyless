@@ -131,6 +131,53 @@ class WaylandScreenCapturer:
         self._shell_area_denied = True
         return None
 
+    def _wayland_env(self) -> dict[str, str]:
+        env = {k: v for k, v in os.environ.items() if k != "QT_QPA_PLATFORM"}
+        if not env.get("WAYLAND_DISPLAY"):
+            runtime_dir = Path(env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+            sockets = [s for s in sorted(runtime_dir.glob("wayland-[0-9]*")) if not s.name.endswith(".lock")]
+            if sockets:
+                env["WAYLAND_DISPLAY"] = sockets[0].name
+        return env
+
+    def _try_kde_spectacle_full(self) -> np.ndarray | None:
+        """Capture full desktop non-interactively via KDE Spectacle on Plasma Wayland."""
+        import shutil
+        import tempfile
+
+        if shutil.which("spectacle") is None:
+            return None
+        fd, tmp_name = tempfile.mkstemp(prefix="kk_spectacle_", suffix=".png")
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        try:
+            res = subprocess.run(
+                ["spectacle", "-b", "-n", "-f", "-o", str(tmp_path)],
+                env=self._wayland_env(),
+                capture_output=True,
+                timeout=2.5,
+                check=False,
+            )
+            if res.returncode == 0 and tmp_path.exists() and tmp_path.stat().st_size > 0:
+                img = cv2.imread(str(tmp_path), cv2.IMREAD_COLOR)
+                if img is not None and img.size > 0:
+                    return img
+        except Exception as exc:
+            logger.debug("KDE spectacle capture failed: %s", exc)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return None
+
+    def capture_full_desktop(self) -> np.ndarray | None:
+        """Capture full desktop on Wayland (KDE Spectacle first, then XDG Portal)."""
+        img = self._try_kde_spectacle_full()
+        if img is not None:
+            return img
+        return self.capture_full_desktop_portal()
+
     def capture_full_desktop_portal(self) -> np.ndarray | None:
         """Capture full desktop via sanctioned `org.freedesktop.portal.Screenshot`."""
         conn = self._get_conn()
@@ -235,7 +282,7 @@ class WaylandScreenCapturer:
             if area_img is not None:
                 return area_img, None
 
-            full_img = self.capture_full_desktop_portal()
+            full_img = self.capture_full_desktop()
             if full_img is not None and full_img.size > 0:
                 crop = self._crop_from_full(
                     full_img, x, y, w, h, desktop_w=desktop_w, desktop_h=desktop_h

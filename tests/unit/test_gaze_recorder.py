@@ -143,3 +143,67 @@ def test_recorder_degrades_honestly_when_ax_and_screen_unavailable(paths: AppPat
     assert stats["sources"]["ax"] is False
     session = load_session(collector.session_dir)
     assert len(session.events) == 2
+
+
+def test_candidate_generator_accepts_bool_property_ax_bridge() -> None:
+    class _PropertyAXBridge:
+        @property
+        def available(self) -> bool:
+            return True
+
+        def scan_active_window(self) -> list[_FakeNode]:
+            return [_FakeNode("prop-1", "button", "Apply", 50, 50, 80, 30)]
+
+    gen = CandidateGenerator(ax_bridge=_PropertyAXBridge())
+    res = gen.generate(0, 1, "hash-prop", include_null=False)
+    assert res.sources["ax"] is True
+    assert len(res.candidates) == 1
+    assert res.candidates[0].id == "prop-1"
+
+
+def test_gaze_record_cli_smoke_runs_and_creates_session(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(HOME_ENV, str(tmp_path))
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["gaze", "record", "--duration", "0.05", "--no-ocr", "--session-id", "cli-rec-1"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "cli-rec-1" in res.output
+    session_dir = default_paths(env={HOME_ENV: str(tmp_path)}).data_dir / "sessions" / "cli-rec-1"
+    assert (session_dir / "meta.json").exists()
+
+
+def test_eval_candidates_regenerate_measures_latency_on_real_png(paths: AppPaths, monkeypatch) -> None:
+    nodes = [_FakeNode("btn-ok", "button", "OK", 20, 20, 30, 20)]
+    gen = CandidateGenerator(ax_bridge=_FakeAXBridge(nodes))
+    collector = SessionCollector(paths, session_id="rec-regen")
+    img = np.full((64, 64, 3), 240, dtype=np.uint8)
+    snap = ScreenSnapshot(display_id=0, app="Demo", window_id=5, image_bgr=img)
+    recorder = SessionRecorder(
+        collector, gen, screen_provider=lambda: snap, save_screenshots=True
+    )
+    assert recorder.record_click(20.0, 20.0)
+    recorder.close()
+
+    # Use a fast deterministic OCR stub so the test does not depend on model downloads
+    fake_gen = CandidateGenerator(ocr_fn=lambda im: [((5, 10, 30, 20), "OK", 0.99)])
+    monkeypatch.setattr("keyless.main._candidate_generator_for_eval", lambda: fake_gen)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["gaze", "eval-candidates", str(paths.data_dir / "sessions"), "--regenerate"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "Generator latency: p50" in res.output
+    assert "1 samples" in res.output
+
+
+def test_collector_survives_corrupt_settings_json(paths: AppPaths) -> None:
+    paths.settings_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.settings_path.write_text("{corrupt json", encoding="utf-8")
+    collector = SessionCollector(paths, session_id="rec-corrupt")
+    collector.close()
+    session = load_session(collector.session_dir)
+    assert len(session.meta["config_hash"]) == 64

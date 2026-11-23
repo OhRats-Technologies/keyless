@@ -140,7 +140,8 @@ class CandidateGenerator:
         if self._ax is None:
             return []
         try:
-            if not self._ax.available():
+            avail = self._ax.available() if callable(self._ax.available) else bool(self._ax.available)
+            if not avail:
                 return []
             nodes = self._ax.scan_active_window()
         except Exception:

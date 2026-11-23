@@ -354,27 +354,133 @@ def build_live_generator(
     )
 
 
+def _linux_desktop_env() -> dict[str, str]:
+    """Populate WAYLAND_DISPLAY / DISPLAY / XAUTHORITY from /run/user/<uid> if unset."""
+    import os
+    from pathlib import Path
+
+    env = dict(os.environ)
+    uid = os.getuid() if hasattr(os, "getuid") else 1000
+    runtime_dir = Path(env.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}")
+    if not env.get("WAYLAND_DISPLAY"):
+        sockets = [
+            s for s in sorted(runtime_dir.glob("wayland-[0-9]*")) if not s.name.endswith(".lock")
+        ]
+        if sockets:
+            env["WAYLAND_DISPLAY"] = sockets[0].name
+    if not env.get("DISPLAY"):
+        x11_sockets = sorted(Path("/tmp/.X11-unix").glob("X[0-9]*"))
+        if x11_sockets:
+            num = x11_sockets[0].name.lstrip("X")
+            env["DISPLAY"] = f":{num}"
+    if not env.get("XAUTHORITY"):
+        xauths = sorted(runtime_dir.glob("xauth_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if xauths:
+            env["XAUTHORITY"] = str(xauths[0])
+    return env
+
+
+def _kde_kwin_cursor_xy(env: dict[str, str]) -> tuple[float, float] | None:
+    """Query global cursor position on KDE Plasma Wayland via a transient KWin script."""
+    import os
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    qdbus = shutil.which("qdbus6") or shutil.which("qdbus")
+    if qdbus is None:
+        return None
+    marker = f"KEYLESS_CURSOR_{time.monotonic_ns()}:"
+    js = f'print("{marker}" + workspace.cursorPos.x + "," + workspace.cursorPos.y);\n'
+    fd, script_path = tempfile.mkstemp(prefix="kk_cursor_", suffix=".js")
+    os.close(fd)
+    plugin_name = f"kk_cursor_{os.getpid()}"
+    try:
+        Path(script_path).write_text(js, encoding="utf-8")
+        load_res = subprocess.run(
+            [
+                qdbus,
+                "org.kde.KWin",
+                "/Scripting",
+                "org.kde.kwin.Scripting.loadScript",
+                script_path,
+                plugin_name,
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=0.6,
+            check=False,
+        )
+        sid = load_res.stdout.strip()
+        if load_res.returncode != 0 or not sid.isdigit():
+            return None
+        subprocess.run(
+            [qdbus, "org.kde.KWin", f"/Scripting/Script{sid}", "org.kde.kwin.Script.run"],
+            env=env,
+            capture_output=True,
+            timeout=0.6,
+            check=False,
+        )
+        subprocess.run(
+            [qdbus, "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", plugin_name],
+            env=env,
+            capture_output=True,
+            timeout=0.6,
+            check=False,
+        )
+        journal = subprocess.run(
+            ["journalctl", "--user", "-u", "plasma-kwin_wayland.service", "-n", "12", "--no-pager"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=0.6,
+            check=False,
+        )
+        for line in reversed(journal.stdout.splitlines()):
+            if marker in line:
+                coords = line.split(marker, 1)[1].strip()
+                if "," in coords:
+                    xs, ys = coords.split(",", 1)
+                    return float(xs.strip()), float(ys.strip())
+    except Exception:
+        return None
+    finally:
+        try:
+            Path(script_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return None
+
+
 def build_live_screen_provider(*, capture_pixels: bool = False) -> Callable[[], ScreenSnapshot | None]:
     """Return a best-effort screen/active-window provider for the current host."""
-    from keyless.platform.router import current_host
+    from keyless.platform.router import current_host, get_display_layout
 
     host = current_host()
     if host == "linux":
         try:
+            from keyless.platform.linux.accessibility import LinuxDesktopAccessibilityBridge
             from keyless.platform.linux.screen import WaylandScreenCapturer
 
             capturer = WaylandScreenCapturer()
+            ax_bridge = LinuxDesktopAccessibilityBridge()
+            layout = get_display_layout()
 
             def _linux_snap() -> ScreenSnapshot:
                 ctx = None
                 try:
-                    ctx = capturer.get_active_window_context()
+                    ctx = capturer.get_active_window_context(
+                        layout.total_width,
+                        layout.total_height,
+                        desktop_atspi=ax_bridge,
+                    )
                 except Exception:
                     ctx = None
                 img = None
                 if capture_pixels:
                     try:
-                        img = capturer.capture_full_desktop_portal()
+                        img = capturer.capture_full_desktop()
                     except Exception:
                         img = None
                 app = ctx.app_id if ctx and ctx.app_id else "unknown"
@@ -414,29 +520,39 @@ def _best_effort_cursor_xy() -> tuple[float, float] | None:
     if pos is not None:
         return pos
     if current_host() == "linux":
-        # Try hyprctl / xdotool if present (read-only queries, never warp).
-        for cmd in (
-            ["hyprctl", "cursorpos"],
-            ["xdotool", "getmouselocation", "--shell"],
-        ):
-            try:
-                proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=0.5, check=False
-                )
-            except Exception:
-                continue
-            if proc.returncode != 0:
-                continue
-            out = proc.stdout.strip()
-            if cmd[0] == "hyprctl" and "," in out:
-                parts = [p.strip() for p in out.split(",", 1)]
-                try:
-                    return float(parts[0]), float(parts[1])
-                except ValueError:
-                    continue
-            if cmd[0] == "xdotool":
+        env = _linux_desktop_env()
+        # 1. Hyprland Wayland
+        try:
+            proc = subprocess.run(
+                ["hyprctl", "cursorpos"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=0.4,
+                check=False,
+            )
+            if proc.returncode == 0 and "," in proc.stdout:
+                parts = [p.strip() for p in proc.stdout.strip().split(",", 1)]
+                return float(parts[0]), float(parts[1])
+        except Exception:
+            pass
+        # 2. KDE Plasma Wayland (KWin scripting)
+        kwin_pos = _kde_kwin_cursor_xy(env)
+        if kwin_pos is not None:
+            return kwin_pos
+        # 3. X11 / XWayland fallback
+        try:
+            proc = subprocess.run(
+                ["xdotool", "getmouselocation", "--shell"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=0.4,
+                check=False,
+            )
+            if proc.returncode == 0:
                 vals: dict[str, float] = {}
-                for line in out.splitlines():
+                for line in proc.stdout.splitlines():
                     if "=" in line:
                         k, v = line.split("=", 1)
                         if k in ("X", "Y"):
@@ -446,6 +562,8 @@ def _best_effort_cursor_xy() -> tuple[float, float] | None:
                                 pass
                 if "X" in vals and "Y" in vals:
                     return vals["X"], vals["Y"]
+        except Exception:
+            pass
     return None
 
 

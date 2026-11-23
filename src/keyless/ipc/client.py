@@ -127,6 +127,15 @@ class ControlClient:
     def setup(self) -> dict[str, Any]:
         return self._request("GET", "/v1/setup")
 
+    def ui_state(self) -> dict[str, Any]:
+        return self._request("GET", "/v1/ui/state")
+
+    def ui_action(self, action: str, arg: Any = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"action": action}
+        if arg is not None:
+            payload["arg"] = arg
+        return self._request("POST", "/v1/ui/action", payload)
+
     def models(self) -> dict[str, Any]:
         return self._request("GET", "/v1/models")
 

@@ -98,3 +98,9 @@ def test_run_and_digest_aggregate_by_skills_hash(tmp_path: Path) -> None:
     assert summary["policies"][0]["pass_rate"] == 0.5
     loaded = json.loads(json_path.read_text(encoding="utf-8"))
     assert loaded["top_failures"][0][0] == "exit_2"
+
+
+def test_no_undefined_names_invariant_passes_on_current_tree() -> None:
+    mod = _load_dream_module()
+    res = mod.check_no_undefined_names()
+    assert res.passed is True, res.detail

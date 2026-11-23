@@ -135,3 +135,16 @@ def test_http_session_controller_handles_offline_plane(tmp_path: Path) -> None:
     status = session.status
     assert status.state is SessionState.ERROR
     assert "unreachable" in status.detail
+
+
+def test_client_ui_state_and_ui_action(control) -> None:
+    from keyless.ui.contract import build_ui_state
+
+    srv, _, _, client = control
+    srv.ui_contract_builder = build_ui_state
+    state = client.ui_state()
+    assert state["schema_version"] == 1
+    assert "screens" in state
+    res = client.ui_action("start")
+    assert res["ok"] is True
+    assert client.status().state == "listening"
