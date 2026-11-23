@@ -24,8 +24,8 @@ Endpoints (all JSON):
   GET  /v1/runtime    -> python executable + args for native-host launches
 
 Setup is engine-owned: the step order and persisted step come from
-``keyless.ui.onboarding.flow.OnboardingFlow`` — the same state machine the Qt
-shell uses — so every shell sees one canonical flow.
+``keyless.core.onboarding.OnboardingFlow`` — the same state machine every shell
+uses — so every shell sees one canonical flow.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from keyless.config.paths import AppPaths, current_paths
-from keyless.ui.onboarding.flow import STEPS, OnboardingFlow, OnboardingStep
+from keyless.core.onboarding import STEPS, OnboardingFlow, OnboardingStep
 
 
 @dataclass
@@ -83,8 +83,8 @@ class ControlServer:
     """Owns one DaemonController + HistoryStore behind a loopback HTTP server."""
 
     def __init__(self, paths: AppPaths | None = None) -> None:
-        from keyless.ui.history.db import HistoryStore
-        from keyless.ui.session import DaemonController
+        from keyless.core.history import HistoryStore
+        from keyless.core.lifecycle import DaemonController
 
         self.paths = paths or current_paths()
         self.controller = DaemonController(paths=self.paths)
