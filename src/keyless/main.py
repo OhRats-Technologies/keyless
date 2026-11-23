@@ -698,6 +698,58 @@ models_app = typer.Typer(
 )
 app.add_typer(models_app, name="models")
 
+gaze_app = typer.Typer(
+    name="gaze",
+    help="Gaze v2 data flywheel: collect, replay, and evaluate sessions.",
+    no_args_is_help=True,
+)
+app.add_typer(gaze_app, name="gaze")
+
+# (metric key, display label): the labels are the ones the GREENFIELD §9 table uses.
+_GAZE_METRIC_ROWS = (
+    ("candidate_recall@3", "candidate_recall@3"),
+    ("top1", "top1"),
+    ("top3", "top3"),
+    ("hit@25", "hit@25"),
+    ("hit@50", "hit@50"),
+    ("hit@100", "hit@100"),
+    ("misclicks_per_hour", "misclicks/h"),
+    ("abstention", "abstention"),
+    ("actions_per_correction", "actions/correction"),
+    ("baseline_top1", "baseline_top1"),
+)
+
+
+@gaze_app.command("replay")
+def gaze_replay(
+    session_dir: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=False,
+        readable=True,
+        help="Session directory written by keyless.gaze.collect.",
+    ),
+) -> None:
+    """Replay one recorded session offline and print the decision metrics."""
+    from keyless.gaze.metrics import metric_table
+    from keyless.gaze.replay import SchemaError, load_session
+
+    try:
+        session = load_session(session_dir)
+    except (SchemaError, FileNotFoundError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    console.print(f"Session [bold]{session.session_id}[/bold] — {len(session.events)} events")
+    values = metric_table(session.events)
+    table = Table(title="Gaze v2 offline metrics", show_header=True)
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+    for key, label in _GAZE_METRIC_ROWS:
+        value = values.get(key)
+        table.add_row(label, "n/a" if value is None else f"{value:.3f}")
+    console.print(table)
+
 
 def _model_asset(which: str):
     from keyless.models.catalog import get_asset, stt_assets, tts_assets
