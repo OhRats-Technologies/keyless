@@ -207,3 +207,13 @@ def test_collector_survives_corrupt_settings_json(paths: AppPaths) -> None:
     collector.close()
     session = load_session(collector.session_dir)
     assert len(session.meta["config_hash"]) == 64
+
+
+def test_eval_candidates_defaults_to_data_dir_sessions_and_reports_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv(HOME_ENV, str(tmp_path))
+    runner = CliRunner()
+    res = runner.invoke(app, ["gaze", "eval-candidates"])
+    assert res.exit_code == 1
+    assert "no sessions directory" in res.output

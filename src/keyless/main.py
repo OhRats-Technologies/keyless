@@ -841,12 +841,10 @@ def gaze_replay(
 
 @gaze_app.command("eval-candidates")
 def gaze_eval_candidates(
-    sessions_dir: Path = typer.Argument(
-        ...,
-        exists=True,
+    sessions_dir: Path | None = typer.Argument(
+        None,
         file_okay=False,
-        readable=True,
-        help="Directory of sessions written by keyless.gaze.collect.",
+        help="Directory of sessions written by keyless.gaze.collect (defaults to <data_dir>/sessions).",
     ),
     regenerate: bool = typer.Option(
         False,
@@ -860,12 +858,22 @@ def gaze_eval_candidates(
     contains the click point.  The >95% gate is GREENFIELD.md §9: below it,
     perception is the bottleneck and model work must wait.
     """
+    from keyless.config.paths import current_paths
     from keyless.gaze.metrics import bbox_contains
     from keyless.gaze.replay import SchemaError, iter_sessions, load_session
 
-    session_dirs = iter_sessions(sessions_dir)
+    target_dir = sessions_dir if sessions_dir is not None else (current_paths().data_dir / "sessions")
+    if not target_dir.exists():
+        typer.echo(
+            f"error: no sessions directory at {target_dir}. "
+            "Record one first with `keyless gaze record`.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    session_dirs = iter_sessions(target_dir)
     if not session_dirs:
-        typer.echo(f"error: no sessions found under {sessions_dir}", err=True)
+        typer.echo(f"error: no sessions found under {target_dir}", err=True)
         raise typer.Exit(1)
 
     per_app: dict[str, dict[str, int]] = {}
