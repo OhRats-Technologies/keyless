@@ -1,5 +1,7 @@
 # Architecture and Product Organization
 
+> **Gaze v2 (2026-11-23):** The legacy calibration/regression/online-bias stack has been removed. The gaze engine is now a model-agnostic frame seam (`keyless.gaze`) and the product direction is target-level intent. See [GREENFIELD.md](GREENFIELD.md). Sections below that mention calibration describe the old shipped shell and are superseded where they conflict.
+
 **Status:** implemented Linux design (2026-11-19). The shared engine, platform seams, STT/provider layer, diagnostics, PySide6 shell, and Linux packaging now exist. Windows and macOS are capability stubs; the vision/voice core was not rewritten. This document records the target organization and what actually shipped.
 
 **Reference:** `anomalyco/hex` @ `6435633` (read-only). Borrow the organization and the outcomes, not the code, the visual identity, or the Rust/Rune stack.
@@ -8,8 +10,8 @@
 
 ### Goals
 
-- **One shared engine, per-OS hosts.** Gaze, voice, routing, grounding, calibration, and model logic stay shared. OS-specific input, capture, permissions, tray, and packaging live behind interfaces.
-- **A layman surface.** Install, first-run setup, permissions, camera check, calibration, model setup, practice, and daily use must not require a terminal or JSON edits.
+- **One shared engine, per-OS hosts.** Gaze, voice, routing, grounding, and model logic stay shared. OS-specific input, capture, permissions, tray, and packaging live behind interfaces.
+- **A layman surface.** Install, first-run setup, permissions, camera check, gaze warm-start, model setup, practice, and daily use must not require a terminal or JSON edits.
 - **Visible state.** A small always-available surface shows Listening/Paused, what was heard, what was clicked, and how to stop.
 - **Local-first, bring-your-own AI.** STT, vision, and history live on the machine. Core pointer/voice commands need no LLM. Any LLM is optional and chosen by the user.
 - **English-first.** The first release targets English; the model catalog leaves room for multilingual STT later.
@@ -66,7 +68,7 @@ src/keyless/
   config/       schema, migrations, paths
   platform/     protocols + linux/ macos/ windows/
   capture/      cameras, stereo, audio, screen orchestration
-  gaze/         landmarks, calibration, cursor, filters, learner
+  gaze/         model-agnostic frame seam; target model lives here
   voice/        listener, STT, pop, command parsing
   input/        pointer, hotkeys, typing, click harvesting
   grounding/    clicker, screen OCR, accessibility, VLM
@@ -116,7 +118,7 @@ Summary:
 - **Global click-through overlays on GNOME Wayland** are the hardest surface. A normal Wayland window cannot be made click-through with a portable API. Per-OS options: GNOME Shell extension (native but GNOME-versioned), XWayland input shape (fallback), tray/toast only (safe v1). This is a decision, not a detail: see D3.
 - **Input injection on macOS** needs Accessibility and Input Monitoring; **on Windows** it can be blocked by UIPI for elevated apps and flagged by anti-cheat/AV; **on Linux** it needs `/dev/uinput`.
 - **Screen capture** on macOS needs Screen Recording; on GNOME it needs the Shell/portal permission; denial must disable click-by-name, not crash at click time.
-- **Camera identity** differs by OS. Calibration must be keyed by a stable camera pair ID, not `/dev/videoN` or a Windows index.
+- **Camera identity** differs by OS. Gaze data and model checkpoints must be keyed by a stable camera pair ID, not `/dev/videoN` or a Windows index.
 - **Packaging and signing** are part of the port, not an afterthought: notarization, code signing, udev rules, and installers are required for a layman.
 
 ## 6. Data, models, and providers
@@ -135,7 +137,7 @@ Use one `AppPaths` service with four roots:
 - `KEYLESS_HOME` overrides all roots for tests and portable installs.
 - macOS uses one Application Support root for both config and data; Linux and Windows split them.
 - Provider-owned models stay in the provider's store; `models/providers.json` records status, not files.
-- Migrate the current `~/.config/keyless/config.json` and `stereo_calib.json` into the new layout once; never delete the old files.
+- Migrate the current `~/.config/keyless/config.json` into the new layout once; never delete the old files. The legacy calibration file is intentionally ignored.
 - Keep models in **data**, not cache: they are user assets that survive cache clearing.
 - Keep the MediaPipe landmarker in **cache**: it is re-downloadable. The Parakeet ONNX files are **data** with a verified receipt.
 - Windows: keep large models/logs in `LocalAppData`, not roaming `AppData`.
@@ -156,8 +158,10 @@ Use one `AppPaths` service with four roots:
 <config>/keyless/
   settings.json
   onboarding.json
-  calibration/
-    <pair-id>-<monitor>.json
+<data>/keyless/
+  gaze/
+    sessions/            # replayable interaction events
+    screenshots/         # content-addressed screen crops
 <cache>/keyless/
   face_landmarker.task
   downloads/
@@ -197,10 +201,10 @@ The UI is its own layer; it is not embedded in the daemon. Surfaces:
 
 | Surface | Purpose |
 |---|---|
-| Main window | Home/status, Setup, Cameras, Calibration, Models, Settings, History, Diagnostics, About |
-| Tray/menu bar | Listening/Paused, Open, Pause, Calibrate, Quit |
+| Main window | Home/status, Setup, Cameras, Gaze engine, Models, Settings, History, Diagnostics, About |
+| Tray/menu bar | Listening/Paused, Open, Pause, Align gaze, Quit |
 | Overlay | Gaze cursor/target, click confirmation, heard/understood pill, permission/error pill |
-| Onboarding | Engine-owned first-run story: welcome → devices → calibration → ready |
+| Onboarding | Engine-owned first-run story: welcome → devices → gaze engine → ready |
 | Settings | Hotkey/mode, pointer, gaze, cameras, audio, models, overlay, privacy, startup |
 | History | Recent actions, target, result, latency, tier, app; retry/copy |
 | Diagnostics | `doctor` summary, camera/mic previews, capability report, logs |
@@ -219,7 +223,7 @@ The desktop shell and landing page use the OhRats UI kit as the shared visual la
 ```
 Welcome
   → Devices           (TCC rows, camera/mic checks, offline speech model progress)
-  → Calibration       (guided dots; Continue gated on calibration.ready)
+  → Gaze engine       (target-model status; no calibration gate)
   → Ready             ("Start listening"; where it lives; pause/quit)
 ```
 
@@ -263,7 +267,7 @@ Do not combine a file move with a behavior change in the same review; commits `9
 - **D2** App-owned Parakeet/landmarks; bring-your-own text LLM and optional VLM (D9/D10).
 - **D3** X11 click-through pill; Wayland tray/toast fallback with an explicit capability reason.
 - **D4** Four roots and `KEYLESS_HOME` are implemented; one-time migration keeps old files.
-- **D5** Stable `/dev/v4l/by-id` identity and a camera picker exist; calibration is still one legacy file rather than `<pair>-<monitor>.json` (partial).
+- **D5** Stable `/dev/v4l/by-id` identity and a camera picker exist; the legacy calibration file and its migrations have been removed (target model pending).
 - **D6** Screen permission is reported, but the first capture still triggers the desktop prompt rather than a preflight request (partial).
 - **D7** Linux `.deb`/AppImage are built; macOS/Windows signing and installers are not started.
 - **D8** Linux productization first; Windows/macOS are stubs.

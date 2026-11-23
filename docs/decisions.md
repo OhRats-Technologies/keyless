@@ -214,3 +214,22 @@ ACP is an editor↔coding-agent protocol. Keyless acts as the **client**: it spa
 **Why:** a small, accurate, CPU-viable English model removes the largest first-run friction (CUDA + Hugging Face cache) and fits the "English-centric for now" scope.
 
 **Revisit if:** accuracy on short command phrases regresses, or `onnx-asr` stalls; then `sherpa-onnx` runs the same Parakeet export.
+
+## D11 — Gaze v2: target-level intent, not pixel calibration
+
+**Decision (2026-11-23):** Delete the legacy calibration/regression/online-bias stack and rebuild gaze as a target-level intent model. The eye cursor becomes a rendering of a posterior over candidate targets; the physical mouse becomes a privileged teacher. The model-agnostic seam is `keyless.gaze` (`GazeFrame`, `GazeSource`, `run_gaze_loop`). The old model is tagged `legacy-gaze-v1` for audit only and must not be reused.
+
+- **Objective:** listwise cross-entropy / InfoNCE over candidates, plus a heteroscedastic pixel head for free-space motion.
+- **Inputs:** face/eye/head observations over a 0.5–1.5 s window; candidates from AX/OCR/DOM/visual regions with geometry, role, text, and visual embeddings.
+- **Labels:** natural clicks (strong), voice confirmations (strong), hover (weak), corrections (hard negatives). "Steer to mouse" is a UI mode switch, never a global anchor.
+- **Uncertainty:** temperature scaling, a small ensemble, and split/adaptive conformal sets; abstain or confirm when the top-2 margin is small.
+- **Primary metric:** actions per correction. Pixel RMSE is diagnostic only.
+- **Kill criteria:** candidate recall <95%, or the target model cannot beat "nearest candidate to the pixel prediction" after a few hundred labels.
+
+**Why:** pixel MSE is not decision-sufficient (two targets can be closer than the error), the old global anchors bypassed every safety gate, and hand-tuned click thresholds encode failure modes the model should learn. Target-level supervision uses the mouse as free, continuous labels and matches the product decision.
+
+**Architecture decision:** do not start with V-JEPA of the screen (wrong dynamics/granularity/compute) or LeJEPA on face landmarks (wrong symmetry: gaze is pose-equivariant, not invariant). Start with a two-tower target-conditioned energy model: small temporal gaze encoder, frozen UI candidate encoder, listwise scorer, pixel head. Optional later: a raw eye-crop encoder pretrained with equivariant objectives, with SIGReg as a regularizer if it improves held-out target accuracy.
+
+**Revisit if:** a V-JEPA screen tower beats the candidate model by >10% top-1 on held-out sessions, or LeJEPA/SIGReg pretraining improves target accuracy by >5% with equivariant augmentations.
+
+See [GREENFIELD.md](GREENFIELD.md) for the full plan, theory, proofs, procedures, and references.

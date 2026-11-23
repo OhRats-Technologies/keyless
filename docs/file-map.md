@@ -189,7 +189,7 @@ keyless/
 ### Remaining moves (not required for the first Linux release)
 
 - `vision/ui_detector.py` still contains OCR/box detection; the capture API moved to `platform/linux/screen.py`.
-- `vision/stereo_capture.py`, `vision/landmarks.py`, `vision/cursor_gimbal.py`, `vision/calibrator.py` remain engine modules rather than `capture/`/`gaze/` directories.
+- `vision/stereo_capture.py` and `vision/landmarks.py` remain sensor modules; the old `cursor_gimbal.py`, `calibrator.py`, `geo_gaze.py`, and `online_learner.py` have been removed. `keyless/gaze/` is the new model-agnostic seam.
 - `audio/` still holds the listener/pop/STT compatibility shim; `voice/` has the audio loop and STT.
 - `ipc/firefox_bridge.py` remains under `ipc/`; the optional extension still lives at `firefox_ext/` until packaging settles.
 
@@ -204,10 +204,7 @@ keyless/
 | `vision/landmarks.py` | `gaze/landmarks.py` | No behavior change. |
 | `vision/stereo_capture.py` | `capture/stereo.py` + `platform/*/cameras.py` | Capture orchestration vs OS camera API. |
 | `vision/v4l2_config.py` | `platform/linux/cameras.py` + `platform/linux/v4l2.py` | Linux-only. |
-| `vision/calibrator.py` | `gaze/calibration/model.py` + `gaze/calibration/ui.py` | 1,590-line file; split math from the OpenCV surface. |
-| `vision/cursor_gimbal.py` | `gaze/cursor.py` | Shared controller. |
-| `vision/one_euro.py` | `gaze/filters.py` | Shared filter. |
-| `vision/online_learner.py` | `gaze/learner.py` | Shared learner. |
+| `gaze/types.py` | `gaze/types.py` | New model-agnostic `GazeFrame` / `GazeSource` contract. |
 | `vision/ui_detector.py` | `grounding/detect.py` + `platform/linux/screen.py` | Screen capture API vs OCR/box detection. |
 | `vision/desktop_atspi.py` | `grounding/accessibility/linux_atspi.py` | Add `macos_ax.py` and `windows_uia.py` beside it. |
 | `input/uinput_device.py` | `input/pointer.py` + `platform/linux/pointer.py` | `PointerBackend` contract + uinput implementation. |

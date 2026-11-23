@@ -25,7 +25,7 @@ curl -fsSL https://keyless.ohrats.party/install.sh | sh
 
 On Debian and Ubuntu, this verifies `SHA256SUMS` and installs the self-contained `.deb` via `apt` (including the `/dev/uinput` udev rule, desktop entry, and optional systemd user unit). On other Linux distributions, it installs the AppImage for your user.
 
-Open **Keyless** from your application menu — first run walks you through permissions, cameras, calibration, and the local speech model with no terminal or JSON editing required.
+Open **Keyless** from your application menu — first run walks you through permissions, cameras, gaze-engine status, and the local speech model with no terminal or JSON editing required.
 
 ## CLI & Diagnostics
 
@@ -44,7 +44,7 @@ Install locally in ~1 second from a clone (editable mode; changes apply immediat
 ./scripts/install.sh --open
 ```
 
-Uninstall (pass `--purge` to also delete settings, calibration, and models):
+Uninstall (pass `--purge` to also delete settings and models):
 
 ```sh
 ./scripts/uninstall.sh
