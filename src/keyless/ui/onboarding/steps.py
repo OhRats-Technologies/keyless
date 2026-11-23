@@ -186,25 +186,20 @@ class WelcomePage(StepPage):
         super().__init__()
         self.title.setText("Welcome to Keyless")
         self.subtitle.setText(
-            "Look at anything on your screens and speak to click, scroll, or type. "
+            "Speak to click, scroll, and type anywhere on your desktop. "
             "Everything runs privately on this device."
         )
         card = Card()
-        for heading, desc in (
-            ("1. Connect your devices", "Confirm your camera, microphone, and local speech engine."),
-            ("2. Align the eye cursor", "Look at your mouse and say “steer to mouse” whenever it drifts. No dot tutorial."),
-            ("3. Start hands-free", "Pause or resume anytime from the menu bar."),
-        ):
-            block = QVBoxLayout()
-            block.setSpacing(2)
-            h = QLabel(heading)
-            h.setObjectName("Heading")
-            d = QLabel(desc)
-            d.setObjectName("Muted")
-            d.setWordWrap(True)
-            block.addWidget(h)
-            block.addWidget(d)
-            card.layout.addLayout(block)
+        heading = QLabel("Voice first")
+        heading.setObjectName("Heading")
+        description = QLabel(
+            "Gaze v2 learns from your natural clicks when it ships. "
+            "There is no calibration step."
+        )
+        description.setObjectName("Muted")
+        description.setWordWrap(True)
+        card.layout.addWidget(heading)
+        card.layout.addWidget(description)
         self.body.addWidget(card)
         self.body.addStretch(1)
 
@@ -718,8 +713,8 @@ class CalibrationPage(StepPage):
 
         self.title.setText("Gaze engine v2")
         self.subtitle.setText(
-            "The legacy calibration stack is gone. The new target-level model is not "
-            "installed yet; voice control works without it."
+            "Voice control works now. Gaze v2 learns from your own clicks when it "
+            "ships — there is no calibration grid."
         )
 
         card = Card()
@@ -727,8 +722,8 @@ class CalibrationPage(StepPage):
         self.status.setObjectName("Heading")
         card.layout.addWidget(self.status)
         self.hint = QLabel(
-            "When the new model lands, it will learn from your own clicks and voice "
-            "corrections instead of a one-time calibration grid."
+            "Gaze chooses among buttons, links, and fields from your attention. "
+            "Natural clicks and voice corrections will train it."
         )
         self.hint.setObjectName("Muted")
         self.hint.setWordWrap(True)
@@ -753,19 +748,17 @@ class ReadyPage(StepPage):
 
     def __init__(self) -> None:
         super().__init__()
-        self.title.setText("You're all set")
-        self.subtitle.setText(
-            "Look at any button, link, or field and say “click”, “scroll down”, or “type …”."
-        )
+        self.title.setText("You're ready")
+        self.subtitle.setText("Keyless starts voice-only. Gaze v2 follows when it ships.")
         card = Card()
-        for text in (
-            "Move naturally — head movement and multiple screens are tracked automatically.",
-            "Say “recenter gaze” if you ever bump your camera.",
-            "Pause or quit anytime from the menu bar icon.",
-        ):
-            lbl = QLabel(text)
-            lbl.setWordWrap(True)
-            card.layout.addWidget(lbl)
+        self.summary = QLabel("Camera, microphone, and speech model are set.")
+        self.summary.setObjectName("Heading")
+        self.summary.setWordWrap(True)
+        card.layout.addWidget(self.summary)
+        hint = QLabel("No calibration. Natural clicks and corrections will train gaze v2.")
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        card.layout.addWidget(hint)
         self.body.addWidget(card)
         self.body.addStretch(1)
 
@@ -773,7 +766,7 @@ class ReadyPage(StepPage):
 _STEP_VOICE_HELP = {
     OnboardingStep.WELCOME: "Welcome to Keyless. Everything runs privately on your device. Press Get started to check your camera and microphone.",
     OnboardingStep.DEVICES: "Check that your microphone and camera are ready, then download the offline speech model if needed.",
-    OnboardingStep.CALIBRATION: "Look at your mouse and say “steer to mouse” to align the eye cursor.",
+    OnboardingStep.CALIBRATION: "Voice control is ready. Gaze v2 will learn from your clicks when it ships. No calibration is needed.",
     OnboardingStep.READY: "You are ready to go hands-free. Press Start listening whenever you want Keyless active.",
 }
 

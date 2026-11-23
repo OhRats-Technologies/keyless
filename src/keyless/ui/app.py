@@ -94,7 +94,6 @@ class HomePanel(QWidget):
         self.update_label.setObjectName("Heading")
         upd_row.addWidget(self.update_label, 1)
         self.update_apply_btn = QPushButton("Update")
-        self.update_apply_btn.setObjectName("Primary")
         self.update_apply_btn.clicked.connect(window.apply_available_update)
         upd_row.addWidget(self.update_apply_btn)
         self.update_dismiss_btn = QPushButton("Dismiss")
@@ -111,18 +110,22 @@ class HomePanel(QWidget):
         self.status_dot.setObjectName("StatusDot")
         status_row.addWidget(self.status_dot)
         self.state_label = QLabel("Ready")
-        self.state_label.setObjectName("Muted")
+        self.state_label.setObjectName("Heading")
         status_row.addWidget(self.state_label)
         status_row.addStretch(1)
+        self.setup_link = QPushButton("Finish setup")
+        self.setup_link.setObjectName("Link")
+        self.setup_link.clicked.connect(window.show_inline_setup)
+        status_row.addWidget(self.setup_link)
         left.addLayout(status_row)
 
-        self.headline = QLabel("Ready to listen.")
+        self.headline = QLabel("Ready when you are.")
         self.headline.setObjectName("Display")
         self.headline.setWordWrap(True)
         self.headline.setMaximumWidth(520)
         left.addWidget(self.headline)
 
-        self.detail = QLabel("Look anywhere on your screens and speak to click, scroll, or type.")
+        self.detail = QLabel("Speak to click, scroll, and type.")
         self.detail.setObjectName("Muted")
         self.detail.setWordWrap(True)
         self.detail.setMaximumWidth(520)
@@ -153,10 +156,6 @@ class HomePanel(QWidget):
         self.primary.setObjectName("Primary")
         self.primary.clicked.connect(self.toggle)
         actions.addWidget(self.primary)
-
-        self.calibrate_button = QPushButton("Align gaze")
-        self.calibrate_button.clicked.connect(window.launch_calibration)
-        actions.addWidget(self.calibrate_button)
 
         self.commands_button = QPushButton("Commands")
         self.commands_button.setObjectName("Ghost")
@@ -257,7 +256,7 @@ class HomePanel(QWidget):
         if status.state is SessionState.LISTENING:
             self.state_label.setText("Listening")
             self.headline.setText("Listening.")
-            self.detail.setText("Gaze and voice are active. Everything stays on this device.")
+            self.detail.setText("Voice control is active.")
             self.primary.setText("Pause")
         elif status.state is SessionState.PAUSED:
             self.state_label.setText("Paused")
@@ -275,8 +274,8 @@ class HomePanel(QWidget):
         else:
             self.error_actions.setVisible(False)
             self.state_label.setText("Ready")
-            self.headline.setText("Ready.")
-            self.detail.setText("Start listening when you're ready.")
+            self.headline.setText("Ready when you are.")
+            self.detail.setText("Speak to click, scroll, and type.")
             self.primary.setText("Start listening")
 
         if status.state is not SessionState.ERROR:
@@ -303,8 +302,10 @@ class HomePanel(QWidget):
         mon_txt = f"{mons} displays" if mons > 1 else "1 display"
         self.hardware_summary.setText(f"{cams_txt} · {mon_txt}")
 
+        self.setup_link.setVisible(not self.window.flow.is_complete)
+
         self.primary.setObjectName("Primary")
-        for btn in (self.primary, self.calibrate_button):
+        for btn in (self.primary,):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
