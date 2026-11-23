@@ -813,8 +813,10 @@ def run_ui(
     if controller is None:
         from keyless.ipc.client import ControlClient, HttpSessionController
         from keyless.ipc.control import ControlServer
+        from keyless.ui.contract import build_ui_state
 
         control_server = ControlServer(paths=resolved_paths)
+        control_server.ui_contract_builder = build_ui_state
         bound = control_server.start(host="127.0.0.1", port=0)
         session_controller: SessionController = HttpSessionController(
             ControlClient(f"http://127.0.0.1:{bound}"), paths=resolved_paths

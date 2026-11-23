@@ -14,6 +14,8 @@ Endpoints (all JSON):
   GET  /v1/config/schema   -> {schema_version, settings: [SettingSpec...]}
   POST /v1/config          -> validated patch; {config, restart_required, changed}
   GET  /v1/history?limit=N -> {actions: [...]}
+  GET  /v1/ui/state     -> schema-v1 UI document (503 until a builder is injected)
+  POST /v1/ui/action    -> {action, arg?} -> {ok, action, result}
   POST /v1/start        -> start daemon child
   POST /v1/pause        -> pause daemon child
   GET  /v1/setup        -> canonical setup flow + gaze model readiness
@@ -27,6 +29,14 @@ Endpoints (all JSON):
 Setup is engine-owned: the step order and persisted step come from
 ``keyless.core.onboarding.OnboardingFlow`` — the same state machine every shell
 uses — so every shell sees one canonical flow.
+
+Two UI layers stay separate on purpose. The *screen document* (schema v1) is
+built by ``keyless.ui.contract.build_ui_state`` and injected through
+``self.ui_contract_builder``; until a host registers it, ``GET /v1/ui/state``
+returns 503. The *action registry* lives here because it only needs engine
+state (controller, config specs, setup flow, doctor) and must not import
+``keyless.ui`` at any depth. Hosts that want different side effects can inject
+``self.ui_action_handler`` instead.
 """
 
 from __future__ import annotations
@@ -81,6 +91,26 @@ def _json(handler: BaseHTTPRequestHandler, payload: object, status: int = 200) -
     handler.wfile.write(body)
 
 
+class _PatchRejected(Exception):
+    """A config patch failed spec validation."""
+
+    def __init__(self, errors: dict[str, str]) -> None:
+        super().__init__("invalid config patch")
+        self.errors = errors
+
+
+class _ActionRejected(Exception):
+    """A /v1/ui/action request cannot be executed as sent."""
+
+    def __init__(
+        self, message: str, *, status: int = 400, errors: dict[str, str] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status = status
+        self.errors = errors or {}
+
+
 class ControlServer:
     """Owns one DaemonController + HistoryStore behind a loopback HTTP server."""
 
@@ -95,6 +125,10 @@ class ControlServer:
         self._thread: threading.Thread | None = None
         self._model_job: _ModelDownloadJob | None = None
         self._model_lock = threading.Lock()
+        # Injected by a UI host (`keyless serve`, `run_ui`). The engine keeps
+        # zero `keyless.ui` imports; see the module docstring for the split.
+        self.ui_contract_builder = None
+        self.ui_action_handler = None
 
     @property
     def port(self) -> int:
@@ -228,6 +262,90 @@ class ControlServer:
             ),
         }
 
+    def apply_config_patch(self, patch: dict[str, object]) -> dict[str, object]:
+        """Validate and persist one partial config update, shared by HTTP routes."""
+        from keyless.config.schema import AppConfig
+
+        errors = validate_patch(patch)
+        if errors:
+            raise _PatchRejected(errors)
+        cfg = AppConfig.load(self.paths.settings_path)
+        changed = [key for key, value in patch.items() if getattr(cfg, key) != value]
+        for key in changed:
+            setattr(cfg, key, patch[key])
+        if changed:
+            cfg.save(self.paths.settings_path)
+        restart_required = any(
+            (spec := spec_for(key)) is not None and spec.apply == "restart"
+            for key in changed
+        )
+        return {
+            "config": asdict(cfg),
+            "restart_required": restart_required,
+            "changed": changed,
+        }
+
+    def ui_state(self) -> dict[str, object] | None:
+        """Build the schema-v1 UI document, or ``None`` when no builder is registered."""
+        builder = self.ui_contract_builder
+        if builder is None:
+            return None
+        from keyless.config.schema import AppConfig
+        from keyless.diagnostics.doctor import collect_doctor
+        from keyless.platform.capabilities import detect_capabilities
+
+        status = self.controller.status
+        return builder(
+            capabilities=detect_capabilities(paths=self.paths).as_dict(),
+            doctor=collect_doctor(paths=self.paths, check_providers=False).as_dict(),
+            config=asdict(AppConfig.load(self.paths.settings_path)),
+            history=self.history.recent(10),
+            model=self.model_snapshot(),
+            setup=self.setup_snapshot(),
+            status={"state": status.state.value, "detail": status.detail},
+            specs=[spec.as_dict() for spec in SETTING_SPECS],
+        )
+
+    def run_ui_action(self, payload: dict[str, object]) -> dict[str, object]:
+        """Default engine-side action registry for ``POST /v1/ui/action``."""
+        action = str(payload.get("action") or "")
+        arg = payload.get("arg")
+        if action in ("start", "pause"):
+            status = getattr(self.controller, action)()
+            return {"state": status.state.value, "detail": status.detail}
+        if action == "set_config":
+            if not isinstance(arg, dict):
+                raise _ActionRejected("set_config requires an 'arg' object")
+            return self.apply_config_patch(arg)
+        if action == "setup":
+            if not isinstance(arg, dict):
+                raise _ActionRejected("setup requires an 'arg' object")
+            setup_action = str(arg.get("action") or "")
+            if not setup_action:
+                raise _ActionRejected("setup 'arg' requires an action")
+            try:
+                return self.apply_setup_action(setup_action, arg.get("step"))
+            except ValueError as exc:
+                raise _ActionRejected(str(exc)) from exc
+        if action == "select_camera":
+            if not isinstance(arg, dict):
+                raise _ActionRejected("select_camera requires an 'arg' object")
+            allowed = {"camera_mode", "cam1_by_id", "cam2_by_id"}
+            unknown = sorted(set(arg) - allowed)
+            if unknown:
+                raise _ActionRejected(
+                    "select_camera accepts camera_mode, cam1_by_id, cam2_by_id",
+                    errors={key: "unknown setting" for key in unknown},
+                )
+            return self.apply_config_patch(arg)
+        if action == "calibrate":
+            return self.launch_calibration()
+        if action == "diagnostics":
+            from keyless.diagnostics.doctor import collect_doctor
+
+            return collect_doctor(paths=self.paths, check_providers=False).as_dict()
+        raise _ActionRejected(f"unknown action {action!r}")
+
     def _make_handler(self) -> type[BaseHTTPRequestHandler]:
         server = self
 
@@ -267,8 +385,6 @@ class ControlServer:
                         },
                     )
                 elif self.command == "POST" and path == "/v1/config":
-                    from keyless.config.schema import AppConfig
-
                     length = int(self.headers.get("Content-Length", "0") or 0)
                     try:
                         patch = json.loads(self.rfile.read(length) or b"{}")
@@ -278,34 +394,60 @@ class ControlServer:
                     if not isinstance(patch, dict):
                         _json(self, {"error": "expected a JSON object"}, status=400)
                         return
-                    errors = validate_patch(patch)
-                    if errors:
+                    try:
+                        _json(self, server.apply_config_patch(patch))
+                    except _PatchRejected as exc:
                         _json(
                             self,
-                            {"error": "invalid config patch", "errors": errors},
+                            {"error": "invalid config patch", "errors": exc.errors},
+                            status=400,
+                        )
+                elif self.command == "GET" and path == "/v1/ui/state":
+                    document = server.ui_state()
+                    if document is None:
+                        _json(
+                            self,
+                            {"error": "ui contract builder not registered"},
+                            status=503,
+                        )
+                    else:
+                        _json(self, document)
+                elif self.command == "POST" and path == "/v1/ui/action":
+                    length = int(self.headers.get("Content-Length", "0") or 0)
+                    try:
+                        payload = json.loads(self.rfile.read(length) or b"{}")
+                    except ValueError:
+                        _json(self, {"error": "invalid JSON"}, status=400)
+                        return
+                    if not isinstance(payload, dict):
+                        _json(self, {"error": "expected a JSON object"}, status=400)
+                        return
+                    handler = server.ui_action_handler or server.run_ui_action
+                    try:
+                        result = handler(payload)
+                    except _ActionRejected as exc:
+                        body: dict[str, object] = {"ok": False, "error": exc.message}
+                        if exc.errors:
+                            body["errors"] = exc.errors
+                        _json(self, body, status=exc.status)
+                        return
+                    except _PatchRejected as exc:
+                        _json(
+                            self,
+                            {
+                                "ok": False,
+                                "error": "invalid config patch",
+                                "errors": exc.errors,
+                            },
                             status=400,
                         )
                         return
-                    cfg = AppConfig.load(server.paths.settings_path)
-                    changed = [
-                        key
-                        for key, value in patch.items()
-                        if getattr(cfg, key) != value
-                    ]
-                    for key in changed:
-                        setattr(cfg, key, patch[key])
-                    if changed:
-                        cfg.save(server.paths.settings_path)
-                    restart_required = any(
-                        (spec := spec_for(key)) is not None and spec.apply == "restart"
-                        for key in changed
-                    )
                     _json(
                         self,
                         {
-                            "config": asdict(cfg),
-                            "restart_required": restart_required,
-                            "changed": changed,
+                            "ok": True,
+                            "action": str(payload.get("action") or ""),
+                            "result": result,
                         },
                     )
                 elif self.command == "GET" and path == "/v1/history":
