@@ -50,6 +50,14 @@ Uninstall (pass `--purge` to also delete settings and models):
 ./scripts/uninstall.sh
 ```
 
+Run tests (the default suite skips the slow Qt UI and model/vision tests):
+
+```sh
+uv run pytest            # fast suite
+uv run pytest -m ui      # UI windows, overlays, and golden images
+uv run pytest -m ""      # everything
+```
+
 Build `.deb` and AppImage packages:
 
 ```sh

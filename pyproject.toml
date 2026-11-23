@@ -41,3 +41,13 @@ packages = ["src/keyless"]
 dev = [
     "pytest>=9.2.0",
 ]
+
+[tool.pytest.ini_options]
+# The fast suite is the default. UI tests render Qt windows and goldens (~20 s);
+# slow tests spend seconds in model/vision work. Opt in with
+# `pytest -m "not slow"`, `pytest -m ui`, or `pytest -m ""` for everything.
+markers = [
+    "ui: Qt tests that build windows, overlays, or golden images",
+    "slow: tests that spend seconds on model or vision work",
+]
+addopts = "-m 'not ui and not slow'"

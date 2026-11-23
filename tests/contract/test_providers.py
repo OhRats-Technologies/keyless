@@ -77,7 +77,9 @@ class _OpenAIHandler(BaseHTTPRequestHandler):
 def openai_server():
     handler = type("Handler", (_OpenAIHandler,), {"requests": []})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}/v1", handler
@@ -173,7 +175,9 @@ class _OllamaHandler(BaseHTTPRequestHandler):
 def ollama_server():
     handler = type("Handler", (_OllamaHandler,), {"chats": [], "pulled": False})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}", handler

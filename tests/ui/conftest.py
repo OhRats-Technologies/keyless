@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+
+
+def pytest_collection_modifyitems(items) -> None:
+    """Mark every test under tests/ui so the default suite skips Qt rendering."""
+    for item in items:
+        parts = Path(str(item.path)).parts
+        if "tests" in parts and "ui" in parts:
+            item.add_marker(pytest.mark.ui)
 
 
 @pytest.fixture(scope="session")

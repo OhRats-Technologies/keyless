@@ -89,7 +89,9 @@ def http_asset(tmp_path: Path):
         {"root": tmp_path, "seen_ranges": [], "payloads": files},
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
@@ -169,7 +171,9 @@ def test_download_rejects_bad_checksum_and_does_not_promote(tmp_path: Path) -> N
     )
     handler = type("Handler", (_RangeHandler,), {"payloads": {"bad.bin": payload}})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
