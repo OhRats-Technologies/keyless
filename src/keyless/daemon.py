@@ -15,6 +15,8 @@ from rich.console import Console
 from keyless.audio.active_listener import ActiveVoiceListener
 from keyless.audio.pop_detector import PopTriggerStateMachine
 from keyless.audio.stt_engine import UnifiedAudioService
+from keyless.browser.planner import ProviderEndpoint, build_browser_planner
+from keyless.browser.runtime import BrowserRuntime
 from keyless.config import AppConfig, current_paths, get_display_layout
 from keyless.input.click_harvest import EvdevMouseClickHarvester
 from keyless.input.pointer import DryRunPointerBackend, PointerBackend
@@ -43,6 +45,42 @@ from keyless.platform.linux.accessibility import LinuxDesktopAccessibilityBridge
 from keyless.platform.linux.screen import monitor_at_point
 from keyless.vision.online_learner import OnlineGazeLearner
 from keyless.vision.ui_detector import GazeUIDetector
+
+
+def create_browser_runtime(
+    config: AppConfig,
+    text_provider: object | None = None,
+    vision_provider: object | None = None,
+    speak: Callable[[str], object] | None = None,
+) -> BrowserRuntime:
+    """Build a BrowserRuntime wired to keyless's resolved text and vision providers."""
+    resolved_text = (
+        text_provider
+        if text_provider is not None
+        else ProviderEndpoint(
+            kind="ollama",
+            model=config.llm_model or config.ollama_model or "qwen2.5:14b",
+            base_url="http://127.0.0.1:11434",
+        )
+    )
+    resolved_vision = (
+        vision_provider
+        if vision_provider is not None
+        else ProviderEndpoint(
+            kind="ollama",
+            model=config.gaze_vlm_model or "gemma4:e4b",
+            base_url="http://127.0.0.1:11434",
+        )
+    )
+    planner = build_browser_planner(
+        text_provider=resolved_text,
+        vision_provider=resolved_vision,
+    )
+    return BrowserRuntime(
+        planner=planner,
+        speak=speak,
+        auto_seed_on_first_run=config.playwright_auto_seed_firefox,
+    )
 
 
 def run_combined_daemon(
@@ -136,6 +174,7 @@ def run_combined_daemon(
     event_thread: threading.Thread | None = None
     vlm_clicker: GazeVLMClicker | None = None
     vlm_provider = None
+    browser_runtime: BrowserRuntime | None = None
     mouse_harvester: EvdevMouseClickHarvester | None = None
 
     def _current_gaze_xy_fallback() -> tuple[float, float]:
@@ -170,6 +209,7 @@ def run_combined_daemon(
                     out.print("[dim]Vision loop not active; gaze coordinates unavailable.[/dim]")
 
             vlm_provider = None
+            browser_vision_provider = None
             detector = GazeUIDetector()
             desktop_atspi = LinuxDesktopAccessibilityBridge()
             vlm_enabled = False
@@ -185,6 +225,7 @@ def run_combined_daemon(
                     )
                 else:
                     vlm_enabled = True
+                    browser_vision_provider = vlm_role.provider
                     # For local Ollama, leave vlm_provider=None so GazeVLMClicker uses its
                     # strict Pydantic JSON-schema ollama.chat(..., format=schema) path.
                     if not isinstance(vlm_role.provider, OllamaProvider):
@@ -239,6 +280,18 @@ def run_combined_daemon(
                 dx, dy = model.recenter_to(cx, cy, st[2])
                 return f"Recentered gaze to monitor center ({cx:.0f}, {cy:.0f}) with offset=({dx:+.0f}, {dy:+.0f})px"
 
+            def _speak_browser(msg: str) -> None:
+                if speaker is not None and config.tts_speak_replies:
+                    speaker.speak(msg, interrupt=True)
+
+            if config.playwright_browser_enabled:
+                browser_runtime = create_browser_runtime(
+                    config,
+                    text_provider=text_role.provider,
+                    vision_provider=browser_vision_provider,
+                    speak=_speak_browser,
+                )
+
             router = VoiceCommandRouter(
                 pointer=pointer,
                 llm_agent=llm,
@@ -250,6 +303,7 @@ def run_combined_daemon(
                 on_before_click=_on_before_click,
                 firefox_bridge=firefox_bridge,
                 on_recenter_gaze=_on_recenter_gaze if enable_vision else None,
+                browser_runtime=browser_runtime,
             )
 
             def _prewarm_gaze_vlm() -> None:
@@ -470,6 +524,8 @@ def run_combined_daemon(
                             f"[green]Saved {added} harvested voice-click calibration sample(s).[/green]"
                         )
             vlm_clicker.shutdown()
+        if browser_runtime is not None:
+            browser_runtime.shutdown()
         if firefox_bridge is not None:
             firefox_bridge.stop()
         if gaze_reader is not None:

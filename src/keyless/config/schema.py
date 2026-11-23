@@ -91,6 +91,8 @@ class AppConfig:
     attention_max_yaw_deg: float = 38.0
     firefox_bridge_enabled: bool = True
     firefox_bridge_port: int = 8765
+    playwright_browser_enabled: bool = True
+    playwright_auto_seed_firefox: bool = True
     # Phase 4: Local Underdog-Woof TTS & t3code-style update checks
     tts_enabled: bool = False
     tts_voice: str = "juno"

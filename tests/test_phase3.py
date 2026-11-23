@@ -1543,10 +1543,11 @@ def test_pose_translation_stripping_on_load_recenter_and_gaze_warped_scroll(tmp_
     rx, ry = loaded.predict(f_neutral)
     assert abs(rx - 960.0) < 1.0 and abs(ry - 540.0) < 1.0
 
-    # "sync window" routes to sync_window (never hijacked by "<app> window" OS overview search)
-    r_sync = router.dispatch("sync window")
-    assert r_sync.route == "sync_window"
-    assert ptr.last_abs == (2600.0, 700.0)
+    # "anchor window", "bind window", "align window", "sync window", and "sink window" route to sync_window
+    for phrase in ("anchor window", "bind window", "align window", "sync window", "sink window"):
+        r_sync = router.dispatch(phrase)
+        assert r_sync.route == "sync_window"
+        assert ptr.last_abs == (2600.0, 700.0)
 
     # Non-browser "scroll down" warps pointer to gaze region before scrolling
     r_scroll = router.dispatch("scroll down")
