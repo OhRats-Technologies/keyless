@@ -152,6 +152,7 @@ def open_locked_capture(
     fps: int = 30,
     exposure_absolute: int = 300,
     gain: int | None = 160,
+    manual_exposure: bool = True,
 ) -> tuple[cv2.VideoCapture, CameraLockReport]:
     """Open an MJPG V4L2 capture bound by `/dev/v4l/by-id/` with locked exposure/gain/fps."""
     real_dev = resolve_by_id_device(by_id_path)
@@ -159,7 +160,7 @@ def open_locked_capture(
         by_id_path,
         exposure_absolute=exposure_absolute,
         gain=gain,
-        manual_exposure=True,
+        manual_exposure=manual_exposure,
     )
 
     cap = cv2.VideoCapture(real_dev, cv2.CAP_V4L2)
@@ -180,7 +181,7 @@ def open_locked_capture(
         by_id_path,
         exposure_absolute=exposure_absolute,
         gain=gain,
-        manual_exposure=True,
+        manual_exposure=manual_exposure,
     )
 
     fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))

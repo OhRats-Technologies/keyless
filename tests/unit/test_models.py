@@ -15,7 +15,9 @@ import pytest
 
 from keyless.config.paths import HOME_ENV, default_paths
 from keyless.models.catalog import (
+    DEFAULT_STT_ASSET_ID,
     PARAKEET_TDT_0_6B_V2,
+    PARAKEET_UNIFIED_EN_0_6B,
     ModelAsset,
     ModelFile,
     get_asset,
@@ -103,17 +105,25 @@ def http_asset(tmp_path: Path):
 
 
 def test_catalog_pins_revision_and_checksums() -> None:
+    assert DEFAULT_STT_ASSET_ID == "parakeet-unified-en-0.6b"
+    unified = get_asset("parakeet-unified-en-0.6b")
+    assert unified.revision != "main"
+    assert len(unified.revision) == 40
+    assert unified.license == "nvidia-open-model-license"
+    unified_names = {f.name for f in unified.files}
+    assert {"config.json", "vocab.txt", "nemo128.onnx", "encoder-model.q8.onnx", "decoder_joint-model.q8.onnx"} <= unified_names
+    for item in unified.files:
+        assert len(item.sha256) == 64
+        assert item.bytes > 0
+        assert item.sha256 == item.sha256.lower()
+
     asset = get_asset("parakeet-tdt-0.6b-v2")
     assert asset.revision != "main"
     assert len(asset.revision) == 40
     assert asset.license == "CC-BY-4.0"
     names = {f.name for f in asset.files}
     assert {"config.json", "vocab.txt", "encoder-model.int8.onnx", "decoder_joint-model.int8.onnx"} <= names
-    for item in asset.files:
-        assert len(item.sha256) == 64
-        assert item.bytes > 0
-        assert item.sha256 == item.sha256.lower()
-    assert stt_assets() == [PARAKEET_TDT_0_6B_V2]
+    assert stt_assets() == [PARAKEET_UNIFIED_EN_0_6B, PARAKEET_TDT_0_6B_V2]
 
 
 def test_download_verifies_promotes_and_writes_receipt(http_asset, tmp_path: Path) -> None:
@@ -237,12 +247,12 @@ def test_parakeet_uses_local_int8_files_and_cpu_provider(monkeypatch, tmp_path: 
     monkeypatch.setitem(sys.modules, "onnx_asr", SimpleNamespace(load_model=fake_load_model))
     from keyless.voice.stt.parakeet import ParakeetSttEngine
 
-    engine = ParakeetSttEngine(tmp_path, quantization="int8")
+    engine = ParakeetSttEngine(tmp_path, quantization="q8")
     result = engine.transcribe_detailed(np.ones(16000, dtype=np.float32) * 0.1)
 
-    assert calls["name"] == "nemo-parakeet-tdt-0.6b-v2"
+    assert calls["name"] == "nemo-conformer-rnnt"
     assert calls["path"] == str(tmp_path)
-    assert calls["quantization"] == "int8"
+    assert calls["quantization"] == "q8"
     assert calls["providers"] == ["CPUExecutionProvider"]
     assert calls["sample_rate"] == 16000
     assert result.text == "scroll down"

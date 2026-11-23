@@ -171,6 +171,7 @@ def test_cams(
             extract_landmarks=True,
             use_gpu=cfg.use_gpu,
             keep_images=True,
+            auto_exposure=getattr(cfg, "cam_auto_exposure", True),
         ) as stereo:
             # Wait briefly for initial frames so delegates initialize before printing
             stereo.read_pair(timeout_s=2.0)

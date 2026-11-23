@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 HF_BASE = "https://huggingface.co"
 
+PARAKEET_UNIFIED_EN_ID = "parakeet-unified-en-0.6b"
 PARAKEET_TDT_V2_ID = "parakeet-tdt-0.6b-v2"
 UNDERDOG_WOOF_ID = "underdog-woof"
 
@@ -19,6 +20,7 @@ class ModelFile:
     name: str
     bytes: int
     sha256: str
+    remote_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -38,7 +40,8 @@ class ModelAsset:
         return sum(f.bytes for f in self.files)
 
     def url(self, file: ModelFile) -> str:
-        return f"{HF_BASE}/{self.repo}/resolve/{self.revision}/{file.name}"
+        remote = file.remote_name or file.name
+        return f"{HF_BASE}/{self.repo}/resolve/{self.revision}/{remote}"
 
     def file(self, name: str) -> ModelFile:
         for item in self.files:
@@ -46,6 +49,46 @@ class ModelAsset:
                 return item
         raise KeyError(name)
 
+
+PARAKEET_UNIFIED_EN_0_6B = ModelAsset(
+    id=PARAKEET_UNIFIED_EN_ID,
+    display_name="Parakeet Unified English 0.6B (q8)",
+    engine="onnx-asr",
+    quantization="q8",
+    revision="a34b30ffd9dc312a4012ec0305d28f92a1c86c66",
+    repo="mrfakename/parakeet-unified-ONNX",
+    license="nvidia-open-model-license",
+    attribution="NVIDIA Parakeet Unified EN 0.6B (NVIDIA Open Model License), ONNX export by mrfakename / eschmidbauer",
+    files=(
+        ModelFile(
+            name="config.json",
+            bytes=273,
+            sha256="636c9edf61757ad4e711335999fc920a1c7e9943b4acf5df12769cc3422f63bd",
+        ),
+        ModelFile(
+            name="vocab.txt",
+            bytes=8952,
+            sha256="dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff",
+        ),
+        ModelFile(
+            name="nemo128.onnx",
+            remote_name="preprocessor.onnx",
+            bytes=136430,
+            sha256="e931b8a8361bfbda004ef8b21378049f7199faea6f99320058f89983eda05bfe",
+        ),
+        ModelFile(
+            name="encoder-model.q8.onnx",
+            bytes=702012418,
+            sha256="3a40148d74fc8643ff8f4a8f34683862ca19066746cb73100d7134659cde4ec8",
+        ),
+        ModelFile(
+            name="decoder_joint-model.q8.onnx",
+            remote_name="decoder_joint-model.int8.onnx",
+            bytes=8995073,
+            sha256="26a9f0ffb682cf2a712ac86e2e11b6da932f9860f70dc996841cba6392010b55",
+        ),
+    ),
+)
 
 PARAKEET_TDT_0_6B_V2 = ModelAsset(
     id=PARAKEET_TDT_V2_ID,
@@ -149,11 +192,12 @@ UNDERDOG_WOOF = ModelAsset(
 )
 
 ASSETS: dict[str, ModelAsset] = {
+    PARAKEET_UNIFIED_EN_0_6B.id: PARAKEET_UNIFIED_EN_0_6B,
     PARAKEET_TDT_0_6B_V2.id: PARAKEET_TDT_0_6B_V2,
     UNDERDOG_WOOF.id: UNDERDOG_WOOF,
 }
 
-DEFAULT_STT_ASSET_ID = PARAKEET_TDT_0_6B_V2.id
+DEFAULT_STT_ASSET_ID = PARAKEET_UNIFIED_EN_0_6B.id
 DEFAULT_TTS_ASSET_ID = UNDERDOG_WOOF.id
 
 

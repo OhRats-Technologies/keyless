@@ -68,6 +68,7 @@ def create_stt_engine(
         )
     engine = ParakeetSttEngine(
         store.asset_dir(asset),
+        model_id=asset.id,
         quantization=asset.quantization,
         providers=_providers(config),
     )
@@ -81,6 +82,9 @@ def stt_report(config: AppConfig, *, paths: AppPaths | None = None) -> dict[str,
     return {
         "requested": "parakeet",
         "selected": "parakeet" if status.ready else "missing",
+        "model_id": asset.id,
+        "display_name": asset.display_name,
+        "total_bytes": asset.total_bytes,
         "parakeet": status.as_dict(),
         "cuda_available": cuda_available(),
     }

@@ -55,6 +55,7 @@ class _CameraReaderThread:
         extract_landmarks: bool = False,
         use_gpu: bool = True,
         keep_images: bool = True,
+        manual_exposure: bool = True,
         capture_backend: str = "v4l2",
     ) -> None:
         if capture_backend == "opencv":
@@ -74,6 +75,7 @@ class _CameraReaderThread:
                     fps=fps,
                     exposure_absolute=exposure_absolute,
                     gain=gain,
+                    manual_exposure=manual_exposure,
                 )
             except Exception as exc:
                 if pipewire_available():
@@ -170,6 +172,7 @@ class StereoCapture:
         extract_landmarks: bool = False,
         use_gpu: bool = True,
         keep_images: bool = True,
+        auto_exposure: bool = True,
         capture_backend: str = "v4l2",
     ) -> None:
         if capture_backend == "pipewire" and not (mono or not cam2_by_id):
@@ -193,6 +196,7 @@ class StereoCapture:
             extract_landmarks=extract_landmarks,
             use_gpu=use_gpu,
             keep_images=keep_images,
+            manual_exposure=not auto_exposure,
             capture_backend=capture_backend,
         )
         self._r2: _CameraReaderThread | None = None
@@ -209,6 +213,7 @@ class StereoCapture:
                     extract_landmarks=extract_landmarks,
                     use_gpu=use_gpu,
                     keep_images=keep_images,
+                    manual_exposure=not auto_exposure,
                     capture_backend=capture_backend,
                 )
             except Exception:

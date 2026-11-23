@@ -47,6 +47,9 @@ class AppConfig:
     frame_width: int = 1280
     frame_height: int = 720
     fps: int = 30
+    # Auto exposure adapts to room light; the explicit exposure/gain values below are only
+    # applied when cam_auto_exposure is disabled.
+    cam_auto_exposure: bool = True
     cam1_exposure: int = 300
     cam1_gain: int = 180
     cam2_exposure: int = 300
@@ -56,8 +59,8 @@ class AppConfig:
     # Phase 2: audio pop-click, speech-to-text, and LLM routing
     ptt_hotkey: str = "KEY_RIGHTCTRL"
     # D10: Parakeet is the only STT engine.
-    stt_model_id: str = "parakeet-tdt-0.6b-v2"
-    stt_quantization: str = "int8"
+    stt_model_id: str = "parakeet-unified-en-0.6b"
+    stt_quantization: str = "q8"
     stt_provider: str = "cpu"
     llm_backend: str = "auto"
     llm_provider: str = "auto"

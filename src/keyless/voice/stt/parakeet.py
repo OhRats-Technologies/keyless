@@ -1,4 +1,4 @@
-"""NVIDIA Parakeet TDT 0.6B v2 via onnx-asr (CPU int8 default, CUDA opt-in)."""
+"""NVIDIA Parakeet STT via onnx-asr (Parakeet Unified EN 0.6B default, TDT v2 supported)."""
 
 from __future__ import annotations
 
@@ -9,36 +9,46 @@ from typing import Sequence
 
 import numpy as np
 
-from keyless.voice.stt.base import SttStatus, SttResult
+from keyless.models.catalog import PARAKEET_TDT_V2_ID, PARAKEET_UNIFIED_EN_ID
+from keyless.voice.stt.base import SttResult, SttStatus
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROVIDERS = ("CPUExecutionProvider",)
 CUDA_PROVIDERS = ("CUDAExecutionProvider", "CPUExecutionProvider")
 
+_ONNX_ASR_MODEL_NAMES: dict[str, str] = {
+    PARAKEET_UNIFIED_EN_ID: "nemo-conformer-rnnt",
+    PARAKEET_TDT_V2_ID: "nemo-parakeet-tdt-0.6b-v2",
+}
+
 
 class ParakeetSttEngine:
-    """Offline English recognition from the pinned local ONNX export."""
+    """Offline / VAD-chunked English recognition from the pinned local ONNX export."""
 
-    name = "parakeet-tdt-0.6b-v2"
+    name = PARAKEET_UNIFIED_EN_ID
 
     def __init__(
         self,
         model_dir: Path | str,
         *,
-        quantization: str = "int8",
+        model_id: str = PARAKEET_UNIFIED_EN_ID,
+        quantization: str = "q8",
         providers: Sequence[str] | None = None,
         warmup: bool = True,
     ) -> None:
         import onnx_asr
 
         self.model_dir = Path(model_dir)
+        self.model_id = model_id
+        self.name = model_id
         self.quantization = quantization
         self.compute_type = quantization
         self.providers = tuple(providers or DEFAULT_PROVIDERS)
         self.device = "cuda" if "CUDAExecutionProvider" in self.providers else "cpu"
+        onnx_name = _ONNX_ASR_MODEL_NAMES.get(model_id, "nemo-conformer-rnnt")
         self._model = onnx_asr.load_model(
-            "nemo-parakeet-tdt-0.6b-v2",
+            onnx_name,
             path=str(self.model_dir),
             quantization=quantization,
             providers=list(self.providers),
@@ -48,7 +58,7 @@ class ParakeetSttEngine:
 
     def transcribe_detailed(self, audio_f32: np.ndarray) -> SttResult:
         arr = np.asarray(audio_f32, dtype=np.float32).reshape(-1)
-        if arr.size < 2800:  # <175ms
+        if arr.size < 2560:  # <160ms (Parakeet Unified supports >=160ms segments)
             return SttResult(text="")
         if float(np.max(np.abs(arr))) < 1e-4:
             return SttResult(text="")

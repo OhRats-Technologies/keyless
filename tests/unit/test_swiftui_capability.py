@@ -194,7 +194,7 @@ def test_control_plane_model_download_is_engine_owned(tmp_path: Path, monkeypatc
         model = json.loads(
             urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=5).read()
         )["model"]
-        assert model["id"] == "parakeet-tdt-0.6b-v2"
+        assert model["id"] == "parakeet-unified-en-0.6b"
         assert model["ready"] is False
         assert model["size"] > 0
 
