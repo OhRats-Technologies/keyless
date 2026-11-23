@@ -11,3 +11,6 @@ wheels/
 # SwiftPM
 .build/
 .swiftpm/
+
+# Local Dream-RSI agent traces (keep .agents/harness/policy-ledger.jsonl tracked)
+.agents/traces/
