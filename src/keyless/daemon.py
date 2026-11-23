@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 from rich.console import Console
@@ -23,7 +24,7 @@ from keyless.platform.router import (
 )
 from keyless.ipc.firefox_bridge import FirefoxDOMBridge
 from keyless.ipc.state import FLAG_FACE_DETECTED
-from keyless.ipc.transcript import write_transcript
+from keyless.ipc.transcript import level_path_for, write_level, write_transcript
 from keyless.router.dispatcher import VoiceCommandRouter
 from keyless.router.gaze_vlm_clicker import GazeVLMClicker
 from keyless.models.providers.roles import resolve_gaze_vlm_role, resolve_text_role
@@ -40,6 +41,29 @@ def _desktop_bridge():  # type: ignore[no-untyped-def]
     from keyless.platform.linux.accessibility import LinuxDesktopAccessibilityBridge
 
     return LinuxDesktopAccessibilityBridge()
+
+
+class _CaptionsGate:
+    """Read the live `transcript_overlay` setting so captions toggled in the UI apply at once.
+
+    The setting is cached for a second because the listener calls this every audio frame.
+    """
+
+    def __init__(self, settings_path: Path, *, ttl_s: float = 1.0) -> None:
+        self._settings_path = settings_path
+        self._ttl_s = ttl_s
+        self._checked_at = float("-inf")
+        self._enabled = False
+
+    def __call__(self) -> bool:
+        now = time.monotonic()
+        if now - self._checked_at >= self._ttl_s:
+            self._checked_at = now
+            try:
+                self._enabled = bool(AppConfig.load(self._settings_path).transcript_overlay)
+            except Exception:
+                self._enabled = False
+        return self._enabled
 
 
 def run_combined_daemon(
@@ -336,6 +360,11 @@ def run_combined_daemon(
                 def _publish_partial(text: str) -> None:
                     write_transcript(transcript_path, text, final=False)
 
+                level_path = level_path_for(transcript_path)
+
+                def _publish_level(rms: float) -> None:
+                    write_level(level_path, rms)
+
                 active_listener = ActiveVoiceListener(
                     on_speech_onset=_prewarm_gaze_vlm,
                     is_user_attending=_is_user_attending if enable_vision else None,
@@ -344,7 +373,9 @@ def run_combined_daemon(
                     audio_device=config.audio_device,
                     stt_engine=stt,
                     on_transcript=_publish_transcript,
-                    on_partial=_publish_partial if config.transcript_overlay else None,
+                    on_partial=_publish_partial,
+                    on_level=_publish_level,
+                    captions_enabled=_CaptionsGate(current_paths().settings_path),
                 )
                 if speaker is not None:
                     speaker._on_speaking_changed = active_listener.set_muted

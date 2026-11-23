@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 16000
 BLOCK_SIZE = 512  # 32ms per audio frame at 16kHz
 
+# Live meter cadence: the overlay polls every 60 ms, so 100 ms updates keep the meter moving
+# without a file write per audio frame.
+LEVEL_INTERVAL_S = 0.1
+
 # Provisional captions: re-transcribe the utterance in progress at this cadence, capped to
 # the newest seconds so one long utterance cannot make the live text progressively slower.
 PARTIAL_INTERVAL_S = 0.6
@@ -275,12 +279,18 @@ class ActiveVoiceListener:
         stt_engine: SttEngine | None = None,
         on_transcript: Callable[[str], None] | None = None,
         on_partial: Callable[[str], None] | None = None,
+        on_level: Callable[[float], None] | None = None,
+        captions_enabled: Callable[[], bool] | None = None,
     ) -> None:
         self.on_speech_onset = on_speech_onset
         self.is_user_attending = is_user_attending
         self.require_command_prefix = require_command_prefix
         self.on_transcript = on_transcript
         self.on_partial = on_partial
+        self.on_level = on_level
+        # Read per frame. Gates the live meter and provisional STT, which cost CPU only
+        # while captions are on. None means always on.
+        self.captions_enabled = captions_enabled
         self.audio_device = audio_device
         self.sleeping = False
         self._muted = False
@@ -370,6 +380,7 @@ class ActiveVoiceListener:
         noise_floor = 0.005
         last_partial_at = 0.0
         last_partial_text = ""
+        last_level_at = 0.0
 
         # Adaptive endpointing: 25 frames (800ms) for short (<1.1s) utterances, 15 frames (480ms) after
         max_speech_frames = int(8.0 * SAMPLE_RATE / BLOCK_SIZE)
@@ -389,6 +400,17 @@ class ActiveVoiceListener:
                 continue
 
             rms = float(np.sqrt(np.mean(frame * frame) + 1e-12))
+            captions_on = self.captions_enabled is None or self.captions_enabled()
+            if (
+                captions_on
+                and self.on_level is not None
+                and now - last_level_at >= LEVEL_INTERVAL_S
+            ):
+                last_level_at = now
+                try:
+                    self.on_level(rms)
+                except Exception:
+                    logger.debug("Level callback failed", exc_info=True)
             speech_like = self._is_speech_frame(frame, noise_floor)
 
             if not in_speech and not speech_like:
@@ -437,6 +459,7 @@ class ActiveVoiceListener:
 
                 if (
                     self.on_partial is not None
+                    and captions_on
                     and now - last_partial_at >= PARTIAL_INTERVAL_S
                     and len(speech_buf) >= MIN_PARTIAL_FRAMES
                 ):

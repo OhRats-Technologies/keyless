@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QRectF, Qt, QTimer
@@ -15,12 +15,23 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 from keyless.config.paths import AppPaths, current_paths
-from keyless.ipc.transcript import TranscriptState, read_transcript
+from keyless.ipc.transcript import TranscriptState, level_path_for, read_level, read_transcript
 from keyless.ui.theme.tokens import ThemeName, tokens_for
 
 TRANSCRIPT_TTL_S = 6.0
+# The listener writes the level about every 100 ms, so 1 s without a write means not listening.
+LEVEL_STALE_S = 1.0
 OVERLAY_WIDTH = 760
 OVERLAY_MARGIN = 46
+METER_FLOOR_DB = -60.0
+
+
+def meter_position(rms: float) -> float:
+    """Map RMS to 0..1 on a dBFS scale from -60 dB (empty) to 0 dB (full scale)."""
+    if rms <= 0.0:
+        return 0.0
+    db = 20.0 * math.log10(rms)
+    return min(1.0, max(0.0, (db - METER_FLOOR_DB) / -METER_FLOOR_DB))
 
 
 def _alive(pid: int) -> bool:
@@ -35,16 +46,47 @@ def _alive(pid: int) -> bool:
     return True
 
 
+class LevelMeter(QWidget):
+    """A thin horizontal voice meter. Rises at once and falls smoothly."""
+
+    DECAY = 0.85
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._value = 0.0
+        self.setFixedHeight(6)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def set_rms(self, rms: float) -> None:
+        self._value = max(meter_position(rms), self._value * self.DECAY)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(self.rect())
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 30))
+        painter.drawRoundedRect(rect, 3, 3)
+        if self._value > 0.001:
+            fill = QRectF(rect.x(), rect.y(), rect.width() * self._value, rect.height())
+            painter.setBrush(QColor(239, 237, 229, 220))
+            painter.drawRoundedRect(fill, 3, 3)
+        painter.end()
+
+
 class TranscriptOverlay(QWidget):
-    """A bottom-center card that appears only when a new transcript arrives."""
+    """Live captions card: a voice meter while listening, and subtitles as speech arrives."""
 
     def __init__(self, path, *, parent_pid: int | None = None) -> None:
         super().__init__()
         self.path = Path(path)
+        self.level_path = level_path_for(self.path)
         self.parent_pid = parent_pid
         initial = read_transcript(self.path)
         self._last_seq = initial.seq if initial is not None else 0
         self._shown_at = 0.0
+        self._text_visible = False
         self._tokens = tokens_for(ThemeName.DARK)
 
         flags = (
@@ -72,10 +114,13 @@ class TranscriptOverlay(QWidget):
         self.eyebrow.setFont(QFont("Inter", 9, QFont.Weight.DemiBold))
         self.eyebrow.setStyleSheet("color: #928f87; background: transparent;")
         layout.addWidget(self.eyebrow)
+        self.meter = LevelMeter()
+        layout.addWidget(self.meter)
         self.text = QLabel("")
         self.text.setWordWrap(True)
         self.text.setFont(QFont("Inter", 13))
         self.text.setStyleSheet("color: #efede5; background: transparent;")
+        self.text.setVisible(False)
         layout.addWidget(self.text)
         self.hide()
 
@@ -98,40 +143,52 @@ class TranscriptOverlay(QWidget):
         painter.end()
 
     def _poll(self) -> None:
-        state = read_transcript(self.path)
         now = time.monotonic()
+        state = read_transcript(self.path)
         if state is not None and state.seq > self._last_seq:
             if state.age_s <= 8.0:
                 self._show_text(state, now)
             self._last_seq = state.seq
-        if self.isVisible() and now - self._shown_at > TRANSCRIPT_TTL_S:
+        if self._text_visible and now - self._shown_at > TRANSCRIPT_TTL_S:
+            self._text_visible = False
+            self.text.setText("")
+            self.text.setVisible(False)
+
+        level = read_level(self.level_path)
+        listening = level is not None and level.age_s <= LEVEL_STALE_S
+        self.meter.set_rms(level.rms if listening and level is not None else 0.0)
+
+        if listening or self._text_visible:
+            self._place()
+        elif self.isVisible():
             self.hide()
 
     def _show_text(self, state: TranscriptState, now: float) -> None:
         self.text.setText(state.text)
         color = "#efede5" if state.final else "#b9b5ab"
         self.text.setStyleSheet(f"color: {color}; background: transparent;")
-        self.text.adjustSize()
-        metrics = self.text.fontMetrics()
-        text_height = metrics.boundingRect(
-            QRect(0, 0, OVERLAY_WIDTH - 40, 600),
-            Qt.TextFlag.TextWordWrap,
-            state.text,
-        ).height()
-        height = max(92, min(230, 56 + text_height))
+        self.text.setVisible(True)
+        self._text_visible = True
+        self._shown_at = now
+
+    def _place(self) -> None:
+        """Size the card to its content and anchor it bottom-center on the active screen."""
+        height = max(1, self.layout().totalHeightForWidth(OVERLAY_WIDTH))
         screen = self.screen() or QGuiApplication.primaryScreen()
         geometry: QRect = (
             screen.availableGeometry() if screen is not None else QRect(0, 0, 1920, 1080)
         )
-        self.setGeometry(
+        target = QRect(
             geometry.x() + (geometry.width() - OVERLAY_WIDTH) // 2,
             geometry.y() + geometry.height() - height - OVERLAY_MARGIN,
             OVERLAY_WIDTH,
             height,
         )
-        self._shown_at = now
-        self.show()
-        self.raise_()
+        if self.geometry() != target:
+            self.setGeometry(target)
+        if not self.isVisible():
+            self.show()
+            self.raise_()
 
     def _check_parent(self) -> None:
         if self.parent_pid is not None and not _alive(self.parent_pid):

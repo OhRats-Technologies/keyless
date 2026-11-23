@@ -30,3 +30,27 @@ def test_provisional_transcript_is_marked_not_final(tmp_path) -> None:
 
 def test_write_transcript_ignores_empty_text(tmp_path) -> None:
     assert write_transcript(tmp_path / "transcript.json", "   ") is None
+
+
+def test_level_file_round_trips_and_goes_stale(tmp_path) -> None:
+    from keyless.ipc.transcript import level_path_for, read_level, write_level
+
+    transcript = tmp_path / "transcript.json"
+    level = level_path_for(transcript)
+    assert level == tmp_path / "level.json"
+    assert read_level(level) is None
+
+    write_level(level, 0.25)
+    fresh = read_level(level)
+    assert fresh is not None and fresh.rms == 0.25
+    assert fresh.age_s < 1.0
+
+    stale = type(fresh)(rms=0.25, timestamp_s=fresh.timestamp_s - 5.0)
+    assert stale.age_s >= 5.0
+
+
+def test_level_write_survives_missing_directory(tmp_path) -> None:
+    from keyless.ipc.transcript import write_level
+
+    write_level(tmp_path / "missing" / "level.json", 0.1)
+    assert (tmp_path / "missing" / "level.json").exists()

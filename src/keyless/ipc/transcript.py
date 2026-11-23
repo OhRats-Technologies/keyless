@@ -78,4 +78,54 @@ def write_transcript(
     return state
 
 
-__all__ = ["TranscriptState", "read_transcript", "write_transcript"]
+LEVEL_FILE_NAME = "level.json"
+
+
+@dataclass(frozen=True)
+class LevelState:
+    """Microphone RMS (0..1 full scale) from the listener, stamped with wall-clock time."""
+
+    rms: float
+    timestamp_s: float
+
+    @property
+    def age_s(self) -> float:
+        return max(0.0, time.time() - self.timestamp_s)
+
+
+def level_path_for(transcript_path: Path) -> Path:
+    """The level file sits beside the transcript so both share one data directory."""
+    return transcript_path.with_name(LEVEL_FILE_NAME)
+
+
+def read_level(path: Path) -> LevelState | None:
+    try:
+        data = json.loads(path.read_text())
+        return LevelState(
+            rms=max(0.0, float(data.get("rms", 0.0))),
+            timestamp_s=float(data.get("timestamp_s", 0.0)),
+        )
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def write_level(path: Path, rms: float) -> None:
+    """Replace the level file atomically; a failed write only drops one meter frame."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps({"rms": float(rms), "timestamp_s": time.time()}))
+        os.replace(tmp, path)
+    except OSError:
+        return
+
+
+__all__ = [
+    "LevelState",
+    "TranscriptState",
+    "level_path_for",
+    "read_level",
+    "read_transcript",
+    "write_level",
+    "write_transcript",
+]

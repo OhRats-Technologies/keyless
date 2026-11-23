@@ -57,6 +57,7 @@ class _CameraReaderThread:
         keep_images: bool = True,
         manual_exposure: bool = True,
         capture_backend: str = "v4l2",
+        capture_face_mesh: bool = False,
     ) -> None:
         if capture_backend == "opencv":
             from keyless.platform.macos.capture import open_opencv_capture
@@ -90,8 +91,9 @@ class _CameraReaderThread:
                         "Close the other app or enable 'Share camera' in Settings."
                     ) from exc
         self._extract_landmarks = extract_landmarks
-        self._use_gpu = use_gpu
+        self._use_gpu = self._use_gpu = use_gpu
         self._keep_images = keep_images
+        self._capture_face_mesh = capture_face_mesh
         self.delegate_name = "OFF"
         self._lock = threading.Lock()
         self._latest: CameraFrame | None = None

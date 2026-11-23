@@ -65,6 +65,11 @@ class CameraObservation:
     iris_b_px: tuple[int, int]
     nose_px: tuple[int, int]
     eye_corners_px: tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]
+    # Raw 478-point face mesh and iris limbus rings, pixel coordinates. Populated
+    # only when the extractor runs with ``capture_face_mesh=True`` (diagnostic UI).
+    face_mesh_px: tuple[tuple[int, int], ...] | None = None
+    iris_ring_a_px: tuple[tuple[int, int], ...] | None = None
+    iris_ring_b_px: tuple[tuple[int, int], ...] | None = None
 
     def to_feature_vector(self) -> np.ndarray:
         return np.array(
@@ -181,10 +186,12 @@ class FaceFeatureExtractor:
         self,
         model_path: Path = DEFAULT_LANDMARKER_MODEL_PATH,
         use_gpu: bool = True,
+        capture_face_mesh: bool = False,
     ) -> None:
         from mediapipe.tasks import python as mp_python
         from mediapipe.tasks.python import vision as mp_vision
 
+        self._capture_face_mesh = capture_face_mesh
         resolved = ensure_landmarker_model(model_path)
         self.delegate_name = "CPU"
         if use_gpu and hasattr(mp_python.BaseOptions, "Delegate"):
@@ -253,21 +260,22 @@ class FaceFeatureExtractor:
             ys = [lms[i].y * h for i in indices]
             return np.array([sum(xs) / len(xs), sum(ys) / len(ys)], dtype=np.float64)
 
-        def iris_centroid(indices: tuple[int, ...]) -> np.ndarray:
-            pts = np.array([[lms[i].x * w, lms[i].y * h] for i in indices], dtype=np.float64)
-            return np.dot(_IRIS_RING_WEIGHTS, pts)
+        def iris_points(indices: tuple[int, ...]) -> np.ndarray:
+            return np.array([[lms[i].x * w, lms[i].y * h] for i in indices], dtype=np.float64)
 
         a_out = cluster_mean(_EYE_A_OUTER_CLUSTER)
         a_in = cluster_mean(_EYE_A_INNER_CLUSTER)
         a_up = cluster_mean(_EYE_A_UPPER_CLUSTER)
         a_lo = cluster_mean(_EYE_A_LOWER_CLUSTER)
-        a_iris = iris_centroid(_EYE_A_IRIS_RING)
+        a_iris_pts = iris_points(_EYE_A_IRIS_RING)
+        a_iris = np.dot(_IRIS_RING_WEIGHTS, a_iris_pts)
 
         b_in = cluster_mean(_EYE_B_INNER_CLUSTER)
         b_out = cluster_mean(_EYE_B_OUTER_CLUSTER)
         b_up = cluster_mean(_EYE_B_UPPER_CLUSTER)
         b_lo = cluster_mean(_EYE_B_LOWER_CLUSTER)
-        b_iris = iris_centroid(_EYE_B_IRIS_RING)
+        b_iris_pts = iris_points(_EYE_B_IRIS_RING)
+        b_iris = np.dot(_IRIS_RING_WEIGHTS, b_iris_pts)
 
         nose = lms[_NOSE_TIP]
 
@@ -339,6 +347,14 @@ class FaceFeatureExtractor:
         conf_a = 1.0 if width_a >= width_b else ratio_ab**1.5
         conf_b = 1.0 if width_b >= width_a else ratio_ab**1.5
 
+        mesh_px: tuple[tuple[int, int], ...] | None = None
+        ring_a_px: tuple[tuple[int, int], ...] | None = None
+        ring_b_px: tuple[tuple[int, int], ...] | None = None
+        if self._capture_face_mesh:
+            mesh_px = tuple((int(round(p.x * w)), int(round(p.y * h))) for p in lms)
+            ring_a_px = tuple((int(round(x)), int(round(y))) for x, y in a_iris_pts)
+            ring_b_px = tuple((int(round(x)), int(round(y))) for x, y in b_iris_pts)
+
         return CameraObservation(
             iris_a_dx=a_dx,
             iris_a_dy=a_dy,
@@ -366,6 +382,9 @@ class FaceFeatureExtractor:
                 (int(round(b_in[0])), int(round(b_in[1]))),
                 (int(round(b_out[0])), int(round(b_out[1]))),
             ),
+            face_mesh_px=mesh_px,
+            iris_ring_a_px=ring_a_px,
+            iris_ring_b_px=ring_b_px,
         )
 
     def close(self) -> None:
