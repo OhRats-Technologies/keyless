@@ -6,6 +6,7 @@ and Space Mono strictly for small secondary telemetry. No widget owns a raw colo
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -15,7 +16,13 @@ FONT_DIR = Path(__file__).with_name("fonts")
 CHEVRON = Path(__file__).with_name("chevron-down.svg")
 CHECK_LIGHT = Path(__file__).with_name("check-light.svg")
 CHECK_DARK = Path(__file__).with_name("check-dark.svg")
+TOKENS_PATH = Path(__file__).with_name("design-tokens.json")
 _LOADED_FONTS = False
+
+#: The parsed design-tokens document. ``design-tokens.json`` is the single
+#: source of truth for colors, type, spacing, and radii; this module only maps
+#: its flat records onto the ``ThemeTokens`` API the widgets already use.
+DESIGN_TOKENS: dict[str, object] = json.loads(TOKENS_PATH.read_text())
 
 
 class ThemeName(str, Enum):
@@ -56,39 +63,37 @@ class ThemeTokens:
         return asdict(self)
 
 
-LIGHT = ThemeTokens(
-    name=ThemeName.LIGHT,
-    background="#f4f2ec",
-    surface="#ffffff",
-    surface_alt="#eceae2",
-    sidebar="#eae7df",
-    text="#19191a",
-    muted="#6b6862",
-    accent="#19191a",
-    accent_text="#f7f6f2",
-    border="#dad6cb",
-    danger="#cc4b4b",
-    success="#278952",
-    warning="#9c6500",
-    selected="#dfdbd0",
-)
+def _build_theme(name: ThemeName) -> ThemeTokens:
+    themes = DESIGN_TOKENS["themes"]
+    assert isinstance(themes, dict)
+    palette = themes[name.value]
+    assert isinstance(palette, dict)
+    typography = DESIGN_TOKENS["typography"]
+    assert isinstance(typography, dict)
+    sizes = typography["sizes"]
+    spacing = DESIGN_TOKENS["spacing"]
+    radii = DESIGN_TOKENS["radii"]
+    assert isinstance(sizes, dict) and isinstance(spacing, dict) and isinstance(radii, dict)
+    return ThemeTokens(
+        name=name,
+        **palette,
+        spacing_xs=int(spacing["xs"]),
+        spacing_sm=int(spacing["sm"]),
+        spacing_md=int(spacing["md"]),
+        spacing_lg=int(spacing["lg"]),
+        radius=int(radii["default"]),
+        radius_sm=int(radii["small"]),
+        font_family=str(typography["font_family"]),
+        mono_family=str(typography["mono_family"]),
+        font_size=int(sizes["body"]),
+        title_size=int(sizes["title"]),
+        heading_size=int(sizes["heading"]),
+        pill_height=int(radii["pill"]) * 2,
+    )
 
-DARK = ThemeTokens(
-    name=ThemeName.DARK,
-    background="#141415",
-    surface="#1c1c1e",
-    surface_alt="#252528",
-    sidebar="#111112",
-    text="#f2f0ea",
-    muted="#928f87",
-    accent="#f2f0ea",
-    accent_text="#141415",
-    border="#2c2c30",
-    danger="#e26464",
-    success="#3fb975",
-    warning="#e0b25c",
-    selected="#252528",
-)
+
+LIGHT = _build_theme(ThemeName.LIGHT)
+DARK = _build_theme(ThemeName.DARK)
 
 
 def tokens_for(name: ThemeName | str) -> ThemeTokens:
@@ -212,6 +217,14 @@ _QSS = """
         padding-top: 4px;
     }
     QLabel#Mono, QLabel#Eyebrow {
+        color: $muted;
+        font-family: $mono_family;
+        font-size: 11px;
+    }
+    /* Telemetry numerals stay tabular. Qt QSS has no font-feature-settings
+       property, so the mono family (Space Mono) is the guarantee: every digit
+       advances by the same width in live counters and timings. */
+    QLabel#Telemetry {
         color: $muted;
         font-family: $mono_family;
         font-size: 11px;

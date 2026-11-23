@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "description": "Single source of truth for the Keyless desktop design tokens. Warm-neutral palette; no widget owns a raw color.",
+  "themes": {
+    "light": {
+      "background": "#f4f2ec",
+      "surface": "#ffffff",
+      "surface_alt": "#eceae2",
+      "sidebar": "#eae7df",
+      "text": "#19191a",
+      "muted": "#6b6862",
+      "accent": "#19191a",
+      "accent_text": "#f7f6f2",
+      "border": "#dad6cb",
+      "danger": "#cc4b4b",
+      "success": "#278952",
+      "warning": "#9c6500",
+      "selected": "#dfdbd0"
+    },
+    "dark": {
+      "background": "#141415",
+      "surface": "#1c1c1e",
+      "surface_alt": "#252528",
+      "sidebar": "#111112",
+      "text": "#f2f0ea",
+      "muted": "#928f87",
+      "accent": "#f2f0ea",
+      "accent_text": "#141415",
+      "border": "#2c2c30",
+      "danger": "#e26464",
+      "success": "#3fb975",
+      "warning": "#e0b25c",
+      "selected": "#252528"
+    }
+  },
+  "accent": {
+    "role": "accent",
+    "text_role": "accent_text",
+    "note": "One accent per theme. Filled primary actions only; everything else is ghost or link."
+  },
+  "typography": {
+    "font_family": "Inter, \"Noto Sans\", \"DejaVu Sans\", sans-serif",
+    "mono_family": "\"Space Mono\", \"MesloLGS Nerd Font Mono\", monospace",
+    "sizes": {
+      "body": 14,
+      "title": 26,
+      "heading": 16,
+      "small": 11
+    },
+    "line_heights": {
+      "body": 1.45,
+      "title": 1.2,
+      "heading": 1.3,
+      "small": 1.3
+    },
+    "telemetry_numerals": "tabular"
+  },
+  "spacing": {
+    "xs": 4,
+    "sm": 8,
+    "md": 16,
+    "lg": 24,
+    "xl": 32
+  },
+  "radii": {
+    "default": 10,
+    "small": 7,
+    "pill": 14
+  },
+  "elevation": {
+    "flat": {
+      "background_role": "background",
+      "border_role": "border",
+      "shadow": "none"
+    },
+    "raised": {
+      "background_role": "surface",
+      "border_role": "border",
+      "shadow": "none"
+    },
+    "overlay": {
+      "background_role": "surface",
+      "border_role": "border",
+      "shadow": "0 8px 24px rgba(0, 0, 0, 0.18)"
+    }
+  }
+}
