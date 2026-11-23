@@ -17,7 +17,7 @@ The SwiftUI host implements a Hex-style permission UX in
 quirks make naive implementations look broken.
 
 **Onboarding is an immersive full-window surface** with the canonical,
-engine-owned steps **Welcome → Devices → Calibration → Ready** — the same
+engine-owned steps **Welcome → Devices → Gaze engine → Ready** — the same
 order as the Linux shell and `keyless.ui.onboarding.flow`. It is not a sheet,
 and there is no floating overlay panel. Rows use
 `PermissionGuideController.allowInline(_:)`: native prompt where one exists,
@@ -25,8 +25,9 @@ otherwise the exact Settings deep-link. An in-window toast confirms each grant
 and a "waiting for the switch" spinner shows while a grant is pending. The
 Devices step also shows the offline speech model download, an auto-detection
 checklist (engine, cua-driver, agents), and requires the model before
-continuing. The Calibration step launches the overlay through
-`POST /v1/calibrate` and gates Continue on `GET /v1/setup`'s `calibration.ready`.
+continuing. The Gaze engine step is informational: the legacy calibration
+overlay and startup gate are gone, and voice control is ready without a gaze
+model.
 
 ## The permissions and how each is checked
 

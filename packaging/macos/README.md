@@ -1,9 +1,11 @@
 # macOS native host (SwiftUI)
 
-**Status:** working native host. See
-[`docs/plans/ui-unification-goal.md`](../../docs/plans/ui-unification-goal.md)
-for the plan to make both platform shells thin renderers of one engine-owned UI
-contract (this host currently still hand-codes its screens).
+**Status:** working native host on `greenfield/gaze-v2`. The gaze model is
+being rebuilt as target-level intent; see
+[`docs/GREENFIELD.md`](../../docs/GREENFIELD.md) and
+[`docs/HANDOFF.md`](../../docs/HANDOFF.md). The UI contract work is tracked in
+[`docs/plans/ui-unification-goal.md`](../../docs/plans/ui-unification-goal.md).
+The host runs voice-only until a gaze publisher exists.
 
 ## Architecture
 
@@ -22,9 +24,11 @@ Python engine (../src)  ◀──┘
 - `Capability.swiftui` (`keyless.platform.capabilities.probe_swiftui`) reports
   whether this host can be built here: Swift toolchain + these sources.
 - Control plane: `src/keyless/ipc/control.py` — status, capabilities, doctor,
-  config, history, start/pause, plus engine-owned setup (`GET/POST /v1/setup`,
-  `POST /v1/calibrate`) and model downloads (`GET /v1/models`,
-  `POST /v1/models/download|cancel`).
+  config, history, start/pause, plus engine-owned setup (`GET/POST /v1/setup`)
+  and model downloads (`GET /v1/models`, `POST /v1/models/download|cancel`).
+  `POST /v1/calibrate` returns a disabled notice; there is no calibration gate.
+- Single cursor: the cua agent cursor at rest, the hardware pointer while the
+  mouse moves or clicks. See `src/keyless/platform/macos/pointer_mode.py`.
 
 ## Build
 

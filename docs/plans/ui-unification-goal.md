@@ -1,11 +1,18 @@
 # Goal: one shared UI foundation, thin platform shells
 
+> **Partially superseded (2026-11-23):** the gaze engine is now target-level
+> intent (`docs/GREENFIELD.md`). The calibration step, `POST /v1/calibrate`
+> launch, and `calibration.ready` startup gate have been removed. Setup is
+> **Welcome → Devices → Gaze engine → Ready**, and the Gaze engine step is
+> informational until the v2 model ships. The UI-contract work below remains
+> valid; ignore its calibration-specific acceptance criteria.
+
 Status: **in progress** (2026-11-23). The setup slice of the contract is live:
-`GET/POST /v1/setup`, `POST /v1/calibrate`, `GET /v1/models`, and
-`POST /v1/models/download|cancel`. Supersedes the "scaffold" framing in
+`GET/POST /v1/setup`, `GET /v1/models`, and `POST /v1/models/download|cancel`.
+`POST /v1/calibrate` is a disabled notice. Supersedes the "scaffold" framing in
 `packaging/macos/README.md`. Related: [architecture.md](../architecture.md),
 [platform-matrix.md](../platform-matrix.md),
-[cua-driver-handoff.md](cua-driver-handoff.md).
+[cua-driver-handoff.md](cua-driver-handoff.md), [GREENFIELD.md](../GREENFIELD.md).
 
 ## Why
 

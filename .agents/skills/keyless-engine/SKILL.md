@@ -14,6 +14,9 @@ The engine is a separate Python process from the SwiftUI app. The app talks to
 it over loopback HTTP on port **8766** (configurable with `--port`). The CLI
 entry point is `keyless = keyless.main:app` (Typer), run from the project venv.
 
+Read `docs/GREENFIELD.md` and `docs/HANDOFF.md` before changing gaze behavior.
+The legacy calibration/regression engine was removed on `greenfield/gaze-v2`.
+
 ## Start / restart
 
 ```bash
@@ -42,9 +45,11 @@ restart the engine **before** rebuilding the app.
 | GET | `/v1/history?limit=N` | `{actions: [...]}` |
 | POST | `/v1/start` | start daemon child |
 | POST | `/v1/pause` | pause daemon child |
-| GET | `/v1/setup` | canonical `{steps, state, complete, calibration}` document |
+| GET | `/v1/setup` | `{steps, state, complete, calibration, model}` |
 | POST | `/v1/setup` | `{action: reset|go_to|advance|back|complete, step?}` |
-| POST | `/v1/calibrate` | voice-guided eye alignment guidance (no overlay) |
+| POST | `/v1/calibrate` | disabled notice: the legacy calibration engine is gone |
+| GET | `/v1/models` | speech-model status + active download job |
+| GET | `/v1/runtime` | python executable + args for native-host launches |
 
 Quick probes:
 
@@ -57,6 +62,23 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{"transcript_overlay":fa
 curl -s http://127.0.0.1:8766/v1/setup | python3 -m json.tool
 curl -s http://127.0.0.1:8766/v1/models | python3 -m json.tool
 ```
+
+## Gaze v2 seam
+
+- `src/keyless/gaze/` defines `GazeFrame`, `GazeSource`, `SharedMemoryGazeSource`,
+  and `run_gaze_loop`.
+- The daemon attaches to the `keyless_gaze_v1` shared-memory channel if a
+  publisher exists; otherwise it logs
+  `No gaze model is publishing frames yet; running voice-only until one starts.`
+- There is no in-process calibration model and no calibration startup gate.
+  `POST /v1/start` works without any calibration file.
+- `GET /v1/setup` reports `calibration.ready = true` and
+  `calibration.legacy_removed = true` so shells do not gate on the old model.
+- If the cua overlay is unavailable, `run_gaze_loop(..., move_enabled=False)`
+  leaves the real pointer untouched.
+- Single-cursor arbitration lives in
+  `src/keyless/platform/macos/pointer_mode.py`; the overlay is
+  `src/keyless/platform/cua/agent_cursor.py`.
 
 ## Doctor from the CLI
 
@@ -76,9 +98,12 @@ TCC grant shows up here first.
 These exist in `/v1/config` and are used by the SwiftUI Settings form:
 `camera_mode`, `action_backend`, `ptt_hotkey`, `always_on_voice`,
 `require_command_prefix`, `enable_pop_click`, `gaze_cursor_control`,
-`gaze_online_ekf`, `llm_provider`, `llm_model`, `acp_agent_id`,
+`gaze_cursor_overlay`, `llm_provider`, `llm_model`, `acp_agent_id`,
 `gaze_vlm_remote_consent`. Engine-backed binary/status shown in Settings
 (`stt.selected`, capability rows) come from `/v1/doctor`.
+
+`gaze_model`, `gaze_online_ekf`, `gaze_click_learning`, `saccade_*`, and
+`gimbal_gain` were removed with the legacy model. Do not reintroduce them.
 
 ## Gotchas
 
@@ -88,10 +113,8 @@ These exist in `/v1/config` and are used by the SwiftUI Settings form:
   the engine. Treat them as independent processes.
 - `lsof -ti tcp:8766` is the safest way to find the server; do not kill by
   process name (would also match the CLI or other Python processes).
-- Calibration is engine-side and launched by `POST /v1/calibrate`; readiness is
-  `GET /v1/setup` → `calibration.ready`. `POST /v1/start` stays gated until the
-  file exists, but the shell now shows "Calibrate to begin" with an action
-  instead of the raw missing-file path.
+- The app starts **voice-only** until a gaze publisher exists. This is expected,
+  not an error.
 - The pinned Parakeet speech model is downloaded by `POST /v1/models/download`
   on a daemon thread; poll `GET /v1/models` for `{state, percent, bytes_done}`
   or read `GET /v1/setup` → `model`. `POST /v1/models/cancel` is cooperative

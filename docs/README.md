@@ -1,5 +1,11 @@
 # Keyless Docs
 
+> **Start here for Gaze v2 (2026-11-23):** the gaze engine is being rebuilt as
+> target-level intent. Read [../AGENTS.md](../AGENTS.md), then
+> [GREENFIELD.md](GREENFIELD.md), then [HANDOFF.md](HANDOFF.md). The older
+> snapshot below is still useful for the platform/UI/STT/provider work, but its
+> calibration and gaze-model statements are superseded.
+
 **Status:** implementation snapshot, 2026-11-20. Steps 1–5 and 8 of the migration are complete and verified; the Linux UI and packaging (step 6–7) are implemented. Windows and macOS are honest capability stubs. The Linux-first engine still runs as a CLI daemon.
 
 **Purpose:** keep product, UI, model, provider, and cross-platform decisions in one place so a new session starts from shipped behavior and known gaps instead of re-deriving them.
@@ -16,20 +22,23 @@
 
 ## What is still open
 
-- Natural human desktop-command recordings and the full hardware path (two cameras, calibration, uinput injection, screen capture) were not available; see `CONCERNS.md`.
+- Natural human desktop-command recordings and the full hardware path (two cameras, gaze model, uinput injection, screen capture) were not available; see `CONCERNS.md`.
 - The original CLI daemon is not yet the UI's only engine host; the UI starts/stops the daemon as a child process, and a true pause IPC is still missing.
 - Firefox extension installation/signing, a global GNOME Wayland overlay, macOS/Windows implementations, and notarization/signing are not done.
 
 ## Read in order
 
-1. [architecture.md](architecture.md) — goals, layers, data/model strategy, UI surfaces, migration status.
-2. [file-map.md](file-map.md) — target tree and migration status.
-3. [platform-matrix.md](platform-matrix.md) — Linux/macOS/Windows capability status.
-4. [decisions.md](decisions.md) — decisions, defaults, implementation status.
-5. [features/stt.md](features/stt.md) — pinned model, downloader behavior, benchmark method and numbers.
-6. [features/providers.md](features/providers.md) — provider adapters, ACP safety, role/consent rules.
-7. [RELEASES.md](RELEASES.md) — tag-driven release, public mirror, and install smoke.
-8. [../CONCERNS.md](../CONCERNS.md) — concerns with resolved/partial/open status.
+1. [../AGENTS.md](../AGENTS.md) — repository operating contract, branch, guardrails.
+2. [GREENFIELD.md](GREENFIELD.md) — Gaze v2 plan, theory, proofs, architecture, metrics.
+3. [HANDOFF.md](HANDOFF.md) — current state, next steps, known issues.
+4. [architecture.md](architecture.md) — goals, layers, data/model strategy, UI surfaces, migration status.
+5. [file-map.md](file-map.md) — target tree and migration status.
+6. [platform-matrix.md](platform-matrix.md) — Linux/macOS/Windows capability status.
+7. [decisions.md](decisions.md) — decisions, defaults, implementation status.
+8. [features/stt.md](features/stt.md) — pinned model, downloader behavior, benchmark method and numbers.
+9. [features/providers.md](features/providers.md) — provider adapters, ACP safety, role/consent rules.
+10. [RELEASES.md](RELEASES.md) — tag-driven release, public mirror, and install smoke.
+11. [../CONCERNS.md](../CONCERNS.md) — concerns with resolved/partial/open status.
 
 ## Reference material
 

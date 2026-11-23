@@ -85,13 +85,12 @@ keyless/
 │   │   ├── audio.py              # mic stream + levels
 │   │   └── screen.py             # screen capture orchestration
 │   ├── gaze/
-│   │   ├── landmarks.py
-│   │   ├── calibration/
-│   │   │   ├── model.py
-│   │   │   └── ui.py
-│   │   ├── cursor.py
-│   │   ├── filters.py
-│   │   └── learner.py
+│   │   ├── types.py              # GazeFrame / GazeSource
+│   │   ├── shared_memory.py      # keyless_gaze_v1 adapter
+│   │   ├── runtime.py            # model-agnostic frame loop
+│   │   ├── collect.py            # next: replayable event log
+│   │   ├── replay.py             # next: offline metrics
+│   │   └── model/                # next: target encoder, scorer, uncertainty
 │   ├── voice/
 │   │   ├── listener.py
 │   │   ├── stt/
