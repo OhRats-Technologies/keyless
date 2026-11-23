@@ -28,6 +28,13 @@ Do not merge to `main` unless the user explicitly asks.
 8. **`docs/platform-matrix.md`** — per-OS capability status.
 9. **`CONCERNS.md`** — historical concerns; not a plan.
 
+OpenSpec is initialized in `openspec/`: change proposals, task lists, and
+verifiable requirement deltas live there. Hierarchy: `docs/GREENFIELD.md`
+owns direction, theory, phases, and kill criteria; `openspec/` holds the
+machine-checkable layer and must cite GREENFIELD sections, never compete
+with them. Start work with the `openspec-propose` skill; never restate
+GREENFIELD content in specs.
+
 ## Live state tracking
 
 Context windows run short on this project. Keep `docs/LIVE_STATE.md` as the

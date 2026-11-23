@@ -1,0 +1,27 @@
+schema: spec-driven
+
+# Constraints an agent cannot infer by reading the code.  Direction, theory,
+# phases, and kill criteria live in docs/GREENFIELD.md — it is the north star
+# and is NOT duplicated here or in specs.  openspec/ holds machine-checkable
+# requirements and per-change deltas that must stay consistent with it.
+context: |
+  Spec hierarchy: docs/GREENFIELD.md owns direction and gates; openspec/
+  specs and changes must cite GREENFIELD sections, never restate or compete
+  with them.  AGENTS.md non-negotiable rules apply to every change:
+  target-level intent (not pixel calibration), the pointer never moves
+  implicitly, exactly one cursor, the app must start voice-only, and no
+  legacy-gaze-v1 code, losses, gates, or anchors may return.
+  Designs must cover Linux, macOS, and Windows through the src/keyless/
+  platform/ seam; dev-time tooling (experiments/) is not a runtime
+  dependency.  Any change claiming model improvement must state a baseline,
+  a session-held-out metric, and a falsifier.
+
+rules:
+  proposal:
+    - State which GREENFIELD.md section(s) and phase the change serves
+    - State explicitly what is out of scope
+  specs:
+    - Requirements are observable behavior, not implementation detail
+  tasks:
+    - Include a verification task that exercises the changed behavior
+      end-to-end, not only unit tests
