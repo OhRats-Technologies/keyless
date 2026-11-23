@@ -47,30 +47,30 @@ class GimbalStepResult:
 
 
 class GazeGimbalController:
-    """Pure state machine turning 30Hz stereo gaze + nose pose into 60Hz ABS/REL output."""
+    """Pure state machine turning 30Hz gaze into stable 60Hz absolute pointer output."""
 
     def __init__(
         self,
         screen_width: int,
         screen_height: int,
-        saccade_threshold_px: float = 110.0,
-        saccade_hold_ms: float = 16.0,
-        gimbal_gain: float = 2800.0,
-        min_cutoff: float = 1.4,
-        beta: float = 0.008,
-        gimbal_deadband_px: float = 0.75,
+        saccade_threshold_px: float = 120.0,
+        saccade_hold_ms: float = 65.0,
+        gimbal_gain: float = 0.0,
+        min_cutoff: float = 0.85,
+        beta: float = 0.0025,
+        gimbal_deadband_px: float = 12.0,
         move_cursor: bool = True,
     ) -> None:
         self.screen_width = float(screen_width)
         self.screen_height = float(screen_height)
         self.saccade_threshold_px = float(saccade_threshold_px)
-        self.saccade_hold_sec = float(saccade_hold_ms) / 1000.0
+        # Enforce at least 60ms so two distinct 30Hz camera frames must agree before jumping
+        self.saccade_hold_sec = max(0.060, float(saccade_hold_ms) / 1000.0)
         self.gimbal_gain = float(gimbal_gain)
-        self.gimbal_deadband_px = float(gimbal_deadband_px)
+        self.gimbal_deadband_px = max(8.0, float(gimbal_deadband_px))
         self.move_cursor = bool(move_cursor)
 
         self._gaze_filter = OneEuroFilter2D(min_cutoff=min_cutoff, beta=beta)
-        self._nose_filter = OneEuroFilter2D(min_cutoff=1.8, beta=0.02)
 
         self.cursor_x = self.screen_width * 0.5
         self.cursor_y = self.screen_height * 0.5
@@ -80,14 +80,10 @@ class GazeGimbalController:
         self._smooth_gaze_x = self.cursor_x
         self._smooth_gaze_y = self.cursor_y
 
-        self._prev_nose: tuple[float, float] | None = None
-        self._pending_rel_x = 0.0
-        self._pending_rel_y = 0.0
-        self._gimbal_offset_x = 0.0
-        self._gimbal_offset_y = 0.0
-
+        self._vision_seq = 0
         self._saccade_candidate: tuple[float, float] | None = None
         self._saccade_start_t: float = 0.0
+        self._saccade_start_seq: int = 0
         self._has_fixation = False
         self._state_lock = threading.Lock()
         self._hold_until: float = 0.0
@@ -99,17 +95,13 @@ class GazeGimbalController:
         )
 
     def warp_and_hold(self, x: float, y: float, hold_sec: float = 0.25) -> None:
-        """Snap controller state to `(x, y)` and pause gaze/gimbal drift during a voice click."""
+        """Snap controller state to `(x, y)` and pause gaze drift during a voice click."""
         with self._state_lock:
             cx, cy = self._clamp_screen(x, y)
             self.cursor_x, self.cursor_y = cx, cy
             self._raw_gaze_x, self._raw_gaze_y = cx, cy
             self._smooth_gaze_x, self._smooth_gaze_y = cx, cy
             self._gaze_filter.reset()
-            self._pending_rel_x = 0.0
-            self._pending_rel_y = 0.0
-            self._gimbal_offset_x = 0.0
-            self._gimbal_offset_y = 0.0
             self._saccade_candidate = None
             self._hold_until = time.monotonic() + max(0.0, float(hold_sec))
 
@@ -121,34 +113,20 @@ class GazeGimbalController:
         t_sec: float,
     ) -> None:
         """Ingest a 30Hz vision observation."""
-        if is_blinking:
+        if is_blinking or raw_gaze_xy is None:
             return
         with self._state_lock:
             if self._hold_until > 0.0 and time.monotonic() < self._hold_until:
-                if nose_xy is not None:
-                    self._prev_nose = self._nose_filter(nose_xy[0], nose_xy[1], t_sec)
                 return
-            if raw_gaze_xy is not None:
-                rx, ry = self._clamp_screen(raw_gaze_xy[0], raw_gaze_xy[1])
-                self._prev_raw_gaze = (
-                    (self._raw_gaze_x, self._raw_gaze_y) if self._has_fixation else (rx, ry)
-                )
-                self._raw_gaze_x, self._raw_gaze_y = rx, ry
-                sx, sy = self._gaze_filter(rx, ry, t_sec)
-                self._smooth_gaze_x, self._smooth_gaze_y = self._clamp_screen(sx, sy)
-                self._has_fixation = True
-
-            if nose_xy is not None:
-                fnx, fny = self._nose_filter(nose_xy[0], nose_xy[1], t_sec)
-                if self._prev_nose is not None:
-                    # Raw webcam X is unmirrored: moving head right decreases image nose_x.
-                    dx_px = -(fnx - self._prev_nose[0]) * self.gimbal_gain
-                    dy_px = (fny - self._prev_nose[1]) * self.gimbal_gain
-                    self._pending_rel_x += dx_px
-                    self._pending_rel_y += dy_px
-                    self._gimbal_offset_x = max(-90.0, min(90.0, self._gimbal_offset_x + dx_px))
-                    self._gimbal_offset_y = max(-90.0, min(90.0, self._gimbal_offset_y + dy_px))
-                self._prev_nose = (fnx, fny)
+            rx, ry = self._clamp_screen(raw_gaze_xy[0], raw_gaze_xy[1])
+            self._prev_raw_gaze = (
+                (self._raw_gaze_x, self._raw_gaze_y) if self._has_fixation else (rx, ry)
+            )
+            self._raw_gaze_x, self._raw_gaze_y = rx, ry
+            sx, sy = self._gaze_filter(rx, ry, t_sec)
+            self._smooth_gaze_x, self._smooth_gaze_y = self._clamp_screen(sx, sy)
+            self._vision_seq += 1
+            self._has_fixation = True
 
     def step_output(
         self,
@@ -157,7 +135,7 @@ class GazeGimbalController:
         is_blinking: bool,
         t_sec: float,
     ) -> GimbalStepResult:
-        """Advance the 60Hz output loop, dispatching ABS warps or continuous 60Hz chase+gimbal."""
+        """Advance the 60Hz output loop using drift-free absolute positioning."""
         flags = 0
         if face_detected:
             flags |= FLAG_FACE_DETECTED
@@ -184,8 +162,8 @@ class GazeGimbalController:
                 return GimbalStepResult(
                     gaze_x=self._smooth_gaze_x,
                     gaze_y=self._smooth_gaze_y,
-                    cursor_x=self._smooth_gaze_x,
-                    cursor_y=self._smooth_gaze_y,
+                    cursor_x=self.cursor_x,
+                    cursor_y=self.cursor_y,
                     flags=flags,
                     jumped=False,
                     rel_dx=0.0,
@@ -193,8 +171,6 @@ class GazeGimbalController:
                 )
 
             if not face_detected or is_blinking or not self._has_fixation:
-                self._pending_rel_x = 0.0
-                self._pending_rel_y = 0.0
                 self._saccade_candidate = None
                 return GimbalStepResult(
                     gaze_x=self._smooth_gaze_x,
@@ -207,37 +183,34 @@ class GazeGimbalController:
                     rel_dy=0.0,
                 )
 
-            # Detect saccades directly on raw gaze (with 1-frame confirmation) so One-Euro
-            # damping never turns a fast eye jump into a slow crawl.
+            # Confirm saccade only after >= 2 distinct camera frames agree (stops 1-frame jitter teleports)
             dist = math.hypot(self._raw_gaze_x - self.cursor_x, self._raw_gaze_y - self.cursor_y)
             if dist > self.saccade_threshold_px:
                 if self._saccade_candidate is None:
                     self._saccade_candidate = (self._raw_gaze_x, self._raw_gaze_y)
                     self._saccade_start_t = t_sec
+                    self._saccade_start_seq = self._vision_seq
                 else:
                     cand_dist = math.hypot(
                         self._raw_gaze_x - self._saccade_candidate[0],
                         self._raw_gaze_y - self._saccade_candidate[1],
                     )
-                    if cand_dist > max(160.0, self.saccade_threshold_px * 1.4):
+                    if cand_dist > max(140.0, self.saccade_threshold_px * 1.2):
                         self._saccade_candidate = (self._raw_gaze_x, self._raw_gaze_y)
                         self._saccade_start_t = t_sec
-                    elif (t_sec - self._saccade_start_t) >= self.saccade_hold_sec:
-                        prev_rx, prev_ry = self._prev_raw_gaze or (
-                            self._raw_gaze_x,
-                            self._raw_gaze_y,
-                        )
-                        tx = 0.65 * self._raw_gaze_x + 0.35 * prev_rx
-                        ty = 0.65 * self._raw_gaze_y + 0.35 * prev_ry
+                        self._saccade_start_seq = self._vision_seq
+                    elif (
+                        (self._vision_seq - self._saccade_start_seq) >= 2
+                        and (t_sec - self._saccade_start_t) >= self.saccade_hold_sec
+                    ):
+                        prev_rx, prev_ry = self._prev_raw_gaze or (self._raw_gaze_x, self._raw_gaze_y)
+                        tx = 0.5 * (self._raw_gaze_x + prev_rx)
+                        ty = 0.5 * (self._raw_gaze_y + prev_ry)
                         self.cursor_x, self.cursor_y = self._clamp_screen(tx, ty)
                         self._gaze_filter.reset()
                         self._gaze_filter(self.cursor_x, self.cursor_y, t_sec)
                         self._smooth_gaze_x, self._smooth_gaze_y = self.cursor_x, self.cursor_y
                         pointer.move_absolute(self.cursor_x, self.cursor_y)
-                        self._pending_rel_x = 0.0
-                        self._pending_rel_y = 0.0
-                        self._gimbal_offset_x = 0.0
-                        self._gimbal_offset_y = 0.0
                         self._saccade_candidate = None
                         flags |= FLAG_SACCADE_JUMP
                         return GimbalStepResult(
@@ -253,32 +226,28 @@ class GazeGimbalController:
             else:
                 self._saccade_candidate = None
 
-            # Inside saccade threshold: smoothly chase (smooth_gaze + head_gimbal_offset) at 60Hz
-            # so sub-threshold eye movements AND head tilts both glide the cursor immediately.
-            gimbal_x = self._pending_rel_x * 0.55
-            gimbal_y = self._pending_rel_y * 0.55
-            self._pending_rel_x -= gimbal_x
-            self._pending_rel_y -= gimbal_y
-
-            target_x, target_y = self._clamp_screen(
-                self._smooth_gaze_x + self._gimbal_offset_x,
-                self._smooth_gaze_y + self._gimbal_offset_y,
-            )
-            chase_x = (target_x - self.cursor_x) * 0.40
-            chase_y = (target_y - self.cursor_y) * 0.40
-
-            emit_x = gimbal_x + chase_x * 0.45
-            emit_y = gimbal_y + chase_y * 0.45
-
-            if math.hypot(emit_x, emit_y) < self.gimbal_deadband_px:
-                emit_x = 0.0
-                emit_y = 0.0
-            else:
-                pointer.move_relative(emit_x, emit_y)
-                self.cursor_x, self.cursor_y = self._clamp_screen(
-                    self.cursor_x + emit_x, self.cursor_y + emit_y
+            # Smoothly glide cursor via move_absolute (zero Wayland pointer-acceleration drift)
+            dx = self._smooth_gaze_x - self.cursor_x
+            dy = self._smooth_gaze_y - self.cursor_y
+            err = math.hypot(dx, dy)
+            if err < self.gimbal_deadband_px:
+                return GimbalStepResult(
+                    gaze_x=self._smooth_gaze_x,
+                    gaze_y=self._smooth_gaze_y,
+                    cursor_x=self.cursor_x,
+                    cursor_y=self.cursor_y,
+                    flags=flags,
+                    jumped=False,
+                    rel_dx=0.0,
+                    rel_dy=0.0,
                 )
 
+            step_x = dx * 0.28
+            step_y = dy * 0.28
+            self.cursor_x, self.cursor_y = self._clamp_screen(
+                self.cursor_x + step_x, self.cursor_y + step_y
+            )
+            pointer.move_absolute(self.cursor_x, self.cursor_y)
             return GimbalStepResult(
                 gaze_x=self._smooth_gaze_x,
                 gaze_y=self._smooth_gaze_y,
@@ -286,8 +255,8 @@ class GazeGimbalController:
                 cursor_y=self.cursor_y,
                 flags=flags,
                 jumped=False,
-                rel_dx=emit_x,
-                rel_dy=emit_y,
+                rel_dx=step_x,
+                rel_dy=step_y,
             )
 
 
@@ -338,8 +307,8 @@ def run_vision_loop(
         model.with_layout(monitor_specs_from_layout(layout))
         tracker = GeoGazeTracker(
             model,
-            enable_chase=bool(getattr(config, "gaze_online_chase", True)),
-            enable_ekf=bool(getattr(config, "gaze_online_ekf", True)),
+            enable_chase=False,  # Stop unverified scan patterns from poisoning camera pose EKF
+            enable_ekf=bool(getattr(config, "gaze_online_ekf", False)),
         )
         if on_tracker_ready is not None:
             on_tracker_ready(tracker)
@@ -422,10 +391,12 @@ def run_vision_loop(
                             last_stereo_feat = feat
                             if not last_blinking:
                                 pred = tracker.update(feat, loop_start)
-                                if np.all(np.isfinite(pred)):
+                                # Use FixationSegmenter's denoised fixation mean instead of raw single-frame pred
+                                out = tracker.smoothed if tracker.smoothed is not None else pred
+                                if np.all(np.isfinite(out)):
                                     raw_gaze = (
-                                        float(pred[0]) + model.session_offset_x,
-                                        float(pred[1]) + model.session_offset_y,
+                                        float(out[0]) + model.session_offset_x,
+                                        float(out[1]) + model.session_offset_y,
                                     )
                     elif o1 is not None and o2 is not None:
                         feat, both_ok = build_stereo_feature_vector(o1, o2)
@@ -446,8 +417,6 @@ def run_vision_loop(
                     is_blinking=last_blinking,
                     t_sec=loop_start,
                 )
-                if tracker is not None:
-                    tracker.observe_display(step.cursor_x, step.cursor_y, loop_start)
                 step.stereo_feat = last_stereo_feat
                 step.yaw_deg = last_yaw_deg
                 shm_writer.write(step.cursor_x, step.cursor_y, step.flags)

@@ -278,31 +278,37 @@ def test_gimbal_saccade_deadzone_and_blink_suppression() -> None:
         screen_width=3440,
         screen_height=1440,
         saccade_threshold_px=120.0,
-        saccade_hold_ms=40.0,
-        gimbal_gain=2000.0,
+        saccade_hold_ms=65.0,
     )
 
-    # Initial fixation near center settles without jumping until >120px away.
+    # Frame 0: sets saccade candidate without jumping
     ctrl.update_vision((2400.0, 720.0), (0.50, 0.50), is_blinking=False, t_sec=0.00)
     res0 = ctrl.step_output(pointer, face_detected=True, is_blinking=False, t_sec=0.00)
     assert not res0.jumped
 
-    # Hold gaze >120px away for >=40ms -> triggers absolute jump
-    ctrl.update_vision((2400.0, 720.0), (0.50, 0.50), is_blinking=False, t_sec=0.05)
-    res1 = ctrl.step_output(pointer, face_detected=True, is_blinking=False, t_sec=0.05)
-    assert res1.jumped
-    assert res1.flags & FLAG_SACCADE_JUMP
+    # Stale-frame tick at 60Hz (no new update_vision) must NOT jump even if time passes
+    res_stale = ctrl.step_output(pointer, face_detected=True, is_blinking=False, t_sec=0.08)
+    assert not res_stale.jumped
+
+    # 2 distinct camera frames agreeing after >=65ms -> triggers absolute saccade jump
+    ctrl.update_vision((2400.0, 720.0), (0.50, 0.50), is_blinking=False, t_sec=0.033)
+    res1 = ctrl.step_output(pointer, face_detected=True, is_blinking=False, t_sec=0.033)
+    assert not res1.jumped
+
+    ctrl.update_vision((2400.0, 720.0), (0.50, 0.50), is_blinking=False, t_sec=0.070)
+    res2 = ctrl.step_output(pointer, face_detected=True, is_blinking=False, t_sec=0.070)
+    assert res2.jumped
+    assert res2.flags & FLAG_SACCADE_JUMP
     assert pointer.last_abs is not None
     assert abs(pointer.last_abs[0] - 2400.0) < 5.0
 
-    # Small head movement inside deadzone moves cursor via EV_REL
-    ctrl.update_vision((2410.0, 725.0), (0.49, 0.505), is_blinking=False, t_sec=0.08)
-    res2 = ctrl.step_output(pointer, face_detected=True, is_blinking=False, t_sec=0.08)
-    assert not res2.jumped
-    assert res2.rel_dx > 0.0  # head moved right (smaller nose_x) -> positive X
-    assert res2.rel_dy > 0.0
+    # Micro-jitter inside deadband (<12px) stays completely still
+    ctrl.update_vision((2404.0, 722.0), (0.49, 0.505), is_blinking=False, t_sec=0.10)
+    res_still = ctrl.step_output(pointer, face_detected=True, is_blinking=False, t_sec=0.10)
+    assert not res_still.jumped
+    assert res_still.rel_dx == 0.0 and res_still.rel_dy == 0.0
 
-    # Blink freezes both saccade and relative motion
+    # Blink freezes both saccade and glide motion
     ctrl.update_vision((500.0, 200.0), (0.60, 0.60), is_blinking=True, t_sec=0.15)
     res3 = ctrl.step_output(pointer, face_detected=True, is_blinking=True, t_sec=0.15)
     assert not res3.jumped

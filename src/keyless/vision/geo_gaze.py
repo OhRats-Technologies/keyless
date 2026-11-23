@@ -708,7 +708,18 @@ class GeoGazeModel:
             "stereo" if len(blocks) > 1 else "mono",
             n_train_samples=int(len(X)),
         )
-        model.noise_px = _fixation_noise(model.predict_batch(X), targets_xy) or model.noise_px
+        preds_fit = model.predict_batch(X)
+        model.noise_px = _fixation_noise(preds_fit, targets_xy) or model.noise_px
+        ok = np.all(np.isfinite(preds_fit), axis=1) & on_ref
+        if np.any(ok):
+            ex = np.abs(preds_fit[ok, 0] - targets_xy[ok, 0])
+            ey = np.abs(preds_fit[ok, 1] - targets_xy[ok, 1])
+            model.rmse_x = float(np.median(ex) * 1.4826)
+            model.rmse_y = float(np.median(ey) * 1.4826)
+            print(
+                f"[GeoGaze] Fit median abs err: X={np.median(ex):.1f}px, Y={np.median(ey):.1f}px | "
+                f"blocks={[(b.block, round(b.sigma_px, 1)) for b in blocks]}"
+            )
         return model
 
     # ---------------------------------------------------------------- prediction
