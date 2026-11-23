@@ -30,17 +30,16 @@ from keyless.platform.router import get_display_layout, resolve_camera_config
 from keyless.ui.components import Card, divider, eyebrow
 from keyless.ui.gaze_field import GazeField
 from keyless.ui.gaze_region import gaze_region
-from keyless.ui.history.db import HistoryStore
-from keyless.ui.history.window import HistoryPanel
-from keyless.ui.onboarding.flow import OnboardingFlow
-from keyless.ui.onboarding.steps import OnboardingWidget, OnboardingWindow
-from keyless.ui.session import (
-    DaemonController,
+from keyless.core.history import HistoryStore
+from keyless.core.lifecycle import (
     NullController,
     SessionController,
     SessionState,
     inspect_daemon_error,
 )
+from keyless.core.onboarding import OnboardingFlow
+from keyless.ui.history.window import HistoryPanel
+from keyless.ui.onboarding.steps import OnboardingWidget, OnboardingWindow
 from keyless.ui.settings.window import SettingsPanel
 from keyless.ui.theme.tokens import ThemeName, load_bundled_fonts, stylesheet, tokens_for
 from keyless.ui.transcript_overlay import TranscriptOverlayController
@@ -423,6 +422,7 @@ class MainWindow(QMainWindow):
         self._update_worker: _UpdateWorker | None = None
         self._updater = None
         self._instance_server = None
+        self._control_server = None
         self._display_layout = None
         self._shutdown = False
 
@@ -773,6 +773,9 @@ class MainWindow(QMainWindow):
             self._instance_server.close()
             self._instance_server = None
         self.controller.quit()
+        if self._control_server is not None:
+            self._control_server.stop()
+            self._control_server = None
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self.tray is not None and self.tray.available():
@@ -806,13 +809,26 @@ def run_ui(
     app.setApplicationDisplayName("Keyless")
     app.setWindowIcon(make_icon())
     resolved_theme = theme or system_theme_name(app)
+    control_server = None
+    if controller is None:
+        from keyless.ipc.client import ControlClient, HttpSessionController
+        from keyless.ipc.control import ControlServer
+
+        control_server = ControlServer(paths=resolved_paths)
+        bound = control_server.start(host="127.0.0.1", port=0)
+        session_controller: SessionController = HttpSessionController(
+            ControlClient(f"http://127.0.0.1:{bound}"), paths=resolved_paths
+        )
+    else:
+        session_controller = controller
     window = MainWindow(
         paths=resolved_paths,
         config=config,
-        controller=controller or DaemonController(paths=resolved_paths),
+        controller=session_controller,
         theme=resolved_theme,
         enable_previews=enable_previews,
     )
+    window._control_server = control_server
     if controller is None:
         server = SingleInstanceServer(resolved_paths, parent=window)
         try:
