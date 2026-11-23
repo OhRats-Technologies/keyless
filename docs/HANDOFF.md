@@ -1,13 +1,13 @@
 # Handoff — Gaze v2 greenfield
 
 **Date:** 2026-11-23
-**Branch:** `greenfield/gaze-v2` (single active development branch)
+**Branch:** `alt` (renamed from `greenfield/gaze-v2` 2026-11-23; single active development branch)
 **Base:** `main` / `origin/main` = `5bad72c` (Noah's last commit; do not merge without explicit approval)
 **Audit snapshot:** tag `legacy-gaze-v1` = `641d055` (audit only; never a code source)
 
 > Read `AGENTS.md` first, then `docs/GREENFIELD.md`, then this file.
 
-## 1. What is on `greenfield/gaze-v2`
+## 1. What is on `alt`
 
 ### Product fixes (ported from `port/greenfield-product`)
 - `5f162f1` / `3091ba4` / `036cef5`: Parakeet Unified default STT, configurable camera auto-exposure, provisional captions + command confirmation fixes, default-skipped UI/slow tests.
@@ -26,6 +26,12 @@
 - `32813da`: Dream-RSI harness (`scripts/agent_dream.py`, `.agents/skills/dream-harness/SKILL.md`, `.agents/harness/policy-ledger.jsonl`) wired to local `pi-strata` + Strata (`Qwen3.8-Flash-Next IQ3_S`) with 6 deterministic invariants (including AST `no_undefined_names`).
 - Keyless Lab UI (`src/keyless/gaze/curate.py`, `src/keyless/ui/lab/window.py`, `keyless gaze lab` / `./scripts/gaze-flywheel.sh lab`): visual candidate/click inspector, accept/reject/retarget/delete curation, per-app Phase 1 recall dashboard, session-level split exporter, and Dream-RSI console.
 
+### Embedding probe, synthetic 3D lab, live-preview policy, OpenSpec (2026-11-23)
+- `d74f397`: `gaze/experiment.py` — `EmbeddingExtractor` protocol, `EmbeddingHead` per-id centroid probe, `evaluate_experiment`; CLI `keyless gaze probe` with `module:callable` extractor spec, session-level split, explicit beats/falsified verdict vs `baseline_top1`. No backbone wired yet (EG2 wrapper will implement the same protocol).
+- `23770b9`: `experiments/synth_lab/` — headless Blender fake person (mobile pupils) + monitor UI with exact ground truth; renders through the real `CandidateGenerator` + RapidOCR into schema-v0 sessions. Ground-truth recall 100%; probe CLI verdict exercised end-to-end with a toy `HashTextExtractor`. `--blend` flag saves an editable scene.
+- `91d175f`: GREENFIELD §6.3 + Appendix C.5 — live display-only preview allowed from Phase 1 with any scorer; frozen-eval gate for online updates deferred to Phase 4; reversibility always required.
+- `4b077c9`: OpenSpec initialized (`openspec/`, spec-driven schema; skills in `~/.agents/skills/`). Hierarchy in AGENTS.md: GREENFIELD owns direction; openspec/ holds change proposals + requirement deltas citing GREENFIELD sections.
+
 ## 2. Verification (current)
 
 ```bash
@@ -37,16 +43,17 @@
 
 Known exclusions remain pre-existing environment failures (`test_packaging.py`, `test_release_assets.py`, `test_instance_lock.py`), not regressions.
 
-## 3. THE NEXT GATE (before any Phase 2 model work)
+## 3. THE NEXT GATE (what to build now)
 
-**Record real user sessions, then measure candidate recall on real clicks.**
+**The flywheel is built and proven on synthetic data. The missing input is a real gaze source.**
 
-1. Inside a shell with the `input` group active (`newgrp input`), record natural desktop sessions:
+1. Build the live gaze source: webcam → MediaPipe face/iris landmarks → gaze pixel via cold-start mapping from natural clicks (5–10 clicks, no dot grid, GREENFIELD §6.3) → publish to the shared-memory channel (`SharedMemoryGazeSource` consumer side already exists).
+2. Run the live preview loop: throttled screen capture → `CandidateGenerator` → nearest-candidate scorer → overlay highlight of top-1/top-3, **display-only** (pointer never moves implicitly; single-cursor rules hold).
+3. Record natural desktop sessions while using the machine (`input` group active for click observation):
    - CLI: `./scripts/gaze-flywheel.sh record`
    - GUI: `./scripts/gaze-flywheel.sh lab` -> click **Record session**
-2. Curate/inspect events in Keyless Lab if needed, then run `./scripts/gaze-flywheel.sh eval` (`keyless gaze eval-candidates --regenerate`).
-3. **Phase 2 (offline target scorer) starts ONLY if overall candidate recall > 95%** (GREENFIELD §9 kill criterion). Below it: fix perception (AX/OCR/DOM/visual coverage), not the model.
-4. Keep session-held-out splits (`split_sessions` / Lab **Export split**) for every later evaluation; never split by frame.
+4. Curate in Keyless Lab, then `./scripts/gaze-flywheel.sh eval` (`keyless gaze eval-candidates --regenerate`). **Phase 1 gate: real-click candidate recall >95%** (GREENFIELD §9 kill criterion). Below it: fix perception, not the model.
+5. Phase 2 model work (EG2 wrapper behind `EmbeddingExtractor`) starts only after real-session recall passes; every claim judged by `gaze probe` vs `baseline_top1` on session-held-out splits.
 
 No neural network, gaze prediction model, or training exists on this branch. That is deliberate.
 
@@ -60,7 +67,7 @@ No neural network, gaze prediction model, or training exists on this branch. Tha
 
 ## 5. Do not
 
-- Do not create extra side branches unless explicitly asked; keep active greenfield work on `greenfield/gaze-v2`.
+- Do not create extra side branches unless explicitly asked; keep active greenfield work on `alt`.
 - Do not import or copy `legacy-gaze-v1`.
 - Do not restore a calibration file, calibration grid, scalar bias, or startup gate.
 - Do not reintroduce a global recenter or "steer to mouse" anchor.

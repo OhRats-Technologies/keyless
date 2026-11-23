@@ -6,12 +6,13 @@
 
 Keyless is a local-first desktop control product: cameras observe the user, a model maps attention to a target, and voice/pointer actions execute it. It is not a pixel-perfect eye mouse.
 
-## Current branch: `greenfield/gaze-v2`
+## Current branch: `alt`
 
-The greenfield work lives on `greenfield/gaze-v2` and is **not** on `main`.
+The greenfield work lives on `alt` (renamed from `greenfield/gaze-v2` on
+2026-11-23) and is **not** on `main`. GitHub holds exactly `main` and `alt`.
 
 - `main` / `origin/main` = `5bad72c` (Noah's last commit).
-- `greenfield/gaze-v2` = branch tip (single-cursor overlay + old-model deletion + Gaze v2 plan + handoff docs).
+- `alt` = branch tip (single-cursor overlay + old-model deletion + Gaze v2 plan + probe harness + synthetic lab + handoff docs).
 - `legacy-gaze-v1` tag / `legacy/gaze-v1` branch = `641d055` (pre-deletion audit snapshot).
 
 Do not merge to `main` unless the user explicitly asks.
@@ -58,19 +59,25 @@ stays the polished end-of-session handoff; LIVE_STATE feeds it.
 
 - Legacy model deleted: `calibrator.py`, `geo_gaze.py`, `online_learner.py`, `cursor_gimbal.py`, click harvester, calibration overlay, gaze-dot overlay, screen cursor, recenter/steer routes, calibration paths and migrations.
 - New seam: `src/keyless/gaze/` (`GazeFrame`, `GazeSource`, `SharedMemoryGazeSource`, `run_gaze_loop`).
-- Daemon: attaches to the shared-memory gaze channel if present; otherwise voice-only. No in-process model.
+- Flywheel CLIs exist and work: `keyless gaze record|replay|eval-candidates|probe|lab`. Schema v0 events, `SessionCollector`, replay + metrics, `CandidateGenerator` (AX/DOM/OCR/visual), nearest-pixel baseline, Keyless Lab Qt UI.
+- Probe harness: `gaze/experiment.py` + `gaze probe` CLI (frozen-embedding head vs `baseline_top1`, session-level split, explicit beats/falsified verdict). No backbone wired yet.
+- Synthetic 3D lab: `experiments/synth_lab/` — Blender fake person + monitor UI with exact ground truth feeding the real OCR pipeline; 100% candidate recall; probe verdict exercised end-to-end. Dev-time only, not a runtime dep.
+- Live-preview policy (user decision 2026-11-23, GREENFIELD §6.3 + Appendix C.5): predictions displayed in real time from Phase 1 with whatever scorer exists, display-only; frozen-eval gate for online updates deferred to Phase 4; reversibility always required.
+- OpenSpec initialized (`openspec/`): change proposals + verifiable requirement deltas; GREENFIELD.md stays the north star.
+- Daemon: attaches to the shared-memory gaze channel if present; otherwise voice-only. No in-process model. **No real gaze source publishes to that channel yet — that is the current gap.**
 - Single cursor: `src/keyless/platform/macos/pointer_mode.py` + `src/keyless/platform/cua/agent_cursor.py`.
 - UI: Qt and SwiftUI calibration copy replaced with "Gaze engine v2 / voice ready"; no calibration gate.
 - Tests: Python unit/UI suite passes (excluding the known ARM packaging/release failures and the pre-existing Unix-socket path test). Swift release build passes.
 
 ## Next tasks (in order)
 
-1. **`keyless.gaze.collect`** — write the event schema in `GREENFIELD.md` §7.1 locally, session-keyed. No model.
-2. **`keyless.gaze.replay` + metrics** — replay a session offline and compute candidate recall, target accuracy, hit rates, misclick rate, actions per correction.
-3. **Candidate generator** — union of AX tree, OCR, DOM, and visual regions; measure recall against real clicks. Gate: >95%.
-4. **Offline target scorer** — two-tower model from `GREENFIELD.md` §6.3; baseline against nearest-candidate-to-pixel.
-5. **Temporal + uncertainty** — only after the offline scorer beats the baseline.
-6. **Online adaptation / DAgger** — only after the offline evaluation is trustworthy.
+1. **Live gaze source** — webcam → MediaPipe face/iris landmarks → gaze pixel (cold-start mapping from natural clicks, no dot grid) → publish to the shared-memory channel. This is the only missing input for live preview.
+2. **Live preview loop + UI** — throttled screen capture → `CandidateGenerator` → nearest-candidate scorer → overlay highlight of top-1/top-3, display-only; every frame/click logged as a schema-v0 session (GREENFIELD §6.3 Live preview).
+3. **Real sessions, real gate** — record natural sessions on this machine; run `gaze eval-candidates` (Phase 1 gate >95% recall on real clicks) and `gaze replay`/`gaze probe` against `baseline_top1`.
+4. **Candidate generator recall gate** — must clear >95% on real sessions, not just synthetic.
+5. **Offline target scorer** — two-tower model from `GREENFIELD.md` §6.3; EG2 wrapper implementing the `EmbeddingExtractor` protocol; baseline against nearest-candidate-to-pixel.
+6. **Temporal + uncertainty** — only after the offline scorer beats the baseline.
+7. **Online adaptation / DAgger** — from Phase 4, with the frozen held-out gate; reversible updates.
 
 ## Commands
 
@@ -118,7 +125,7 @@ cd packaging/macos && swift build -c release
 
 Before ending a session:
 
-- [ ] Working tree clean; commits on `greenfield/gaze-v2`, not `main`.
+- [ ] Working tree clean; commits on `alt`, not `main`.
 - [ ] Tests run; known failures documented.
 - [ ] New model work has a baseline, metric, and kill criterion.
 - [ ] `docs/HANDOFF.md` updated with current state and next action.

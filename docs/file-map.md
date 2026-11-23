@@ -17,6 +17,12 @@ keyless/
 │   ├── features/                 # future: behavior maps per feature
 │   ├── plans/                    # future: design/decision records
 │   └── design/                   # future: tokens, overlay, onboarding specs
+├── openspec/                     # change proposals + requirement deltas (GREENFIELD stays north star)
+│   ├── config.yaml
+│   ├── specs/
+│   └── changes/
+├── experiments/                  # dev-time tooling; never a runtime dependency
+│   └── synth_lab/                # Blender fake person + monitor UI, exact ground truth
 ├── integrations/
 │   └── firefox_ext/              # current firefox_ext/, moved when packaging settles
 ├── packaging/
@@ -86,10 +92,17 @@ keyless/
 │   │   └── screen.py             # screen capture orchestration
 │   ├── gaze/
 │   │   ├── types.py              # GazeFrame / GazeSource
+│   │   ├── schema.py             # schema-v0 events (make_event, validation)
+│   │   ├── collect.py            # SessionCollector: bounded async JSONL + blob store
+│   │   ├── recorder.py           # SessionRecorder + LinuxClickObserver (evdev/KWin)
+│   │   ├── replay.py             # session-level split_sessions + offline replay
+│   │   ├── metrics.py            # decision metrics + NearestCandidateToPixelBaseline
+│   │   ├── candidates.py         # Candidate dataclass + id/bbox helpers
+│   │   ├── candidate_generator.py# AX/DOM/OCR/visual union, recall reporting
+│   │   ├── experiment.py         # EmbeddingExtractor protocol + EmbeddingHead probe + evaluate_experiment
+│   │   ├── curate.py             # Lab curation backend (accept/reject/retarget/delete)
 │   │   ├── shared_memory.py      # keyless_gaze_v1 adapter
 │   │   ├── runtime.py            # model-agnostic frame loop
-│   │   ├── collect.py            # next: replayable event log
-│   │   ├── replay.py             # next: offline metrics
 │   │   └── model/                # next: target encoder, scorer, uncertainty
 │   ├── voice/
 │   │   ├── listener.py
@@ -242,6 +255,9 @@ Hex separates user guides, feature maps, plans, and design rules. The equivalent
 ```
 docs/
   README.md
+  GREENFIELD.md      # north-star contract: direction, phases, gates, kill criteria
+  HANDOFF.md         # end-of-session state
+  LIVE_STATE.md      # running scratch log during autonomous runs
   architecture.md
   file-map.md
   platform-matrix.md
@@ -252,4 +268,4 @@ docs/
   platform/        linux.md, macos.md, windows.md
 ```
 
-Only the first five exist today; add the others when there is content, not as empty placeholders.
+Only the listed top-level files exist today; add the others when there is content, not as empty placeholders.
