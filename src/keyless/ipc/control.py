@@ -10,8 +10,9 @@ Endpoints (all JSON):
   GET  /v1/status       -> {state, detail}
   GET  /v1/capabilities -> CapabilityReport.as_dict()
   GET  /v1/doctor       -> DoctorReport.as_dict() (providers not probed)
-  GET  /v1/config       -> AppConfig (asdict)
-  POST /v1/config       -> patch AppConfig, returns the updated config
+  GET  /v1/config          -> AppConfig (asdict)
+  GET  /v1/config/schema   -> {schema_version, settings: [SettingSpec...]}
+  POST /v1/config          -> validated patch; {config, restart_required, changed}
   GET  /v1/history?limit=N -> {actions: [...]}
   POST /v1/start        -> start daemon child
   POST /v1/pause        -> pause daemon child
@@ -40,6 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from keyless.config.paths import AppPaths, current_paths
+from keyless.config.specs import SETTING_SPECS, spec_for, validate_patch
 from keyless.core.onboarding import STEPS, OnboardingFlow, OnboardingStep
 
 
@@ -256,6 +258,14 @@ class ControlServer:
                     from keyless.config.schema import AppConfig
 
                     _json(self, asdict(AppConfig.load(server.paths.settings_path)))
+                elif self.command == "GET" and path == "/v1/config/schema":
+                    _json(
+                        self,
+                        {
+                            "schema_version": 1,
+                            "settings": [spec.as_dict() for spec in SETTING_SPECS],
+                        },
+                    )
                 elif self.command == "POST" and path == "/v1/config":
                     from keyless.config.schema import AppConfig
 
@@ -265,21 +275,39 @@ class ControlServer:
                     except ValueError:
                         _json(self, {"error": "invalid JSON"}, status=400)
                         return
+                    if not isinstance(patch, dict):
+                        _json(self, {"error": "expected a JSON object"}, status=400)
+                        return
+                    errors = validate_patch(patch)
+                    if errors:
+                        _json(
+                            self,
+                            {"error": "invalid config patch", "errors": errors},
+                            status=400,
+                        )
+                        return
                     cfg = AppConfig.load(server.paths.settings_path)
-                    allowed = {
-                        "camera_mode", "camera_backend", "cam1_by_id", "cam2_by_id",
-                        "gaze_cursor_control", "gaze_cursor_overlay",
-                        "always_on_voice", "require_command_prefix", "enable_pop_click",
-                        "audio_device", "ptt_hotkey", "llm_provider", "llm_preset",
-                        "llm_model", "acp_agent_id", "gaze_vlm_remote_consent",
-                        "tts_enabled", "tts_voice", "auto_update_checks",
-                        "action_backend",
-                    }
-                    for key, value in patch.items():
-                        if key in allowed and hasattr(cfg, key):
-                            setattr(cfg, key, value)
-                    cfg.save(server.paths.settings_path)
-                    _json(self, asdict(cfg))
+                    changed = [
+                        key
+                        for key, value in patch.items()
+                        if getattr(cfg, key) != value
+                    ]
+                    for key in changed:
+                        setattr(cfg, key, patch[key])
+                    if changed:
+                        cfg.save(server.paths.settings_path)
+                    restart_required = any(
+                        (spec := spec_for(key)) is not None and spec.apply == "restart"
+                        for key in changed
+                    )
+                    _json(
+                        self,
+                        {
+                            "config": asdict(cfg),
+                            "restart_required": restart_required,
+                            "changed": changed,
+                        },
+                    )
                 elif self.command == "GET" and path == "/v1/history":
                     qs = parse_qs(parsed.query)
                     try:
