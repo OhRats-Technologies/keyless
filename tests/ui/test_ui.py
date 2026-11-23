@@ -401,13 +401,55 @@ def test_settings_panel_never_overflows_viewport_at_minimum_width(qapp, tmp_path
             window.settings.speech_test,
             window.settings.dl_button,
             window.settings.tts_preview_btn,
-            window.settings.calibrate_button,
         ):
             right_edge = btn.mapTo(viewport, QPoint(btn.width(), 0)).x()
             assert right_edge <= viewport.width()
     finally:
         window.shutdown()
         window.close()
+
+
+def test_settings_form_is_generated_from_schema(qapp, tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    panel = SettingsPanel(AppConfig(), paths)
+    try:
+        # Every AppConfig setting applicable on this platform has an editable
+        # widget (audio_device is the live microphone picker, mapped into the
+        # same field registry).
+        expected = {str(spec["key"]) for spec in panel._applicable_specs()} | {"audio_device"}
+        assert expected <= set(panel._field_widgets)
+        assert panel.hotkey is panel._field_widgets["ptt_hotkey"]
+        assert panel.always_on is panel._field_widgets["always_on_voice"]
+        assert panel.microphone is panel._field_widgets["audio_device"]
+    finally:
+        panel.stop()
+
+    synthetic = [
+        {
+            "key": "fps",
+            "value_type": "int",
+            "default": 30,
+            "label": "Synthetic rate",
+            "help_text": "",
+            "group": "Synthetic group",
+            "control": "number",
+            "options": None,
+            "minimum": 1,
+            "maximum": 240,
+            "apply": "live",
+            "platforms": ["all"],
+        }
+    ]
+    panel = SettingsPanel(AppConfig(), paths, schema=synthetic)
+    try:
+        assert set(panel.form_groups) == {"Synthetic group"}
+        assert "fps" in panel._field_widgets
+        assert panel._field_widgets["fps"].value() == 30
+        # Invalid patches are rejected before they reach disk.
+        assert panel._apply_patch({"fps": "fast"}) is False
+        assert AppConfig.load(paths.settings_path).fps == 30
+    finally:
+        panel.stop()
 
 
 def test_daemon_error_is_readable(tmp_path: Path) -> None:

@@ -184,6 +184,9 @@ _QSS = """
     QWidget#Content {
         background: $background;
     }
+    QWidget#FieldHolder {
+        background: transparent;
+    }
     QFrame#Sidebar {
         background: $sidebar;
         border-right: 1px solid $border;

@@ -1,14 +1,31 @@
-"""Calm, instant-apply Settings surface with progressive enhancement."""
+"""Settings surface generated from the config schema, with special capability panels.
+
+The form itself is data: one widget per ``SettingSpec`` (toggle, select, number,
+text, path), grouped by ``spec["group"]``. Schema source order is the explicit
+``schema`` argument, then ``client.config_schema()``, then the local
+``SETTING_SPECS`` registry (offline/test fallback with identical data). Live
+specs apply on change; restart specs save and raise a restart hint. Invalid
+values are shown inline and never persisted.
+
+Panels that are not ``AppConfig`` fields stay hand-built: live microphone
+enumeration with Check mic/Test speech, the speech-model download, TTS preview
+and download, the Firefox bridge hint, the keychain API key, voice-command help,
+and diagnostics/updates.
+"""
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
+from dataclasses import fields as dataclass_fields
+from pathlib import Path
 
 from PySide6.QtCore import QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
@@ -18,6 +35,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -33,18 +51,11 @@ from keyless.audio.quick_test import (
 )
 from keyless.config.paths import AppPaths, current_paths
 from keyless.config.schema import AppConfig
+from keyless.config.specs import SETTING_SPECS, spec_for, validate_patch
 from keyless.diagnostics.doctor import collect_doctor, format_text
 from keyless.models.catalog import get_asset
 from keyless.models.downloader import download_asset
-from keyless.models.providers.acp_registry import fetch_registry
-from keyless.models.providers.presets import load_presets
 from keyless.models.providers.secrets import keyring_available, set_secret
-from keyless.platform.linux.cameras import (
-    discover_v4l_by_id,
-    friendly_camera_name,
-    resolve_camera_config,
-)
-from keyless.platform.linux.pipewire import pipewire_available
 from keyless.ui.components import (
     Card,
     DisclosureSection,
@@ -146,8 +157,16 @@ def _wrap_label(label: QLabel) -> QLabel:
     return label
 
 
+def _current_platform() -> str:
+    if sys.platform.startswith("darwin"):
+        return "macos"
+    if sys.platform.startswith("win"):
+        return "windows"
+    return "linux"
+
+
 class SettingsPanel(QWidget):
-    """Instant-apply Settings: Voice, Camera & Gaze, Optional AI, and collapsible Diagnostics."""
+    """Instant-apply Settings generated from ``SettingSpec``, plus capability panels."""
 
     def __init__(
         self,
@@ -159,10 +178,13 @@ class SettingsPanel(QWidget):
         on_run_setup: Callable[[], None] | None = None,
         on_check_updates: Callable[[], None] | None = None,
         on_apply_update: Callable[[], None] | None = None,
+        client=None,
+        schema: list[dict] | None = None,
     ) -> None:
         super().__init__()
         self.paths = paths or current_paths()
         self.config = config or AppConfig.load(self.paths.settings_path)
+        self.client = client
         self._on_config_changed = on_config_changed
         self._on_calibrate = on_calibrate
         self._on_run_setup = on_run_setup
@@ -174,6 +196,15 @@ class SettingsPanel(QWidget):
         self._dl_worker: _ModelDownloadWorker | None = None
         self._tts_dl_worker: _ModelDownloadWorker | None = None
         self._tts_speaker = None
+
+        self._schema = self._resolve_schema(schema)
+        self._specs: dict[str, dict] = {
+            str(spec.get("key")): spec for spec in self._schema if spec.get("key")
+        }
+        self._field_widgets: dict[str, QWidget] = {}
+        self._error_labels: dict[str, QLabel] = {}
+        self._field_labels: dict[str, QLabel] = {}
+        self.form_groups: dict[str, QWidget] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -194,17 +225,325 @@ class SettingsPanel(QWidget):
         title.setObjectName("Title")
         layout.addWidget(title)
 
-        # ------------------------------------------------------------------ Voice
+        self.restart_hint = QLabel("Restart Keyless to apply the change.")
+        self.restart_hint.setObjectName("Muted")
+        self.restart_hint.setWordWrap(True)
+        self.restart_hint.setVisible(False)
+        layout.addWidget(self.restart_hint)
+
+        self._build_schema_form(layout)
+        self._build_audio_card(layout)
+        self._build_firefox_card(layout)
+        self._build_api_key_card(layout)
+
+        # Collapsible Voice Commands Reference
+        from keyless.ui.commands_help import CommandsHelpWidget
+
+        self.commands_help = DisclosureSection("Voice commands reference")
+        self.commands_help.body_layout.addWidget(CommandsHelpWidget(self, scrollable=False))
+        layout.addWidget(self.commands_help)
+
+        self._build_diagnostics(layout)
+        layout.addStretch(1)
+
+        # The microphone picker is the editable widget for `audio_device`; it
+        # enumerates live devices, so it lives in the special audio panel.
+        self._field_widgets.setdefault("audio_device", self.microphone)
+
+        self._loading = False
+        self.refresh()
+
+    # ------------------------------------------------------------------ Schema form
+
+    def _resolve_schema(self, schema: list[dict] | None) -> list[dict]:
+        if schema is not None:
+            return list(schema)
+        if self.client is not None:
+            try:
+                remote = self.client.config_schema()
+            except Exception:
+                remote = []
+            if remote:
+                return remote
+        return [spec.as_dict() for spec in SETTING_SPECS]
+
+    def _applicable_specs(self) -> list[dict]:
+        platform = _current_platform()
+        selected: list[dict] = []
+        for spec in self._schema:
+            if not isinstance(spec, dict) or not spec.get("key"):
+                continue
+            platforms = spec.get("platforms") or ["all"]
+            if "all" not in platforms and platform not in platforms:
+                continue
+            if spec.get("key") == "audio_device":
+                continue  # rendered by the live microphone panel
+            selected.append(spec)
+        return selected
+
+    def _build_schema_form(self, layout: QVBoxLayout) -> None:
+        grouped: dict[str, list[dict]] = {}
+        for spec in self._applicable_specs():
+            grouped.setdefault(str(spec.get("group") or "Settings"), []).append(spec)
+
+        for group, specs in grouped.items():
+            card = Card()
+            header = QHBoxLayout()
+            header.setSpacing(8)
+            header.addWidget(eyebrow(group))
+            header.addStretch(1)
+            if not any(spec.get("apply") == "restart" for spec in specs):
+                badge = QLabel("Applies immediately")
+                badge.setObjectName("Muted")
+                header.addWidget(badge)
+            card.layout.addLayout(header)
+
+            form = QFormLayout()
+            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+            form.setVerticalSpacing(10)
+            for spec in specs:
+                self._add_spec_row(form, spec)
+            card.layout.addLayout(form)
+            self.form_groups[group] = card
+            layout.addWidget(card)
+
+    def _add_spec_row(self, form: QFormLayout, spec: dict) -> None:
+        key = str(spec["key"])
+        label = str(spec.get("label") or key)
+        widget = self._make_widget(spec)
+        self._field_widgets[key] = widget
+        if key == "ptt_hotkey":
+            self.hotkey = widget
+        elif key == "always_on_voice":
+            self.always_on = widget
+
+        holder = QWidget()
+        holder.setObjectName("FieldHolder")
+        holder.setMinimumWidth(0)
+        column = QVBoxLayout(holder)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(2)
+        column.addWidget(widget)
+
+        if spec.get("apply") == "restart":
+            badge = QLabel("Restart required")
+            badge.setObjectName("Muted")
+            column.addWidget(badge)
+
+        error = QLabel("")
+        error.setObjectName("Warning")
+        error.setWordWrap(True)
+        error.setVisible(False)
+        column.addWidget(error)
+        self._error_labels[key] = error
+
+        if str(spec.get("control")) == "toggle":
+            form.addRow("", holder)
+        else:
+            field_label = QLabel(label)
+            field_label.setWordWrap(True)
+            field_label.setMinimumWidth(0)
+            form.addRow(field_label, holder)
+            self._field_labels[key] = field_label
+
+    def _make_widget(self, spec: dict) -> QWidget:
+        key = str(spec["key"])
+        control = str(spec.get("control", "text"))
+        value = getattr(self.config, key, spec.get("default"))
+        if key == "ptt_hotkey":
+            widget = KeyCaptureButton(str(value or "KEY_RIGHTCTRL"))
+            widget.key_changed.connect(lambda _code, k=key: self._on_field_changed(k))
+            return widget
+        if control == "toggle":
+            widget = QCheckBox(str(spec.get("label") or key))
+            widget.setChecked(bool(value))
+            widget.toggled.connect(lambda _on, k=key: self._on_field_changed(k))
+            return widget
+        if control == "select":
+            combo = _compact_combo(QComboBox())
+            for option in spec.get("options") or ():
+                combo.addItem(str(option), str(option))
+            index = combo.findData(value)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+            combo.currentIndexChanged.connect(lambda _i, k=key: self._on_field_changed(k))
+            return combo
+        if control == "number":
+            if str(spec.get("value_type")) == "int":
+                spin = QSpinBox()
+                spin.setRange(
+                    int(spec.get("minimum") if spec.get("minimum") is not None else -1000000),
+                    int(spec.get("maximum") if spec.get("maximum") is not None else 1000000),
+                )
+                spin.setValue(int(value or 0))
+                spin.valueChanged.connect(lambda _v, k=key: self._on_field_changed(k))
+                return spin
+            dspin = QDoubleSpinBox()
+            dspin.setDecimals(3)
+            dspin.setSingleStep(0.01)
+            dspin.setRange(
+                float(spec.get("minimum") if spec.get("minimum") is not None else -1e6),
+                float(spec.get("maximum") if spec.get("maximum") is not None else 1e6),
+            )
+            dspin.setValue(float(value or 0.0))
+            dspin.valueChanged.connect(lambda _v, k=key: self._on_field_changed(k))
+            return dspin
+        line = QLineEdit(str(value if value is not None else ""))
+        line.setMinimumWidth(0)
+        line.editingFinished.connect(lambda k=key: self._on_field_changed(k))
+        return line
+
+    def _field_value(self, key: str):
+        widget = self._field_widgets.get(key)
+        if widget is None:
+            return None
+        if isinstance(widget, QCheckBox):
+            return widget.isChecked()
+        if isinstance(widget, QComboBox):
+            return widget.currentData()
+        if isinstance(widget, QSpinBox):
+            return int(widget.value())
+        if isinstance(widget, QDoubleSpinBox):
+            return float(widget.value())
+        if isinstance(widget, KeyCaptureButton):
+            return widget.text_code() or "KEY_RIGHTCTRL"
+        if isinstance(widget, QLineEdit):
+            text = widget.text().strip()
+            return text
+        return None
+
+    def _sync_fields(self) -> None:
+        for key, widget in self._field_widgets.items():
+            if key == "audio_device":
+                continue
+            value = getattr(self.config, key, None)
+            widget.blockSignals(True)
+            try:
+                if isinstance(widget, QCheckBox):
+                    widget.setChecked(bool(value))
+                elif isinstance(widget, QComboBox):
+                    index = widget.findData(value)
+                    if index >= 0:
+                        widget.setCurrentIndex(index)
+                elif isinstance(widget, QSpinBox):
+                    widget.setValue(int(value or 0))
+                elif isinstance(widget, QDoubleSpinBox):
+                    widget.setValue(float(value or 0.0))
+                elif isinstance(widget, KeyCaptureButton):
+                    widget.setText(str(value or "KEY_RIGHTCTRL"))
+                elif isinstance(widget, QLineEdit):
+                    widget.setText(str(value if value is not None else ""))
+            finally:
+                widget.blockSignals(False)
+        self._sync_hotkey_visibility()
+
+    def _sync_hotkey_visibility(self) -> None:
+        hotkey = getattr(self, "hotkey", None)
+        if hotkey is None:
+            return
+        show_ptt = not self._field_value("always_on_voice")
+        hotkey.setVisible(show_ptt)
+        label = self._field_labels.get("ptt_hotkey")
+        if label is not None:
+            label.setVisible(show_ptt)
+
+    def _on_field_changed(self, key: str) -> None:
+        if self._loading:
+            return
+        if key == "always_on_voice":
+            self._sync_hotkey_visibility()
+        self._apply_patch({key: self._field_value(key)})
+
+    def _on_microphone_changed(self, _index: int) -> None:
+        if self._loading:
+            return
+        device = self.microphone.currentData()
+        self._apply_patch({"audio_device": device})
+
+    def _show_errors(self, errors: dict[str, str]) -> None:
+        for key, label in self._error_labels.items():
+            message = str(errors.get(key, ""))
+            label.setText(message)
+            label.setVisible(bool(message))
+
+    def _apply_patch(self, patch: dict) -> bool:
+        """Validate, persist, and surface one field change. Returns success."""
+        errors = validate_patch(patch)
+        if errors:
+            self._show_errors(errors)
+            return False
+
+        if self.client is not None:
+            from keyless.ipc.client import ControlError
+
+            try:
+                result = self.client.patch_config(patch)
+            except ControlError as exc:
+                payload_errors = exc.payload.get("errors")
+                self._show_errors(payload_errors if isinstance(payload_errors, dict) else {})
+                return False
+            fields = {field.name for field in dataclass_fields(AppConfig)}
+            self.config = AppConfig(
+                **{key: value for key, value in result.config.items() if key in fields}
+            )
+            changed = list(result.changed)
+            restart_required = bool(result.restart_required)
+        else:
+            changed = [key for key, value in patch.items() if getattr(self.config, key) != value]
+            for key in changed:
+                setattr(self.config, key, patch[key])
+            if changed:
+                self.config.save(self.paths.settings_path)
+            restart_required = any(
+                (spec := spec_for(key)) is not None and spec.apply == "restart"
+                for key in changed
+            )
+
+        self._show_errors({})
+        if restart_required:
+            self.restart_hint.setVisible(True)
+        if changed and self._on_config_changed is not None:
+            self._on_config_changed()
+        return True
+
+    def save(self) -> None:
+        """Persist every generated field (used by callers that batch a refresh)."""
+        patch: dict[str, object] = {}
+        for key in self._field_widgets:
+            if key in self._specs:
+                patch[key] = self._field_value(key)
+        if patch:
+            self._apply_patch(patch)
+
+    # ------------------------------------------------------------------ Audio panel
+
+    def _populate_microphones(self) -> None:
+        self.microphone.blockSignals(True)
+        self.microphone.clear()
+        self.microphone.addItem("System default", None)
+        for device in input_devices():
+            self.microphone.addItem(device.name, device.index)
+        current = self.config.audio_device
+        if current is not None:
+            index = self.microphone.findData(current)
+            if index < 0 and isinstance(current, str):
+                index = self.microphone.findText(current)
+            if index >= 0:
+                self.microphone.setCurrentIndex(index)
+        self.microphone.blockSignals(False)
+
+    def _build_audio_card(self, layout: QVBoxLayout) -> None:
         voice_card = Card()
-        voice_card.layout.addWidget(eyebrow("Voice"))
-        vform = QFormLayout()
-        vform.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        vform.setVerticalSpacing(10)
+        voice_card.layout.addWidget(eyebrow("Microphone & speech"))
+
+        voice_form = QFormLayout()
+        voice_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        voice_form.setVerticalSpacing(10)
 
         self.microphone = _compact_combo(QComboBox())
         self._populate_microphones()
-        self.microphone.currentIndexChanged.connect(self._auto_save)
-        vform.addRow("Microphone", self.microphone)
+        self.microphone.currentIndexChanged.connect(self._on_microphone_changed)
+        voice_form.addRow("Microphone", self.microphone)
 
         mic_actions = QHBoxLayout()
         mic_actions.setSpacing(8)
@@ -215,34 +554,14 @@ class SettingsPanel(QWidget):
         self.speech_test.clicked.connect(self.test_speech)
         mic_actions.addWidget(self.speech_test)
         mic_actions.addStretch(1)
-        vform.addRow("", mic_actions)
+        voice_form.addRow("", mic_actions)
 
         self.mic_result = _wrap_label(QLabel(""))
         self.mic_result.setObjectName("Muted")
         self.mic_result.setVisible(False)
-        vform.addRow("", self.mic_result)
+        voice_form.addRow("", self.mic_result)
+        voice_card.layout.addLayout(voice_form)
 
-        self.always_on = QCheckBox("Always listen for voice commands")
-        self.always_on.setChecked(self.config.always_on_voice)
-        self.always_on.toggled.connect(self._on_always_on_toggled)
-        vform.addRow("", self.always_on)
-
-        self.hotkey_label = QLabel("Push-to-talk key")
-        self.hotkey = KeyCaptureButton(self.config.ptt_hotkey)
-        self.hotkey.key_changed.connect(self._auto_save)
-        vform.addRow(self.hotkey_label, self.hotkey)
-
-        self.require_prefix = QCheckBox("Only act on command phrases (click, scroll, type…)")
-        self.require_prefix.setChecked(self.config.require_command_prefix)
-        self.require_prefix.toggled.connect(self._auto_save)
-        vform.addRow("", self.require_prefix)
-
-        self.pop_click = QCheckBox("Pop-click (lip pop triggers left click)")
-        self.pop_click.setChecked(self.config.enable_pop_click)
-        self.pop_click.toggled.connect(self._auto_save)
-        vform.addRow("", self.pop_click)
-
-        voice_card.layout.addLayout(vform)
         voice_card.layout.addWidget(divider())
 
         stt_row = QHBoxLayout()
@@ -264,105 +583,40 @@ class SettingsPanel(QWidget):
 
         voice_card.layout.addWidget(divider())
 
-        self.tts_enabled = QCheckBox("Speak assistant replies and setup help")
-        self.tts_enabled.setChecked(bool(getattr(self.config, "tts_enabled", False)))
-        self.tts_enabled.toggled.connect(self._auto_save)
-        voice_card.layout.addWidget(self.tts_enabled)
-
-        tts_form = QFormLayout()
-        tts_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        tts_form.setVerticalSpacing(8)
-        self.tts_voice = _compact_combo(QComboBox())
-        self.tts_voice.addItem("Juno (Underdog Woof)", "juno")
-        self.tts_voice.addItem("Mira (Underdog Woof)", "mira")
-        v_idx = self.tts_voice.findData(getattr(self.config, "tts_voice", "juno"))
-        self.tts_voice.setCurrentIndex(v_idx if v_idx >= 0 else 0)
-        self.tts_voice.currentIndexChanged.connect(self._auto_save)
-        tts_form.addRow("Assistant voice", self.tts_voice)
-
-        tts_actions = QHBoxLayout()
-        tts_actions.setSpacing(8)
+        tts_row = QHBoxLayout()
+        tts_row.setSpacing(8)
         self.tts_preview_btn = QPushButton("Test voice")
         self.tts_preview_btn.clicked.connect(self._preview_tts)
-        tts_actions.addWidget(self.tts_preview_btn)
+        tts_row.addWidget(self.tts_preview_btn)
         self.tts_dl_button = QPushButton("Download voice (40 MB)")
         self.tts_dl_button.clicked.connect(self._download_tts_model)
-        tts_actions.addWidget(self.tts_dl_button)
-        tts_actions.addStretch(1)
-        tts_form.addRow("", tts_actions)
-        voice_card.layout.addLayout(tts_form)
+        tts_row.addWidget(self.tts_dl_button)
+        tts_row.addStretch(1)
+        voice_card.layout.addLayout(tts_row)
 
         self.tts_status = _wrap_label(QLabel("Voice by Underdog Woof · non-commercial license"))
         self.tts_status.setObjectName("Muted")
         voice_card.layout.addWidget(self.tts_status)
         layout.addWidget(voice_card)
 
-        # ------------------------------------------------------------------ Camera & Gaze
-        gaze_card = Card()
-        gaze_card.layout.addWidget(eyebrow("Camera & gaze"))
-        gform = QFormLayout()
-        gform.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        gform.setVerticalSpacing(10)
+    # ------------------------------------------------------------------ Firefox panel
 
-        self.cam_mode_label = QLabel("Camera setup")
-        self.cam_mode = _compact_combo(QComboBox())
-        self.cam_mode.addItem("Automatic", "auto")
-        self.cam_mode.addItem("One camera", "mono")
-        self.cam_mode.addItem("Two cameras (stereo)", "stereo")
-        m_idx = self.cam_mode.findData(self.config.camera_mode)
-        self.cam_mode.setCurrentIndex(m_idx if m_idx >= 0 else 0)
-        self.cam_mode.currentIndexChanged.connect(self._on_camera_setting_changed)
-        gform.addRow(self.cam_mode_label, self.cam_mode)
-
-        self.cam1 = _compact_combo(QComboBox())
-        self.cam1.currentIndexChanged.connect(self._auto_save)
-        gform.addRow("Camera", self.cam1)
-
-        self.cam2_label = QLabel("Second camera")
-        self.cam2 = _compact_combo(QComboBox())
-        self.cam2.currentIndexChanged.connect(self._auto_save)
-        gform.addRow(self.cam2_label, self.cam2)
-
-        self.eye_mouse = QCheckBox("Show eye cursor (does not move your mouse)")
-        self.eye_mouse.setChecked(self.config.gaze_cursor_control)
-        self.eye_mouse.toggled.connect(self._auto_save)
-        gform.addRow("", self.eye_mouse)
-
-        self.share_camera = QCheckBox("Share camera with video calls and other apps")
-        self.share_camera.setChecked(self.config.camera_backend == "pipewire")
-        self.share_camera.toggled.connect(self._auto_save)
-        gform.addRow("", self.share_camera)
-
-        gaze_card.layout.addLayout(gform)
-
-        calib_row = QHBoxLayout()
-        calib_row.setSpacing(8)
-        self.calib_status = _wrap_label(
-            QLabel("Target-level gaze model v2 is not installed yet.")
-        )
-        self.calib_status.setObjectName("Muted")
-        calib_row.addWidget(self.calib_status, 1)
-        self.calibrate_button = QPushButton("Align gaze")
-        self.calibrate_button.clicked.connect(self._trigger_calibrate)
-        calib_row.addWidget(self.calibrate_button)
-        gaze_card.layout.addLayout(calib_row)
-        layout.addWidget(gaze_card)
-
-        # ------------------------------------------------------------------ Firefox DOM Bridge
-        from pathlib import Path
-
+    def _build_firefox_card(self, layout: QVBoxLayout) -> None:
         ff_card = Card()
         ff_card.layout.addWidget(eyebrow("Firefox extension (DOM clicking & scrolling)"))
         ff_desc = _wrap_label(
             QLabel(
-                "For instant, pixel-accurate clicking, tab switching, and smooth scrolling in Firefox, "
-                "open about:debugging#/runtime/this-firefox → Load Temporary Add-on and select firefox_ext/manifest.json."
+                "For instant, pixel-accurate clicking, tab switching, and smooth scrolling in "
+                "Firefox, open about:debugging#/runtime/this-firefox → Load Temporary Add-on "
+                "and select firefox_ext/manifest.json."
             )
         )
         ff_desc.setObjectName("Muted")
         ff_card.layout.addWidget(ff_desc)
         manifest_path = Path(__file__).resolve().parents[4] / "firefox_ext" / "manifest.json"
-        self._ff_manifest_path = str(manifest_path) if manifest_path.exists() else "firefox_ext/manifest.json"
+        self._ff_manifest_path = (
+            str(manifest_path) if manifest_path.exists() else "firefox_ext/manifest.json"
+        )
         ff_row = QHBoxLayout()
         ff_row.setSpacing(8)
         self.ff_copy_btn = QPushButton("Copy manifest path")
@@ -374,82 +628,51 @@ class SettingsPanel(QWidget):
         ff_card.layout.addLayout(ff_row)
         layout.addWidget(ff_card)
 
-        # ------------------------------------------------------------------ Optional AI
+    # ------------------------------------------------------------------ API key panel
+
+    def _build_api_key_card(self, layout: QVBoxLayout) -> None:
         ai_card = Card()
-        ai_card.layout.addWidget(eyebrow("AI assistant (optional)"))
-        aform = QFormLayout()
-        aform.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        aform.setVerticalSpacing(10)
-
-        self.provider_kind = _compact_combo(QComboBox())
-        self.provider_kind.addItem("Automatic", "auto")
-        self.provider_kind.addItem("Ollama (local)", "ollama")
-        self.provider_kind.addItem("API provider", "openai_compat")
-        self.provider_kind.addItem("Local ACP agent", "acp")
-        p_idx = self.provider_kind.findData(self.config.llm_provider)
-        self.provider_kind.setCurrentIndex(p_idx if p_idx >= 0 else 0)
-        self.provider_kind.currentIndexChanged.connect(self._on_ai_kind_changed)
-        aform.addRow("Backend", self.provider_kind)
-
-        self.provider_preset_label = QLabel("Provider")
-        self.provider_preset = _compact_combo(QComboBox())
-        for preset in load_presets():
-            self.provider_preset.addItem(preset.name, preset.id)
-        index = self.provider_preset.findData(self.config.llm_preset)
-        if index >= 0:
-            self.provider_preset.setCurrentIndex(index)
-        self.provider_preset.currentIndexChanged.connect(self._auto_save)
-        aform.addRow(self.provider_preset_label, self.provider_preset)
-
-        self.acp_label = QLabel("ACP agent")
-        self.acp_agent = QLineEdit(self.config.acp_agent_id)
-        self.acp_agent.setPlaceholderText("e.g. opencode")
-        self.acp_agent.editingFinished.connect(self._auto_save)
-        aform.addRow(self.acp_label, self.acp_agent)
-
-        self.llm_model_label = QLabel("Model")
-        self.llm_model = QLineEdit(self.config.llm_model)
-        self.llm_model.setPlaceholderText("Provider default")
-        self.llm_model.editingFinished.connect(self._auto_save)
-        aform.addRow(self.llm_model_label, self.llm_model)
-
-        self.api_key_label = QLabel("API key")
-        key_row = QHBoxLayout()
-        key_row.setSpacing(8)
+        ai_card.layout.addWidget(eyebrow("API key (optional)"))
+        key_form = QFormLayout()
+        key_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        key_form.setVerticalSpacing(8)
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key.setPlaceholderText(
             "Stored in OS keychain" if keyring_available() else "OS keychain unavailable"
         )
         self.api_key.setEnabled(keyring_available())
+        key_row = QHBoxLayout()
+        key_row.setSpacing(8)
         key_row.addWidget(self.api_key, 1)
         self.save_key_button = QPushButton("Store key")
         self.save_key_button.setEnabled(keyring_available())
         self.save_key_button.clicked.connect(self._store_api_key)
         key_row.addWidget(self.save_key_button)
-        aform.addRow(self.api_key_label, key_row)
-
-        self.vlm_consent = QCheckBox("Allow sending screen crops to remote AI for visual clicking")
-        self.vlm_consent.setChecked(self.config.gaze_vlm_remote_consent)
-        self.vlm_consent.toggled.connect(self._auto_save)
-        aform.addRow("", self.vlm_consent)
-
+        key_form.addRow("API key", key_row)
         self.ai_note = _wrap_label(QLabel(""))
         self.ai_note.setObjectName("Muted")
         self.ai_note.setVisible(False)
-        aform.addRow("", self.ai_note)
-
-        ai_card.layout.addLayout(aform)
+        key_form.addRow("", self.ai_note)
+        ai_card.layout.addLayout(key_form)
         layout.addWidget(ai_card)
 
-        # ------------------------------------------------------------------ Collapsible Voice Commands Reference
-        from keyless.ui.commands_help import CommandsHelpWidget
+    def _store_api_key(self) -> None:
+        key = self.api_key.text().strip()
+        if not key:
+            return
+        preset = str(self.config.llm_preset or "openai")
+        set_secret(preset, key)
+        self.api_key.clear()
+        self.ai_note.setText("Key saved securely in the OS keychain.")
+        self.ai_note.setObjectName("Success")
+        self.ai_note.setVisible(True)
+        if self._on_config_changed is not None:
+            self._on_config_changed()
 
-        self.commands_help = DisclosureSection("Voice commands reference")
-        self.commands_help.body_layout.addWidget(CommandsHelpWidget(self, scrollable=False))
-        layout.addWidget(self.commands_help)
+    # ------------------------------------------------------------------ Diagnostics
 
-        # ------------------------------------------------------------------ Collapsible Diagnostics & About
+    def _build_diagnostics(self, layout: QVBoxLayout) -> None:
         self.diagnostics = DisclosureSection(
             "Diagnostics and about", on_expand=self.refresh_diagnostics
         )
@@ -502,7 +725,9 @@ class SettingsPanel(QWidget):
         diag_actions = QHBoxLayout()
         diag_actions.setSpacing(8)
         copy_diag = QPushButton("Copy full report")
-        copy_diag.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.diag_text.toPlainText()))
+        copy_diag.clicked.connect(
+            lambda: QGuiApplication.clipboard().setText(self.diag_text.toPlainText())
+        )
         diag_actions.addWidget(copy_diag)
         rerun = QPushButton("Run setup again")
         rerun.clicked.connect(self._trigger_setup)
@@ -516,10 +741,7 @@ class SettingsPanel(QWidget):
         diag_card.layout.addWidget(divider())
         upd_row = QHBoxLayout()
         upd_row.setSpacing(8)
-        self.auto_updates = QCheckBox("Check for updates automatically")
-        self.auto_updates.setChecked(bool(getattr(self.config, "auto_update_checks", True)))
-        self.auto_updates.toggled.connect(self._auto_save)
-        upd_row.addWidget(self.auto_updates, 1)
+        upd_row.addStretch(1)
         self.check_updates_btn = QPushButton("Check for updates")
         self.check_updates_btn.clicked.connect(self._trigger_check_updates)
         upd_row.addWidget(self.check_updates_btn)
@@ -537,152 +759,6 @@ class SettingsPanel(QWidget):
 
         self.diagnostics.body_layout.addWidget(diag_card)
         layout.addWidget(self.diagnostics)
-        layout.addStretch(1)
-
-        self._loading = False
-        self.refresh()
-
-    # ------------------------------------------------------------------ Helpers
-
-    def _populate_microphones(self) -> None:
-        self.microphone.blockSignals(True)
-        self.microphone.clear()
-        self.microphone.addItem("System default", None)
-        for device in input_devices():
-            self.microphone.addItem(device.name, device.index)
-        current = self.config.audio_device
-        if current is not None:
-            index = self.microphone.findData(current)
-            if index < 0 and isinstance(current, str):
-                index = self.microphone.findText(current)
-            if index >= 0:
-                self.microphone.setCurrentIndex(index)
-        self.microphone.blockSignals(False)
-
-    def _refresh_cameras(self) -> None:
-        devices = discover_v4l_by_id()
-        has_two = len(devices) >= 2
-        mode, cam1, cam2 = resolve_camera_config(
-            self.config.camera_mode, self.config.cam1_by_id, self.config.cam2_by_id
-        )
-        show_stereo = has_two and self.cam_mode.currentData() != "mono"
-        self.cam_mode_label.setVisible(has_two)
-        self.cam_mode.setVisible(has_two)
-        self.cam2_label.setVisible(show_stereo)
-        self.cam2.setVisible(show_stereo)
-
-        for combo, current in ((self.cam1, cam1), (self.cam2, cam2)):
-            combo.blockSignals(True)
-            combo.clear()
-            if not devices and not current:
-                combo.addItem("No camera detected", "")
-            for dev in devices:
-                combo.addItem(friendly_camera_name(dev), dev)
-            idx = combo.findData(current)
-            if idx < 0 and current:
-                combo.addItem(friendly_camera_name(current), current)
-                idx = combo.count() - 1
-            combo.setCurrentIndex(max(0, idx))
-            combo.blockSignals(False)
-
-        can_share = pipewire_available() and mode == "mono"
-        self.share_camera.setEnabled(can_share)
-        self.share_camera.setToolTip(
-            "" if can_share else "Camera sharing is available in single-camera mode with PipeWire."
-        )
-
-    def refresh(self) -> None:
-        self._loading = True
-        self._refresh_cameras()
-        self._sync_hotkey_visibility()
-        self._sync_ai_visibility()
-
-        report = stt_report(self.config, paths=self.paths)
-        ready = report.get("selected") == "parakeet"
-        self.stt_status.setText("Speech model ready (offline)" if ready else "Speech model not downloaded")
-        self.dl_button.setVisible(not ready)
-        self.speech_test.setEnabled(ready)
-
-        self.calib_status.setText("Target-level gaze model v2 is not installed yet.")
-
-        try:
-            from keyless.voice.tts import tts_report
-
-            t_rep = tts_report(self.paths)
-            t_ready = bool(t_rep["ready"])
-            self.tts_dl_button.setVisible(not t_ready)
-            self.tts_preview_btn.setEnabled(t_ready)
-            self.tts_status.setText(
-                "Voice by Underdog Woof (ready offline · non-commercial license)"
-                if t_ready
-                else "Voice by Underdog Woof (optional 40 MB download · non-commercial license)"
-            )
-        except Exception:
-            pass
-        self._loading = False
-
-    def _sync_hotkey_visibility(self) -> None:
-        # Progressive disclosure: hide push-to-talk shortcut when always-on is enabled
-        show_ptt = not self.always_on.isChecked()
-        self.hotkey_label.setVisible(show_ptt)
-        self.hotkey.setVisible(show_ptt)
-
-    def _sync_ai_visibility(self) -> None:
-        kind = str(self.provider_kind.currentData() or "auto")
-        is_api = kind == "openai_compat"
-        is_ollama = kind == "ollama"
-        is_acp = kind == "acp"
-        self.provider_preset_label.setVisible(is_api)
-        self.provider_preset.setVisible(is_api)
-        self.api_key_label.setVisible(is_api)
-        self.api_key.setVisible(is_api)
-        self.save_key_button.setVisible(is_api)
-        self.llm_model_label.setVisible(is_api or is_ollama)
-        self.llm_model.setVisible(is_api or is_ollama)
-        if is_ollama and not self.llm_model.text().strip():
-            self.llm_model.setPlaceholderText(self.config.gaze_vlm_model or self.config.ollama_model or "gemma4:e4b")
-        else:
-            self.llm_model.setPlaceholderText("Provider default")
-        self.acp_label.setVisible(is_acp)
-        self.acp_agent.setVisible(is_acp)
-        if is_acp:
-            try:
-                installed = [s.id for s in fetch_registry() if s.installed]
-                if installed and not self.acp_agent.text().strip():
-                    self.acp_agent.setText(installed[0])
-            except Exception:
-                pass
-
-    def _on_always_on_toggled(self) -> None:
-        self._sync_hotkey_visibility()
-        self._auto_save()
-
-    def _on_camera_setting_changed(self) -> None:
-        self._refresh_cameras()
-        self._auto_save()
-
-    def _on_ai_kind_changed(self) -> None:
-        self._sync_ai_visibility()
-        self._auto_save()
-
-    def _store_api_key(self) -> None:
-        key = self.api_key.text().strip()
-        if not key:
-            return
-        preset = str(self.provider_preset.currentData() or "openai")
-        set_secret(preset, key)
-        self.api_key.clear()
-        self.ai_note.setText("Key saved securely in the OS keychain.")
-        self.ai_note.setObjectName("Success")
-        self.ai_note.setVisible(True)
-        self._auto_save()
-
-    def _trigger_calibrate(self) -> None:
-        if self._on_calibrate is not None:
-            self._on_calibrate()
-
-        if self._on_config_changed is not None:
-            self._on_config_changed()
 
     def _trigger_setup(self) -> None:
         if self._on_run_setup is not None:
@@ -732,7 +808,11 @@ class SettingsPanel(QWidget):
         worker = _SpeechCheckWorker(self.config, self.paths)
         worker.stage.connect(
             lambda s: self.mic_result.setText(
-                "Speak now (4 seconds)…" if s == "recording" else "Transcribing…" if s == "transcribing" else "Loading speech engine…"
+                "Speak now (4 seconds)…"
+                if s == "recording"
+                else "Transcribing…"
+                if s == "transcribing"
+                else "Loading speech engine…"
             )
         )
         worker.done.connect(self._on_speech_done)
@@ -799,7 +879,7 @@ class SettingsPanel(QWidget):
         if err:
             self.tts_status.setText(f"Voice download failed: {err}")
         else:
-            self.tts_enabled.setChecked(True)
+            self._apply_patch({"tts_enabled": True})
             self.refresh()
 
     def _preview_tts(self) -> None:
@@ -807,7 +887,7 @@ class SettingsPanel(QWidget):
 
         if self._tts_speaker is None:
             self._tts_speaker = WoofSpeaker(paths=self.paths, enabled=True)
-        voice = str(self.tts_voice.currentData() or "juno")
+        voice = str(self.config.tts_voice or "juno")
         self._tts_speaker.speak(
             f"Hi, this is {voice.capitalize()} from Keyless, powered by Underdog Woof.",
             voice=voice,
@@ -836,7 +916,9 @@ class SettingsPanel(QWidget):
             summary += "\n• " + "\n• ".join(notes[:3])
         self.update_status.setText(summary)
         self.update_status.setVisible(bool(summary))
-        self.update_now_btn.setVisible(bool(avail and getattr(state, "status", "") == "available"))
+        self.update_now_btn.setVisible(
+            bool(avail and getattr(state, "status", "") == "available")
+        )
         self.update_now_btn.setEnabled(True)
 
     def set_update_result(self, ok: bool, message: str) -> None:
@@ -845,7 +927,7 @@ class SettingsPanel(QWidget):
         self.update_status.setText(message)
         self.update_status.setVisible(bool(message))
 
-    # ------------------------------------------------------------------ Diagnostics
+    # ------------------------------------------------------------------ Helpers
 
     def _copy_firefox_manifest(self) -> None:
         QGuiApplication.clipboard().setText(self._ff_manifest_path)
@@ -891,12 +973,30 @@ class SettingsPanel(QWidget):
             report = collect_doctor(check_providers=False)
             caps = report.capabilities.get("capabilities", {})
             mapping = {
-                "input": (caps.get("pointer", {}).get("status", "unknown"), caps.get("pointer", {}).get("status") == "available"),
-                "cameras": (report.cameras.get("mode", "unknown"), report.cameras.get("mode") in ("mono", "stereo")),
-                "screen": (caps.get("screen_capture", {}).get("status", "unknown"), caps.get("screen_capture", {}).get("status") == "available"),
-                "speech": (report.stt.get("selected", "missing"), report.stt.get("selected") == "parakeet"),
-                "ai": (report.providers.get("text_llm", {}).get("status", {}).get("state", "optional"), None),
-                "overlay": (caps.get("overlay", {}).get("status", "unknown"), caps.get("overlay", {}).get("status") == "available"),
+                "input": (
+                    caps.get("pointer", {}).get("status", "unknown"),
+                    caps.get("pointer", {}).get("status") == "available",
+                ),
+                "cameras": (
+                    report.cameras.get("mode", "unknown"),
+                    report.cameras.get("mode") in ("mono", "stereo"),
+                ),
+                "screen": (
+                    caps.get("screen_capture", {}).get("status", "unknown"),
+                    caps.get("screen_capture", {}).get("status") == "available",
+                ),
+                "speech": (
+                    report.stt.get("selected", "missing"),
+                    report.stt.get("selected") == "parakeet",
+                ),
+                "ai": (
+                    report.providers.get("text_llm", {}).get("status", {}).get("state", "optional"),
+                    None,
+                ),
+                "overlay": (
+                    caps.get("overlay", {}).get("status", "unknown"),
+                    caps.get("overlay", {}).get("status") == "available",
+                ),
             }
             for key, (val, ok) in mapping.items():
                 lbl = self._diag_badges[key]
@@ -922,39 +1022,34 @@ class SettingsPanel(QWidget):
 
         self.diag_text.setPlainText("\n\n".join(sections))
 
-    # ------------------------------------------------------------------ Persistence
+    def refresh(self) -> None:
+        self._loading = True
+        try:
+            self._sync_fields()
+            report = stt_report(self.config, paths=self.paths)
+            ready = report.get("selected") == "parakeet"
+            self.stt_status.setText(
+                "Speech model ready (offline)" if ready else "Speech model not downloaded"
+            )
+            self.dl_button.setVisible(not ready)
+            self.speech_test.setEnabled(ready)
 
-    def _auto_save(self, *_args: object) -> None:
-        if self._loading:
-            return
-        self.save()
+            try:
+                from keyless.voice.tts import tts_report
 
-    def save(self) -> None:
-        cfg = self.config
-        cfg.ptt_hotkey = self.hotkey.text().strip() or "KEY_RIGHTCTRL"
-        cfg.always_on_voice = self.always_on.isChecked()
-        cfg.audio_device = self.microphone.currentData()
-        cfg.require_command_prefix = self.require_prefix.isChecked()
-        cfg.enable_pop_click = self.pop_click.isChecked()
-        cfg.gaze_cursor_control = self.eye_mouse.isChecked()
-        cfg.camera_backend = "pipewire" if self.share_camera.isChecked() else "v4l2"
-        if self.cam_mode.isVisible():
-            cfg.camera_mode = str(self.cam_mode.currentData() or "auto")
-        if self.cam1.currentData():
-            cfg.cam1_by_id = str(self.cam1.currentData())
-        if self.cam2.isVisible() and self.cam2.currentData():
-            cfg.cam2_by_id = str(self.cam2.currentData())
-        cfg.llm_provider = str(self.provider_kind.currentData() or "auto")
-        cfg.llm_preset = str(self.provider_preset.currentData() or "openai")
-        cfg.llm_model = self.llm_model.text().strip()
-        cfg.acp_agent_id = self.acp_agent.text().strip() or "opencode"
-        cfg.gaze_vlm_remote_consent = self.vlm_consent.isChecked()
-        cfg.tts_enabled = self.tts_enabled.isChecked()
-        cfg.tts_voice = str(self.tts_voice.currentData() or "juno")
-        cfg.auto_update_checks = self.auto_updates.isChecked()
-        cfg.save(self.paths.settings_path)
-        if self._on_config_changed is not None:
-            self._on_config_changed()
+                t_rep = tts_report(self.paths)
+                t_ready = bool(t_rep["ready"])
+                self.tts_dl_button.setVisible(not t_ready)
+                self.tts_preview_btn.setEnabled(t_ready)
+                self.tts_status.setText(
+                    "Voice by Underdog Woof (ready offline · non-commercial license)"
+                    if t_ready
+                    else "Voice by Underdog Woof (optional 40 MB download · non-commercial license)"
+                )
+            except Exception:
+                pass
+        finally:
+            self._loading = False
 
     def stop(self) -> None:
         if self._tts_speaker is not None:

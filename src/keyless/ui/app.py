@@ -403,11 +403,13 @@ class MainWindow(QMainWindow):
         theme: ThemeName | str | None = None,
         enable_previews: bool = True,
         report_provider: Callable | None = None,
+        client=None,
     ) -> None:
         super().__init__()
         self.paths = paths or current_paths()
         self.config = config or AppConfig.load(self.paths.settings_path)
         self.controller = controller or NullController()
+        self._control_client = client
         self.transcript_overlay = TranscriptOverlayController(paths=self.paths)
         self.flow = flow or OnboardingFlow(self.paths)
         self.enable_previews = enable_previews
@@ -495,6 +497,7 @@ class MainWindow(QMainWindow):
             on_run_setup=self.show_inline_setup,
             on_check_updates=lambda: self.check_for_updates(force=True),
             on_apply_update=self.apply_available_update,
+            client=self._control_client,
         )
         self.pages: dict[str, QWidget] = {
             "Home": self.home,
@@ -810,6 +813,7 @@ def run_ui(
     app.setWindowIcon(make_icon())
     resolved_theme = theme or system_theme_name(app)
     control_server = None
+    client = None
     if controller is None:
         from keyless.ipc.client import ControlClient, HttpSessionController
         from keyless.ipc.control import ControlServer
@@ -818,8 +822,9 @@ def run_ui(
         control_server = ControlServer(paths=resolved_paths)
         control_server.ui_contract_builder = build_ui_state
         bound = control_server.start(host="127.0.0.1", port=0)
+        client = ControlClient(f"http://127.0.0.1:{bound}")
         session_controller: SessionController = HttpSessionController(
-            ControlClient(f"http://127.0.0.1:{bound}"), paths=resolved_paths
+            client, paths=resolved_paths
         )
     else:
         session_controller = controller
@@ -829,6 +834,7 @@ def run_ui(
         controller=session_controller,
         theme=resolved_theme,
         enable_previews=enable_previews,
+        client=client if controller is None else None,
     )
     window._control_server = control_server
     if controller is None:
