@@ -721,6 +721,27 @@ _GAZE_METRIC_ROWS = (
 )
 
 
+@gaze_app.command("lab")
+def gaze_lab(
+    theme: str = typer.Option("system", help="Theme: system | light | dark"),
+    sessions_dir: Path | None = typer.Option(
+        None,
+        "--sessions-dir",
+        file_okay=False,
+        help="Optional directory of recorded sessions (defaults to <data_dir>/sessions).",
+    ),
+) -> None:
+    """Open the Keyless Lab UI for session curation, recall inspection, and Dream-RSI."""
+    from keyless.ui.lab import run_lab_ui
+
+    raise typer.Exit(
+        run_lab_ui(
+            theme=None if theme == "system" else theme,
+            sessions_dir=sessions_dir,
+        )
+    )
+
+
 @gaze_app.command("record")
 def gaze_record(
     duration: float = typer.Option(

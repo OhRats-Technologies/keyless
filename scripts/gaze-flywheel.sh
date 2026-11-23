@@ -15,6 +15,7 @@ Commands:
   record [args...]     Record live clicks & candidates (default: --save-screenshots)
   eval [args...]       Evaluate Phase 1 >95% candidate recall (default: --regenerate)
   replay [dir]         Replay a session (defaults to the most recent session)
+  lab [args...]        Open the Keyless Lab GUI for curation, recall, and Dream-RSI
   status               Show input-group status and recorded session summary
 EOF
 }
@@ -67,6 +68,10 @@ case "$cmd" in
     else
       exec "$KEYLESS" gaze eval-candidates "$@"
     fi
+    ;;
+
+  lab)
+    exec "$KEYLESS" gaze lab "$@"
     ;;
 
   replay)
