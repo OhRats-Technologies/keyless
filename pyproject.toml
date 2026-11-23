@@ -14,6 +14,7 @@ dependencies = [
     "ollama>=0.6.3",
     "onnx-asr>=0.12.0",
     "opencv-python>=5.1.0.95",
+    "playwright>=1.65.2",
     "pydantic>=2.14.3",
     "pyside6>=6.12.0",
     "rapidfuzz>=3.14.6",

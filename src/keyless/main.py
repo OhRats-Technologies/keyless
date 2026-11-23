@@ -277,6 +277,7 @@ def _apply_runtime_overrides(
     eye_mouse: bool | None = None,
     firefox_port: int | None = None,
     no_firefox_bridge: bool = False,
+    no_playwright_browser: bool = False,
     pop_peak: float | None = None,
     pop_rms: float | None = None,
 ) -> AppConfig:
@@ -324,6 +325,8 @@ def _apply_runtime_overrides(
         cfg.firefox_bridge_port = firefox_port
     if no_firefox_bridge:
         cfg.firefox_bridge_enabled = False
+    if no_playwright_browser:
+        cfg.playwright_browser_enabled = False
     if pop_peak is not None:
         cfg.pop_min_peak = pop_peak
     if pop_rms is not None:
@@ -371,6 +374,7 @@ def run_all(
     ),
     firefox_port: int | None = typer.Option(None, help="Firefox DOM WebSocket bridge port (default 8765)"),
     no_firefox_bridge: bool = typer.Option(False, help="Disable Tier-0 Firefox WebSocket DOM bridge"),
+    no_playwright_browser: bool = typer.Option(False, help="Disable Playwright Firefox voice browser agent"),
     pop_peak: float | None = typer.Option(None, help="Pop detector peak threshold"),
     pop_rms: float | None = typer.Option(None, help="Pop detector RMS threshold"),
     dictate_unprefixed: bool = typer.Option(False, help="Type unprefixed speech directly"),
@@ -404,6 +408,7 @@ def run_all(
         eye_mouse=eye_mouse,
         firefox_port=firefox_port,
         no_firefox_bridge=no_firefox_bridge,
+        no_playwright_browser=no_playwright_browser,
         pop_peak=pop_peak,
         pop_rms=pop_rms,
     )
@@ -1346,6 +1351,35 @@ def models_verify(which: str = typer.Argument("stt", help="stt or a pinned asset
     console.print(f"{asset.id}: [bold]{status.state.value}[/bold] — {status.detail}")
     if not status.ready:
         raise typer.Exit(code=1)
+
+
+@app.command("browser-sync")
+def browser_sync(
+    profile: Path | None = typer.Option(
+        None,
+        "--profile",
+        help="Explicit source Firefox profile directory (auto-detects Snap/Flatpak/APT if omitted)",
+    ),
+    dest: Path | None = typer.Option(
+        None,
+        "--dest",
+        help="Destination Playwright Firefox profile directory (default: keyless data dir)",
+    ),
+) -> None:
+    """Clone cookies, storage, bookmarks, and saved logins from local Firefox into Keyless's Playwright Firefox."""
+    from keyless.browser.profile_sync import sync_firefox_profile
+
+    try:
+        target, copied = sync_firefox_profile(src_profile=profile, dst_profile=dest)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[green]Synced Firefox stores into {target}[/green]")
+    if copied:
+        console.print(f"  Copied: {', '.join(copied)}")
+    else:
+        console.print("  [yellow]Source profile existed, but no cookie/storage files were found.[/yellow]")
 
 
 if __name__ == "__main__":

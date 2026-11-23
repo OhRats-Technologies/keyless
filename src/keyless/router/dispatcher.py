@@ -7,7 +7,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -21,7 +21,74 @@ from keyless.router.gaze_vlm_clicker import GazeVLMClicker, parse_voice_click_co
 from keyless.routing.llm import LLMAgent
 from keyless.router.scroll_handler import parse_voice_scroll_command
 
+if TYPE_CHECKING:
+    from keyless.browser.runtime import BrowserRuntime
+
 logger = logging.getLogger(__name__)
+
+_CONFIRM_YES = {"confirm", "yes", "approve", "do it", "go ahead", "proceed", "send it"}
+_CONFIRM_NO = {"cancel", "no", "stop", "abort", "never mind", "dont", "don't"}
+_BARGE_IN_STOP = {"stop", "cancel", "abort", "stop browsing", "never mind", "halt"}
+
+_EXPLICIT_BROWSE_PREFIXES = (
+    "browse ",
+    "browser ",
+    "playwright ",
+    "search ",
+    "google ",
+    "look up ",
+    "look for ",
+    "open ",
+    "go to ",
+    "navigate to ",
+    "watch ",
+    "play ",
+    "find ",
+    "show me ",
+    "pull up ",
+    "youtube ",
+    "check ",
+    "weather ",
+    "what is the weather ",
+    "whats the weather ",
+    "what's the weather ",
+    "summarize ",
+    "read this ",
+    "what does this page ",
+)
+
+_NON_BROWSE_OPEN_PREFIXES = (
+    "open app ",
+    "open tab ",
+    "open new tab",
+    "open a new tab",
+    "go to tab ",
+    "go to top",
+    "go to bottom",
+    "go to sleep",
+    "play video",
+    "play the video",
+)
+
+_IN_BROWSER_DETERMINISTIC_EXCLUSIONS = {
+    "click here",
+    "click now",
+    "click it",
+    "click that",
+    "select all",
+    "press enter",
+    "press escape",
+}
+
+_TAB_NUM_MAP = {
+    "1": 0, "one": 0, "first": 0,
+    "2": 1, "two": 1, "second": 1,
+    "3": 2, "three": 2, "third": 2,
+    "4": 3, "four": 3, "fourth": 3,
+    "5": 4, "five": 4, "fifth": 4,
+    "6": 5, "six": 5, "7": 6, "seven": 6, "8": 7, "eight": 7, "9": 8, "nine": 8,
+}
+_TAB_SWITCH_RE = re.compile(r"^(?:switch to\s+)?tab\s+(\w+)$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -39,7 +106,11 @@ def _normalize_command(text: str) -> str:
     cleaned = re.sub(r"[^\w\s]", "", lowered).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
     cleaned = re.sub(r"\bre center\b", "recenter", cleaned)
-    cleaned = re.sub(r"^(?:(?:uh|um|mm|hmm|please|can you|could you)\s+)+", "", cleaned)
+    cleaned = re.sub(
+        r"^(?:(?:uh|um|mm|hmm|yeah|okay|ok|hey|so|alright|please|can you|could you)\s+)+",
+        "",
+        cleaned,
+    )
     return cleaned.strip()
 
 
@@ -59,6 +130,7 @@ class VoiceCommandRouter:
         | None = None,
         on_before_click: Callable[[int, int], None] | None = None,
         firefox_bridge: FirefoxDOMBridge | None = None,
+        browser_runtime: BrowserRuntime | None = None,
     ) -> None:
         self.pointer = pointer
         self.llm_agent = llm_agent
@@ -69,6 +141,7 @@ class VoiceCommandRouter:
         self.gaze_vlm_clicker = gaze_vlm_clicker
         self.gaze_state_provider = gaze_state_provider
         self.on_before_click = on_before_click
+        self.browser_runtime = browser_runtime
         self.firefox_bridge = (
             firefox_bridge
             if firefox_bridge is not None
@@ -561,6 +634,138 @@ class VoiceCommandRouter:
             payload={"steps": [r.__dict__ for r in results]},
         )
 
+    def _is_playwright_firefox_focused(self) -> bool:
+        """Check whether Playwright Firefox is running and is the focused desktop window."""
+        if self.browser_runtime is None or not self.browser_runtime.session.is_running:
+            return False
+        if self.gaze_vlm_clicker is not None:
+            return self.gaze_vlm_clicker._is_firefox_active()
+        return True
+
+    def _active_window_origin(self) -> tuple[int, int] | None:
+        if self.gaze_vlm_clicker is None:
+            return None
+        try:
+            ctx = self.gaze_vlm_clicker.detector.capturer.get_active_window_context(
+                self.gaze_vlm_clicker.screen_w,
+                self.gaze_vlm_clicker.screen_h,
+                desktop_atspi=self.gaze_vlm_clicker.desktop_atspi,
+            )
+            if ctx.rect is not None:
+                return (int(ctx.rect[0]), int(ctx.rect[1]))
+        except Exception:
+            pass
+        return None
+
+    def _try_handle_browser_voice(self, raw: str, norm: str) -> DispatchResult | None:
+        """Handle confirmation, barge-in, passive gaze scrolling, fast reflexes, and agentic goals."""
+        br = self.browser_runtime
+        if br is None:
+            return None
+
+        cmd = raw.lower().strip(" .,!?\"'")
+        if not cmd:
+            return None
+
+        # 1. Pending safety confirmation ("Say confirm or cancel")
+        if br.agent.awaiting_confirmation:
+            if cmd in _CONFIRM_YES or norm in _CONFIRM_YES:
+                br.confirm(True)
+                return DispatchResult("browser_confirm", raw, "Confirmed browser action")
+            if cmd in _CONFIRM_NO or norm in _CONFIRM_NO:
+                br.confirm(False)
+                return DispatchResult("browser_confirm", raw, "Cancelled browser action")
+
+        # 2. Immediate barge-in cancellation while the agent is mid-task
+        if br.agent.is_running and (cmd in _BARGE_IN_STOP or norm in _BARGE_IN_STOP):
+            br.cancel()
+            return DispatchResult("browser_cancel", raw, "Cancelled active browser task")
+
+        in_browser = self._is_playwright_firefox_focused()
+
+        # 3. Passive Gaze-Region Scrolling (<20ms, no LLM, never moves OS cursor)
+        scroll_cmd = parse_voice_scroll_command(norm) or parse_voice_scroll_command(raw)
+        if scroll_cmd is not None and in_browser:
+            gx, gy, _ = self._current_gaze_and_feat()
+            win_origin = self._active_window_origin()
+            px_step = (
+                240
+                if scroll_cmd.amount == "small"
+                else (760 if scroll_cmd.amount == "large" else 500)
+            )
+            if br.scroll_at_gaze(
+                gaze_x=gx,
+                gaze_y=gy,
+                direction=scroll_cmd.direction,
+                amount_px=px_step,
+                continuous=scroll_cmd.continuous,
+                win_origin=win_origin,
+            ):
+                return DispatchResult(
+                    "browser_scroll",
+                    raw,
+                    f"Playwright gaze scroll ({scroll_cmd.direction}, amount={scroll_cmd.amount}, continuous='{scroll_cmd.continuous}')",
+                )
+
+        # 4. Zero-LLM deterministic browser reflexes (tabs, history, YouTube media controls)
+        if in_browser:
+            if norm in ("go back", "back", "previous page"):
+                if br.run_fast_action("go_back"):
+                    return DispatchResult("browser_fast", raw, "go_back")
+            if norm in ("new tab", "open new tab", "open a new tab"):
+                if br.run_fast_action("new_tab"):
+                    return DispatchResult("browser_fast", raw, "new_tab")
+            if norm in ("close tab", "close this tab"):
+                if br.run_fast_action("close_tab"):
+                    return DispatchResult("browser_fast", raw, "close_tab")
+            if norm in ("reload", "refresh", "reload page", "refresh page"):
+                if br.run_fast_action("reload"):
+                    return DispatchResult("browser_fast", raw, "reload")
+            if norm in ("pause video", "play video", "resume video", "toggle play"):
+                if br.run_fast_action("media_key", "k"):
+                    return DispatchResult("browser_fast", raw, "media_key:k")
+            if norm in ("fullscreen", "full screen", "exit fullscreen", "toggle fullscreen"):
+                if br.run_fast_action("media_key", "f"):
+                    return DispatchResult("browser_fast", raw, "media_key:f")
+            if norm in ("mute video", "unmute video", "toggle mute"):
+                if br.run_fast_action("media_key", "m"):
+                    return DispatchResult("browser_fast", raw, "media_key:m")
+
+            m_tab = _TAB_SWITCH_RE.match(norm)
+            if m_tab and m_tab.group(1) in _TAB_NUM_MAP:
+                tab_idx = _TAB_NUM_MAP[m_tab.group(1)]
+                if br.run_fast_action("switch_tab", tab_idx):
+                    return DispatchResult("browser_fast", raw, f"switch_tab:{tab_idx}")
+
+        # 5. Agentic Browser Loop:
+        #    - Fires anywhere on explicit browse/search/watch/weather/playwright commands
+        #    - Fires on click/select/fill/ask/press or targeted "type/write X in Y" when Playwright Firefox is focused
+        #    - Plain "type <text>" / "dictate <text>" (without "in/into <target>" or "playwright/browser" prefix)
+        #      ALWAYS falls through to system-wide OS typing so it works in any focused app!
+        is_explicit_browse = (
+            (norm.startswith(_EXPLICIT_BROWSE_PREFIXES) or cmd.startswith(_EXPLICIT_BROWSE_PREFIXES))
+            and not cmd.startswith(_NON_BROWSE_OPEN_PREFIXES)
+            and not norm.startswith(_NON_BROWSE_OPEN_PREFIXES)
+        )
+        is_targeted_browser_type = bool(
+            re.match(r"^(?:type|write|enter)\s+.+\s+(?:in|into|on)\s+.+$", norm)
+        )
+        is_in_browser_goal = (
+            in_browser
+            and norm not in _IN_BROWSER_DETERMINISTIC_EXCLUSIONS
+            and (
+                is_targeted_browser_type
+                or norm.startswith(("click ", "select ", "fill ", "ask ", "press "))
+                or cmd.startswith(("click ", "select ", "fill ", "ask ", "press "))
+            )
+        )
+
+        if is_explicit_browse or is_in_browser_goal:
+            br.submit_goal(raw)
+            return DispatchResult("browser_agent", raw, f"Submitted browser goal: {raw}")
+
+        return None
+
     def _dispatch_single(self, transcript: str, *, _from_llm: bool = False) -> DispatchResult:
         """Route a single transcribed utterance into deterministic, Gaze-VLM, Type, Terminal, or Browser actions."""
         raw = transcript.strip()
@@ -570,6 +775,13 @@ class VoiceCommandRouter:
             return DispatchResult("empty", raw, "Ignored empty transcript.")
 
         norm = _normalize_command(raw)
+
+        # 0. Playwright Firefox browser agent, barge-in, confirmations, passive gaze scrolling, and fast reflexes
+        browser_res = self._try_handle_browser_voice(raw, norm)
+        if browser_res is not None:
+            if self.gaze_vlm_clicker is not None:
+                self.gaze_vlm_clicker.clear_pending_snapshot()
+            return browser_res
 
         # 1. Zero-latency deterministic control layer.
         # In-place click words click at the live gaze point (not wherever the physical mouse is).
@@ -616,7 +828,13 @@ class VoiceCommandRouter:
                     if cands:
                         best = min(cands, key=lambda c: float(getattr(c, "gaze_dist_px", 9999.0)))
                         if float(getattr(best, "gaze_dist_px", 9999.0)) <= 165.0:
-                            cx, cy = int(best.center_x), int(best.center_y)
+                            cx = int(getattr(best, "screen_x", getattr(best, "center_x", tx)))
+                            cy = int(getattr(best, "screen_y", getattr(best, "center_y", ty)))
+                            label = (
+                                getattr(best, "primary_label", "")
+                                or getattr(best, "label", "")
+                                or getattr(best, "tag", "element")
+                            )
                             if self.on_before_click is not None:
                                 self.on_before_click(cx, cy)
                             self.pointer.move_absolute(cx, cy)
@@ -624,7 +842,7 @@ class VoiceCommandRouter:
                                 return DispatchResult(
                                     "deterministic",
                                     raw,
-                                    f"click_dom ({best.label or best.tag}) at ({cx}, {cy})",
+                                    f"click_dom ({label}) at ({cx}, {cy})",
                                 )
                 if self.on_before_click is not None:
                     self.on_before_click(tx, ty)
@@ -651,9 +869,10 @@ class VoiceCommandRouter:
         if not norm.endswith("window") and norm not in ("switch tab", "switch app"):
             self._window_cycle_step = 0
 
-        # Explicit manual window-origin sync ("sync window" / "align window") for floating Wayland Firefox
-        # Must run BEFORE _handle_tab_or_window_command so "<app> window" doesn't treat "sync" as an app name!
-        if norm in ("sync window", "align window"):
+        # Explicit manual window-origin sync ("anchor window" / "align window" / "bind window" / "sync window")
+        # Also accept "sink window" as an STT homophone for "sync window".
+        # Must run BEFORE _handle_tab_or_window_command so "<app> window" doesn't treat it as an app name!
+        if norm in ("anchor window", "bind window", "align window", "sync window", "sink window"):
             if self.gaze_vlm_clicker is not None:
                 self.gaze_vlm_clicker.clear_pending_snapshot()
             gx, gy, _ = self._current_gaze_and_feat()
@@ -753,7 +972,13 @@ class VoiceCommandRouter:
             self.gaze_vlm_clicker.clear_pending_snapshot()
 
         # 2. Prefix: "Type ..." -> Direct raw text injection via uinput
-        m_type = re.match(r"^(?:type|dictate)\b[\s,.:;-]*(.+)$", raw, flags=re.IGNORECASE)
+        raw_no_filler = re.sub(
+            r"^(?:(?:uh|um|mm|hmm|yeah|okay|ok|hey|so|alright|please|can you|could you)[\s,]+)+",
+            "",
+            raw,
+            flags=re.IGNORECASE,
+        ).strip()
+        m_type = re.match(r"^(?:type|dictate)\b[\s,.:;-]*(.+)$", raw_no_filler, flags=re.IGNORECASE)
         if m_type:
             text_body = m_type.group(1).strip()
             self.pointer.type_text(text_body)
