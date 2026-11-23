@@ -21,8 +21,7 @@ from keyless.models.providers.roles import resolve_gaze_vlm_role, resolve_text_r
 from keyless.models.providers.secrets import keyring_available
 from keyless.platform.base import PermissionState
 from keyless.platform.capabilities import CapabilityReport, detect_capabilities
-from keyless.platform.linux.cameras import list_cameras, resolve_camera_config
-from keyless.platform.linux.display import get_display_layout
+from keyless.platform.router import get_display_layout, list_cameras, resolve_camera_config
 from keyless.voice.stt.factory import stt_report
 
 
@@ -45,6 +44,7 @@ class DoctorReport:
     stt: dict[str, Any]
     providers: dict[str, Any]
     keychain: dict[str, Any]
+    cua_driver: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -62,6 +62,7 @@ class DoctorReport:
             "stt": self.stt,
             "providers": self.providers,
             "keychain": self.keychain,
+            "cua_driver": self.cua_driver,
             "errors": list(self.errors),
         }
 
@@ -110,10 +111,18 @@ def _camera_section(
     )
     configured = {}
     for slot, path in (("cam1", resolved1), ("cam2", resolved2)):
+        # Linux paths are /dev nodes; macOS paths are AVFoundation ids/indexes.
+        looks_fs = bool(path) and (path.startswith("/") or path.startswith("avf:"))
+        fs_exists = bool(path) and Path(path).exists() if path.startswith("/") else bool(path)
         configured[slot] = {
             "path": path,
-            "exists": bool(path) and Path(path).exists(),
-            "readable": bool(path) and Path(path).exists() and os.access(path, os.R_OK),
+            "exists": bool(path) and (fs_exists if path.startswith("/") else True),
+            "readable": bool(path)
+            and (
+                (Path(path).exists() and os.access(path, os.R_OK))
+                if path.startswith("/")
+                else True
+            ),
             "matches_discovered": any(item["path"] == path for item in discovered),
         }
     return {
@@ -217,6 +226,15 @@ def _capability_section(
     )
 
 
+def _cua_section() -> dict[str, Any]:
+    try:
+        from keyless.models import runtimes
+
+        return runtimes.status()
+    except Exception as exc:
+        return {"ready": False, "error": str(exc)}
+
+
 def collect_doctor(
     *,
     paths: AppPaths | None = None,
@@ -297,6 +315,7 @@ def collect_doctor(
             "available": keyring_available(),
             "service": "keyless",
         },
+        cua_driver=_cua_section(),
         errors=errors,
     )
 
@@ -361,6 +380,12 @@ def format_text(report: DoctorReport) -> str:
 
     lines.append("")
     lines.append(f"Keychain: {'available' if report.keychain['available'] else 'unavailable'}")
+    cua = report.cua_driver or {}
+    cua_state = "ready" if cua.get("ready") else "missing"
+    lines.append(
+        f"cua-driver: {cua_state} ({cua.get('version', '?')}, {cua.get('target', '?')})"
+        + ("" if cua.get("ready") else " — run `keyless models download cua-driver`")
+    )
     if report.errors:
         lines.append("")
         lines.append("Errors:")

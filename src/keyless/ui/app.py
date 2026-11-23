@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -26,8 +27,7 @@ from PySide6.QtWidgets import (
 
 from keyless.config.paths import AppPaths, current_paths
 from keyless.config.schema import AppConfig
-from keyless.platform.linux.cameras import resolve_camera_config
-from keyless.platform.linux.display import get_display_layout
+from keyless.platform.router import get_display_layout, resolve_camera_config
 from keyless.ui.components import Card, divider, eyebrow
 from keyless.ui.gaze_field import GazeField
 from keyless.ui.gaze_region import calibration_region
@@ -199,7 +199,7 @@ class HomePanel(QWidget):
         self.transcript_note.setVisible(False)
         controls.layout.addWidget(self.transcript_note)
 
-        self.eye_mouse = QCheckBox("Move mouse pointer with gaze")
+        self.eye_mouse = QCheckBox("Show eye cursor (does not move your mouse)")
         self.eye_mouse.setChecked(window.config.gaze_cursor_control)
         self.eye_mouse.toggled.connect(self._toggle_eye_mouse)
         controls.layout.addWidget(self.eye_mouse)
@@ -689,23 +689,15 @@ class MainWindow(QMainWindow):
             self.tray.set_update_available(None)
 
     def launch_calibration(self) -> None:
-        if self._calib_proc is not None and self._calib_proc.poll() is None:
-            return
-        was_listening = self.controller.status.state is SessionState.LISTENING
-        if was_listening:
-            self.controller.pause()
-        self._resume_after_calib = was_listening
-        try:
-            env = dict(os.environ)
-            if sys.platform == "linux" and env.get("DISPLAY") and "QT_QPA_PLATFORM" not in env:
-                env["QT_QPA_PLATFORM"] = "xcb"
-            self._calib_proc = subprocess.Popen(
-                [sys.executable, "-m", "keyless.main", "calibrate"],
-                env=env,
-            )
-            self._calib_timer.start()
-        except OSError:
-            self._calib_proc = None
+        QMessageBox.information(
+            self,
+            "Align the eye cursor",
+            "Look at your mouse pointer and say “steer to mouse”.\n\n"
+            "The eye cursor snaps to the mouse and applies the correction immediately. "
+            "Repeat it whenever the cursor drifts — there is no full-screen calibration.",
+        )
+        self.home.refresh()
+        self.settings.refresh()
 
     def _poll_calibration(self) -> None:
         if self._calib_proc is None or self._calib_proc.poll() is not None:

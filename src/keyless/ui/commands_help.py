@@ -77,6 +77,11 @@ COMMAND_CATEGORIES: tuple[CommandCategory, ...] = (
                 "“recenter gaze”",
             ),
             CommandEntry(
+                "steer to mouse / adjust",
+                "Look at your mouse and snap the eye cursor to it; the correction applies immediately.",
+                "“steer to mouse”",
+            ),
+            CommandEntry(
                 "save icon as <name>",
                 "Remember the icon under your gaze for instant future clicks.",
                 "“save icon as compose”",

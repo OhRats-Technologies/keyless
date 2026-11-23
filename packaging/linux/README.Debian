@@ -17,14 +17,14 @@ The package installs:
 First run
 ---------
 
-Open "Keyless" from the application menu. Setup:
+Open "Keyless" from the application menu. The engine-owned setup has four
+steps (the macOS app shows the same order):
 
-  1. Permissions: camera, microphone, /dev/uinput, input devices, screen capture.
-  2. Cameras: choose two stable /dev/v4l/by-id devices.
-  3. Calibration: the full-screen target window.
-  4. Speech: download the pinned Parakeet model (about 630 MB) or keep Whisper.
-  5. Optional AI provider: OpenAI-compatible, Ollama, or an installed ACP agent.
-  6. Practice: one contained click, then Start listening.
+  1. Welcome: what Keyless does and how it stays private.
+  2. Devices: camera/microphone permissions, camera selection, and the pinned
+     Parakeet model (about 630 MB, downloaded in the background with progress).
+  3. Calibration: follow the dots in the translucent overlay.
+  4. Ready: start listening. An AI provider can be added later in Settings.
 
 The /dev/uinput udev rule uses TAG+="uaccess", so the active desktop session gets
 write access without a re-login.  If the rule is ignored, log out and back in.

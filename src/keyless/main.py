@@ -20,7 +20,7 @@ from keyless.config import (
     get_display_layout,
 )
 from keyless.daemon import run_combined_daemon
-from keyless.platform.linux.cameras import resolve_camera_config
+from keyless.platform.router import resolve_camera_config
 from keyless.vision.calibrator import run_calibration_ui
 from keyless.vision.landmarks import CameraObservation
 from keyless.vision.stereo_capture import StereoCapture
@@ -255,7 +255,7 @@ def test_cams(
 
 @app.command("calibrate")
 def calibrate(
-    samples: int = typer.Option(22, help="Valid frames to capture per static anchor dot"),
+    samples: int = typer.Option(12, help="Valid frames to capture per static anchor dot"),
     exp1: int | None = typer.Option(None, help="Cam1 manual exposure"),
     gain1: int | None = typer.Option(None, help="Cam1 sensor gain"),
     exp2: int | None = typer.Option(None, help="Cam2 manual exposure"),
@@ -316,6 +316,7 @@ def _apply_runtime_overrides(
     acp_agent: str | None = None,
     vlm_model: str | None = None,
     vlm_provider: str | None = None,
+    action_backend: str | None = None,
     vlm_remote_consent: bool | None = None,
     no_vlm: bool = False,
     ptt: bool = False,
@@ -358,6 +359,8 @@ def _apply_runtime_overrides(
         cfg.acp_agent_id = acp_agent
     if vlm_model is not None:
         cfg.gaze_vlm_model = vlm_model
+    if action_backend in ("native", "cua"):
+        cfg.action_backend = action_backend
     if vlm_provider is not None:
         cfg.gaze_vlm_provider = vlm_provider
     if vlm_remote_consent is not None:
@@ -419,6 +422,10 @@ def run_all(
         None,
         help="Camera capture backend: v4l2 | pipewire (mono sharing)",
     ),
+    action_backend: str | None = typer.Option(
+        None,
+        help="Discrete input actions: native | cua (pinned cua-driver binary)",
+    ),
     firefox_port: int | None = typer.Option(None, help="Firefox DOM WebSocket bridge port (default 8765)"),
     no_firefox_bridge: bool = typer.Option(False, help="Disable Tier-0 Firefox WebSocket DOM bridge"),
     pop_peak: float | None = typer.Option(None, help="Pop detector peak threshold"),
@@ -441,6 +448,7 @@ def run_all(
         saccade_ms=saccade_ms,
         gimbal_gain=gimbal_gain,
         camera_backend=camera_backend,
+        action_backend=action_backend,
         exp1=exp1,
         gain1=gain1,
         exp2=exp2,
@@ -660,6 +668,31 @@ def ui(
     )
 
 
+@app.command("serve")
+def serve(
+    port: int = typer.Option(8766, help="Loopback port for the SwiftUI/Qt control plane"),
+    host: str = typer.Option("127.0.0.1", help="Bind address (loopback only)"),
+) -> None:
+    """Run the loopback control plane for native UI hosts (SwiftUI MenuBarExtra)."""
+    from keyless.ipc.control import ControlServer
+
+    server = ControlServer()
+    bound = server.start(host=host, port=port)
+    console.print(
+        f"[green]Keyless control plane on http://127.0.0.1:{bound}[/green] "
+        "(GET /v1/status, /v1/doctor, /v1/history; POST /v1/start, /v1/pause)"
+    )
+    try:
+        import time
+
+        while True:
+            time.sleep(3600.0)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
+
+
 @app.command("doctor")
 def doctor(
     json_output: bool = typer.Option(False, "--json", help="Emit one JSON document for support/UI"),
@@ -863,6 +896,7 @@ def update_cmd(
 @models_app.command("status")
 def models_status() -> None:
     """Show pinned assets, local state, and whether a receipt verifies."""
+    from keyless.models import runtimes
     from keyless.models.catalog import ASSETS
     from keyless.models.store import ModelStore
 
@@ -882,12 +916,50 @@ def models_status() -> None:
         )
     console.print(table)
 
+    runtime = runtimes.status()
+    rtable = Table(title="Pinned runtimes")
+    rtable.add_column("Runtime")
+    rtable.add_column("State")
+    rtable.add_column("Version")
+    rtable.add_column("Path")
+    rtable.add_row(
+        f"cua-driver ({runtime.get('target')})",
+        "ready" if runtime.get("ready") else "missing",
+        str(runtime.get("version")),
+        str(runtime.get("path")),
+    )
+    console.print(rtable)
+
 
 @models_app.command("download")
 def models_download(
-    which: str = typer.Argument("stt", help="stt or a pinned asset id"),
+    which: str = typer.Argument("stt", help="stt, cua-driver, or a pinned asset id"),
 ) -> None:
-    """Download and verify a pinned model with resume and progress."""
+    """Download and verify a pinned model (or the pinned cua-driver runtime)."""
+    if which == "cua-driver":
+        from keyless.models import runtimes
+
+        target = runtimes.current_target()
+        console.print(
+            f"Downloading [bold]cua-driver {runtimes.CUA_DRIVER_VERSION}[/bold] "
+            f"({target.asset}, {target.bytes / (1024 * 1024):.1f} MB)..."
+        )
+        last = {"value": -10.0}
+
+        def _progress(done: int, total: int) -> None:
+            percent = (done / total * 100.0) if total else 0.0
+            if percent - last["value"] >= 5.0 or percent >= 100.0:
+                last["value"] = percent
+                console.print(f"  {percent:5.1f}%  ({done / (1024 * 1024):.1f}/{total / (1024 * 1024):.1f} MB)")
+
+        try:
+            exe = runtimes.download(progress=_progress)
+        except Exception as exc:
+            console.print(f"[red]Download failed: {exc}[/red]")
+            raise typer.Exit(code=1) from exc
+        console.print(f"[green]Verified cua-driver at {exe}[/green] (receipt written).")
+        return
+
     from keyless.models.downloader import download_asset
 
     asset = _model_asset(which)

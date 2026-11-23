@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,6 +23,10 @@ class DownloadError(RuntimeError):
 
 class ChecksumMismatch(DownloadError):
     """Downloaded bytes do not match the pinned SHA-256."""
+
+
+class DownloadCancelled(DownloadError):
+    """The caller stopped the job; existing .partial files stay resumable."""
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,7 @@ def _download_one(
     progress: ProgressCallback | None,
     file_index: int,
     overall_done_before: int,
+    cancel: threading.Event | None = None,
 ) -> FileReceipt:
     target = store.asset_dir(asset) / item.name
     partial = store.partial_path(asset, item.name)
@@ -87,6 +93,7 @@ def _download_one(
                     progress=progress,
                     file_index=file_index,
                     overall_done_before=overall_done_before,
+                    cancel=cancel,
                 )
             if response.status_code == 200 and existing:
                 # Server ignored Range; restart this file.
@@ -99,6 +106,8 @@ def _download_one(
             last_report = 0.0
             with partial.open(mode) as handle:
                 for chunk in response.iter_bytes(1024 * 1024):
+                    if cancel is not None and cancel.is_set():
+                        raise DownloadCancelled("download stopped by user")
                     if not chunk:
                         continue
                     handle.write(chunk)
@@ -156,6 +165,7 @@ def download_asset(
     progress: ProgressCallback | None = None,
     client: httpx.Client | None = None,
     url_for: UrlResolver | None = None,
+    cancel: threading.Event | None = None,
 ) -> ModelReceipt:
     """Download, verify, and atomically promote every file in ``asset``.
 
@@ -170,6 +180,8 @@ def download_asset(
     done = 0
     try:
         for index, item in enumerate(asset.files, start=1):
+            if cancel is not None and cancel.is_set():
+                raise DownloadCancelled("download stopped by user")
             url = url_for(item) if url_for is not None else asset.url(item)
             receipt = _download_one(
                 asset,
@@ -180,6 +192,7 @@ def download_asset(
                 progress=progress,
                 file_index=index,
                 overall_done_before=done,
+                cancel=cancel,
             )
             done += item.bytes
             receipts.append(receipt)

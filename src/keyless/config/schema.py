@@ -38,6 +38,10 @@ class AppConfig:
 
     camera_mode: str = "auto"
     camera_backend: str = "v4l2"
+    # Discrete input actions: "native" (uinput/CGEvent) or "cua" (pinned
+    # cua-driver binary for clicks/type/scroll/hotkeys). The macOS eye cursor
+    # uses cua-driver's independent overlay when gaze_cursor_overlay is on.
+    action_backend: str = "native"
     transcript_overlay: bool = False
     cam1_by_id: str = DEFAULT_CAM1_ID
     cam2_by_id: str = DEFAULT_CAM2_ID
@@ -76,6 +80,13 @@ class AppConfig:
     gaze_online_ekf: bool = False
     gaze_online_chase: bool = False
     gaze_cursor_control: bool = False
+    # macOS: draw eye-driven motion on cua-driver's per-session agent cursor
+    # (click-through overlay) instead of warping the real mouse pointer.
+    # Unavailable platforms keep their existing pointer behavior.
+    gaze_cursor_overlay: bool = True
+    # Learn from deliberate physical clicks: use the gaze sample ~180 ms before
+    # a stationary mouse-down as a verified target. Quick drag-clicks are ignored.
+    gaze_click_learning: bool = True
     gaze_vlm_enabled: bool = True
     gaze_vlm_provider: str = "auto"
     gaze_vlm_preset: str = "openai"

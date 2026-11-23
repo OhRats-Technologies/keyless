@@ -53,18 +53,18 @@ _HUD_STAGES = {
         "Eye calibration ready. Look straight at the screen and press Start when you see the green dot.",
     ),
     "anchors": _CalibrationStageText(
-        "Stage 1 of 3 · Focus dots",
-        "Keep your eyes locked on the glowing dot center.",
+        "Look at the dot",
+        "A few dots will appear. Keep your eyes on each one until it moves.",
         "Look at each dot as it appears on your screen.",
     ),
     "pursuit1": _CalibrationStageText(
-        "Stage 2 of 3 · Smooth follow",
-        "Keep your head still and follow the gliding dot with your eyes.",
+        "Follow the dot",
+        "Keep your head still and follow the moving dot with your eyes.",
         "Follow the moving dot smoothly with your eyes.",
     ),
     "pursuit2": _CalibrationStageText(
-        "Stage 3 of 3 · Head motion",
-        "Follow the dot while gently turning and tilting your head.",
+        "Follow with head motion",
+        "Keep looking at the dot while gently turning your head.",
         "Keep your eyes on the dot while gently turning and tilting your head.",
     ),
     "fitting": _CalibrationStageText(
@@ -341,6 +341,14 @@ class CalibrationOverlayWindow(QWidget):
         ):
             hud_row.addWidget(btn)
 
+        # Keep the surface calm: only Start/Cancel are visible. The advanced
+        # refinement controls remain connected for keyboard/experimental use.
+        for btn in (
+            self.quick_btn, self.clear_data_btn, self.spot_btn,
+            self.undo_btn, self.redo_btn, self.veil_btn, self.voice_btn,
+        ):
+            btn.setVisible(False)
+
         # Compact centered welcome card only during intro (leaves 80%+ desktop visible).
         self.intro_card = QFrame(self)
         self.intro_card.setObjectName("IntroCard")
@@ -350,10 +358,8 @@ class CalibrationOverlayWindow(QWidget):
         intro_title = QLabel(f"Calibrate gaze · {self.target_mon.connector}")
         intro_title.setStyleSheet("font-size: 20px; font-weight: 600;")
         intro_body = QLabel(
-            "Your screen stays visible underneath so you can see where calibration fits.\n"
-            "• Step 1: Look calmly at each focus dot.\n"
-            "• Step 2: Follow the moving target smoothly.\n"
-            "• Step 3: Look at real apps on your screen and click or drag to fine-tune."
+            "A small dot moves around your screen. Just look at it.\n"
+            "Press Space to start · Esc to cancel."
         )
         intro_body.setObjectName("HudSub")
         intro_body.setStyleSheet("font-size: 13px; color: #c7c4bd;")
@@ -1083,11 +1089,11 @@ def run_translucent_calibration_overlay(
     calib_path: Path,
     target_mon: MonitorInfo,
     layout: DisplayLayout,
-    samples_per_point: int = 22,
-    settle_sec: float = 2.0,
-    pose_settle_sec: float = 3.8,
-    sweep1_duration_sec: float = 52.0,
-    sweep2_duration_sec: float = 44.0,
+    samples_per_point: int = 12,
+    settle_sec: float = 1.2,
+    pose_settle_sec: float = 2.0,
+    sweep1_duration_sec: float = 12.0,
+    sweep2_duration_sec: float = 10.0,
 ) -> Any:
     """Run the translucent Qt calibration overlay on the target monitor."""
     # Ensure XWayland positioning works when running interactively under Wayland.
@@ -1098,9 +1104,14 @@ def run_translucent_calibration_overlay(
     ):
         os.environ["QT_QPA_PLATFORM"] = "xcb"
 
-    from keyless.platform.linux.cameras import resolve_camera_config
+    from keyless.platform.router import resolve_camera_config
     from keyless.vision.stereo_capture import StereoCapture
 
+    # On macOS the built-in camera is enough and virtual cameras (OBS etc.)
+    # poison the stereo model. Respect an explicit stereo choice, otherwise
+    # use mono with the first discovered physical camera.
+    if sys.platform == "darwin" and config.camera_mode != "stereo":
+        config.camera_mode = "mono"
     config.camera_mode, config.cam1_by_id, config.cam2_by_id = resolve_camera_config(
         config.camera_mode, config.cam1_by_id, config.cam2_by_id
     )

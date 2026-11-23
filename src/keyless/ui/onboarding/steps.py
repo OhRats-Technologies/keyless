@@ -192,7 +192,7 @@ class WelcomePage(StepPage):
         card = Card()
         for heading, desc in (
             ("1. Connect your devices", "Confirm your camera, microphone, and local speech engine."),
-            ("2. Quick calibration", "Follow a short sequence of dots on one screen. Multi-monitor layouts adapt automatically."),
+            ("2. Align the eye cursor", "Look at your mouse and say “steer to mouse” whenever it drifts. No dot tutorial."),
             ("3. Start hands-free", "Pause or resume anytime from the menu bar."),
         ):
             block = QVBoxLayout()
@@ -719,23 +719,23 @@ class CalibrationPage(StepPage):
         self.runner = runner
         self._proc: subprocess.Popen[bytes] | None = None
 
-        self.title.setText("Calibrate eye tracking")
+        self.title.setText("Align the eye cursor")
         self.subtitle.setText(
-            "Follow the dots on screen so Keyless learns your camera position. "
-            "Multiple monitors and head movement are handled automatically."
+            "No dots or full-screen overlay. Look at your mouse and say “steer to mouse” "
+            "whenever the eye cursor drifts."
         )
 
         card = Card()
         self.status = QLabel("")
         self.status.setObjectName("Heading")
         card.layout.addWidget(self.status)
-        self.hint = QLabel("Takes about a minute. Press Escape anytime to cancel.")
+        self.hint = QLabel("The eye cursor snaps to your mouse and applies the correction.")
         self.hint.setObjectName("Muted")
         self.hint.setWordWrap(True)
         card.layout.addWidget(self.hint)
 
         actions = QHBoxLayout()
-        self.run_button = QPushButton("Start calibration")
+        self.run_button = QPushButton("Got it")
         self.run_button.setObjectName("Primary")
         self.run_button.clicked.connect(self.run_calibration)
         actions.addWidget(self.run_button)
@@ -753,42 +753,28 @@ class CalibrationPage(StepPage):
     def refresh(self) -> None:
         exists = self.paths.calibration_path.exists()
         if exists:
-            self.status.setText("Calibrated")
+            self.status.setText("Saved calibration loaded")
             self.status.setObjectName("Success")
-            self.run_button.setText("Recalibrate")
-            self.run_button.setObjectName("")
-            self.hint.setText("Your gaze calibration is saved. You can recalibrate anytime from Home or Settings.")
+            self.hint.setText(
+                "Look at your mouse and say “steer to mouse” to refine the eye cursor live."
+            )
         else:
-            self.status.setText("Not calibrated yet")
+            self.status.setText("Live mouse alignment")
             self.status.setObjectName("Muted")
-            self.run_button.setText("Start calibration")
-            self.run_button.setObjectName("Primary")
-            self.hint.setText("Opens a calm, translucent calibration overlay over your desktop. You will return here automatically when finished.")
+            self.hint.setText(
+                "Look at your mouse and say “steer to mouse”. The correction applies immediately; "
+                "no full-screen calibration is needed."
+            )
         for w in (self.status, self.run_button):
             w.style().unpolish(w)
             w.style().polish(w)
 
     def run_calibration(self) -> None:
-        if self.runner is not None:
-            self.runner()
-            self.refresh()
-            return
-        if self._proc is not None and self._proc.poll() is None:
-            return
-        try:
-            env = dict(os.environ)
-            if sys.platform == "linux" and env.get("DISPLAY") and "QT_QPA_PLATFORM" not in env:
-                env["QT_QPA_PLATFORM"] = "xcb"
-            self._proc = subprocess.Popen(
-                [sys.executable, "-m", "keyless.main", "calibrate"],
-                env=env,
-            )
-            self.run_button.setEnabled(False)
-            self.run_button.setText("Calibrating…")
-            self.set_problem("")
-            self._poll.start()
-        except OSError as exc:
-            self.set_problem(f"Could not start calibration: {exc}")
+        self.set_problem("")
+        self.hint.setText(
+            "Say “steer to mouse” (or “adjust”) while looking at your mouse. "
+            "The eye cursor snaps to it and applies the correction."
+        )
 
     def _check_proc(self) -> None:
         if self._proc is None or self._proc.poll() is not None:
@@ -801,8 +787,6 @@ class CalibrationPage(StepPage):
         self.refresh()
 
     def validate(self) -> tuple[bool, str]:
-        if not self.paths.calibration_path.exists():
-            return False, "Complete calibration before continuing."
         return True, ""
 
 
@@ -832,7 +816,7 @@ class ReadyPage(StepPage):
 _STEP_VOICE_HELP = {
     OnboardingStep.WELCOME: "Welcome to Keyless. Everything runs privately on your device. Press Get started to check your camera and microphone.",
     OnboardingStep.DEVICES: "Check that your microphone and camera are ready, then download the offline speech model if needed.",
-    OnboardingStep.CALIBRATION: "Start eye calibration to open the translucent overlay. Follow each dot calmly with your eyes.",
+    OnboardingStep.CALIBRATION: "Look at your mouse and say “steer to mouse” to align the eye cursor.",
     OnboardingStep.READY: "You are ready to go hands-free. Press Start listening whenever you want Keyless active.",
 }
 

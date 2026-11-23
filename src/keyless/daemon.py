@@ -9,17 +9,19 @@ from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
-from evdev import ecodes
 from rich.console import Console
 
 from keyless.audio.active_listener import ActiveVoiceListener
 from keyless.audio.pop_detector import PopTriggerStateMachine
 from keyless.audio.stt_engine import UnifiedAudioService
-from keyless.config import AppConfig, current_paths, get_display_layout
-from keyless.input.click_harvest import EvdevMouseClickHarvester
+from keyless.config import AppConfig, DEFAULT_CALIB_PATH, current_paths, get_display_layout
 from keyless.input.pointer import DryRunPointerBackend, PointerBackend
-from keyless.platform.linux.hotkeys import EvdevHotkeyMonitor, resolve_hotkey_code
-from keyless.platform.linux.pointer import UInputManager
+from keyless.platform.router import (
+    create_pointer_backend,
+    current_host,
+    monitor_at_point,
+    pointer_position,
+)
 from keyless.ipc.firefox_bridge import FirefoxDOMBridge
 from keyless.ipc.state import FLAG_FACE_DETECTED, SharedGazeReader
 from keyless.ipc.transcript import write_transcript
@@ -39,10 +41,18 @@ from keyless.vision.cursor_gimbal import (
     run_vision_loop,
 )
 from keyless.vision.geo_gaze import GeoGazeModel, GeoGazeTracker
-from keyless.platform.linux.accessibility import LinuxDesktopAccessibilityBridge
-from keyless.platform.linux.screen import monitor_at_point
 from keyless.vision.online_learner import OnlineGazeLearner
 from keyless.vision.ui_detector import GazeUIDetector
+
+
+def _desktop_bridge():  # type: ignore[no-untyped-def]
+    if current_host() == "macos":
+        from keyless.platform.stub import UnsupportedAccessibilityBridge
+
+        return UnsupportedAccessibilityBridge("macos")
+    from keyless.platform.linux.accessibility import LinuxDesktopAccessibilityBridge
+
+    return LinuxDesktopAccessibilityBridge()
 
 
 def run_combined_daemon(
@@ -71,8 +81,60 @@ def run_combined_daemon(
     pointer: PointerBackend = (
         DryRunPointerBackend(layout.total_width, layout.total_height)
         if dry_run
-        else UInputManager(layout.total_width, layout.total_height)
+        else create_pointer_backend(
+            layout.total_width, layout.total_height,
+            action_backend=config.action_backend,
+        )
     )
+    if enable_vision:
+        # Eye motion goes to cua-driver's independent agent cursor. The same
+        # sink delegates clicks/typing to the action pointer, so the router and
+        # the gaze loop agree on where the eye cursor is without warping the
+        # system mouse.
+        from keyless.platform.cua.agent_cursor import create_gaze_sink
+
+        pointer, gaze_overlay, _gaze_move = create_gaze_sink(config, pointer, dry_run)
+    else:
+        gaze_overlay = None
+    pointer_mode = None
+    if gaze_overlay is not None and current_host() == "macos":
+        from keyless.platform.macos.mouse_events import MacOSPointerVisibility
+
+        pointer_mode = MacOSPointerVisibility(gaze_overlay)
+        pointer_mode.start()
+
+    online_learner: OnlineGazeLearner | None = None
+    click_harvester = None
+    if (
+        enable_vision
+        and not dry_run
+        and isinstance(model, StereoGazeModel)
+        and bool(getattr(config, "gaze_click_learning", True))
+    ):
+        online_learner = OnlineGazeLearner(
+            model=model,
+            config=config,
+            monitor=layout.primary,
+            layout=layout,
+            calib_path=calib_path or DEFAULT_CALIB_PATH,
+            allow_disk_overwrite=True,
+        )
+        if current_host() == "macos":
+            try:
+                from keyless.platform.macos.mouse_events import MacOSMouseClickHarvester
+
+                click_harvester = MacOSMouseClickHarvester(
+                    online_learner,
+                    log_path=current_paths().logs_dir / "gaze_clicks.jsonl",
+                )
+                click_harvester.start()
+                out.print(
+                    "[green]Learning gaze from stationary mouse clicks "
+                    "(~180 ms pre-click; quick drags ignored).[/green]"
+                )
+            except Exception as exc:
+                click_harvester = None
+                out.print(f"[yellow]Click learning unavailable: {exc}[/yellow]")
 
     latest_gaze_lock = threading.Lock()
     latest_gaze: tuple[float, float] | None = None
@@ -128,7 +190,7 @@ def run_combined_daemon(
 
     gaze_reader: SharedGazeReader | None = None
     audio_svc: UnifiedAudioService | None = None
-    ptt_mon: EvdevHotkeyMonitor | None = None
+    ptt_mon = None  # EvdevHotkeyMonitor on Linux; None on macOS (SwiftUI host owns PTT)
     active_listener: ActiveVoiceListener | None = None
     speaker = None
     stt = None
@@ -136,7 +198,6 @@ def run_combined_daemon(
     event_thread: threading.Thread | None = None
     vlm_clicker: GazeVLMClicker | None = None
     vlm_provider = None
-    mouse_harvester: EvdevMouseClickHarvester | None = None
 
     def _current_gaze_xy_fallback() -> tuple[float, float]:
         st = _inproc_vlm_state()
@@ -171,7 +232,7 @@ def run_combined_daemon(
 
             vlm_provider = None
             detector = GazeUIDetector()
-            desktop_atspi = LinuxDesktopAccessibilityBridge()
+            desktop_atspi = _desktop_bridge()
             vlm_enabled = False
             if config.gaze_vlm_enabled:
                 from keyless.models.providers.ollama import OllamaProvider
@@ -233,11 +294,36 @@ def run_combined_daemon(
                 st = _inproc_vlm_state()
                 if st is None or st[2] is None:
                     return "No current face/eye observation to recenter."
+                active_model = online_learner.model if online_learner is not None else model
                 mon = monitor_at_point(layout, st[0], st[1])
                 cx = mon.x + mon.width * 0.5
                 cy = mon.y + mon.height * 0.5
-                dx, dy = model.recenter_to(cx, cy, st[2])
+                dx, dy = active_model.recenter_to(cx, cy, st[2])
                 return f"Recentered gaze to monitor center ({cx:.0f}, {cy:.0f}) with offset=({dx:+.0f}, {dy:+.0f})px"
+
+            def _on_steer_to_mouse() -> str:
+                if model is None:
+                    return "Vision loop not active."
+                st = _inproc_vlm_state()
+                if st is None or st[2] is None:
+                    return "No current face/eye observation to steer."
+                mouse = pointer_position()
+                if mouse is None:
+                    return "Could not read the real pointer position on this host."
+                mx, my = mouse
+                active_model = online_learner.model if online_learner is not None else model
+                dx, dy = active_model.recenter_to(mx, my, st[2])
+                if active_controller is not None:
+                    active_controller.warp_and_hold(mx, my, hold_sec=0.35)
+                acknowledge = getattr(pointer, "acknowledge", None)
+                if callable(acknowledge):
+                    acknowledge(mx, my)
+                if pointer_mode is not None:
+                    pointer_mode.force_eye_mode()
+                return (
+                    f"Eye cursor snapped to the mouse at ({mx:.0f}, {my:.0f}); "
+                    f"offset=({dx:+.0f}, {dy:+.0f})px"
+                )
 
             router = VoiceCommandRouter(
                 pointer=pointer,
@@ -250,6 +336,7 @@ def run_combined_daemon(
                 on_before_click=_on_before_click,
                 firefox_bridge=firefox_bridge,
                 on_recenter_gaze=_on_recenter_gaze if enable_vision else None,
+                on_steer_to_mouse=_on_steer_to_mouse if enable_vision else None,
             )
 
             def _prewarm_gaze_vlm() -> None:
@@ -332,8 +419,8 @@ def run_combined_daemon(
                         except queue.Empty:
                             continue
                         if ev.kind == "pop_click":
-                            out.print("[green]POP (75ms-vetoed) -> BTN_LEFT[/green]")
-                            pointer.click(ecodes.BTN_LEFT)
+                            out.print("[green]POP (75ms-vetoed) -> click[/green]")
+                            pointer.click(1)
                         elif ev.kind == "voice_command":
                             out.print(
                                 f"[cyan]Voice ({ev.confidence:.2f}):[/cyan] {ev.transcript!r}"
@@ -364,8 +451,8 @@ def run_combined_daemon(
                 )
 
                 def _on_pop() -> None:
-                    out.print("[green]POP -> BTN_LEFT[/green]")
-                    pointer.click(ecodes.BTN_LEFT)
+                    out.print("[green]POP -> click[/green]")
+                    pointer.click(1)
 
                 def _on_utterance(audio: np.ndarray) -> None:
                     t0 = time.perf_counter()
@@ -392,32 +479,44 @@ def run_combined_daemon(
                     audio_svc.begin_ptt()
                     _prewarm_gaze_vlm()
 
-                hotkey_code = resolve_hotkey_code(config.ptt_hotkey)
-                ptt_mon = EvdevHotkeyMonitor(
-                    hotkey_code=hotkey_code,
-                    on_press=_on_ptt_press,
-                    on_release=audio_svc.end_ptt,
-                )
-                n_devs = ptt_mon.start()
-                if n_devs == 0:
-                    out.print(
-                        f"[yellow]Warning: no readable /dev/input/event* device has {config.ptt_hotkey}. "
-                        "Pop-click active, PTT hotkey unavailable.[/yellow]"
-                    )
+                if current_host() == "macos":
+                    # macOS PTT via CGEventTap lands with the SwiftUI host;
+                    # voice runs always-on here until the tap ships.
+                    out.print("[yellow]PTT hotkey is handled by the SwiftUI host on macOS; "
+                              "using always-on voice in the engine.[/yellow]")
+                    ptt_mon = None
                 else:
-                    out.print(
-                        f"PTT={config.ptt_hotkey} ({n_devs} device(s)) | "
-                        f"Pop(peak>={config.pop_min_peak:.2f}, rms>={config.pop_min_rms:.3f})"
+                    from keyless.platform.linux.hotkeys import EvdevHotkeyMonitor, resolve_hotkey_code
+
+                    hotkey_code = resolve_hotkey_code(config.ptt_hotkey)
+                    ptt_mon = EvdevHotkeyMonitor(
+                        hotkey_code=hotkey_code,
+                        on_press=_on_ptt_press,
+                        on_release=audio_svc.end_ptt,
                     )
+                    n_devs = ptt_mon.start()
+                    if n_devs == 0:
+                        out.print(
+                            f"[yellow]Warning: no readable /dev/input/event* device has {config.ptt_hotkey}. "
+                            "Pop-click active, PTT hotkey unavailable.[/yellow]"
+                        )
+                    else:
+                        out.print(
+                            f"PTT={config.ptt_hotkey} ({n_devs} device(s)) | "
+                            f"Pop(peak>={config.pop_min_peak:.2f}, rms>={config.pop_min_rms:.3f})"
+                        )
                 audio_svc.start()
 
         if enable_vision:
             assert model is not None
-            gaze_mode = (
-                "eye-mouse cursor control"
-                if config.gaze_cursor_control
-                else "internal gaze guide (physical mouse untouched)"
-            )
+            if getattr(pointer, "is_agent_cursor_sink", False):
+                gaze_mode = "eye cursor on cua-driver's independent overlay"
+            elif config.gaze_cursor_control and not _gaze_move:
+                gaze_mode = "internal gaze guide (agent cursor unavailable; mouse untouched)"
+            elif config.gaze_cursor_control:
+                gaze_mode = "eye-mouse cursor control"
+            else:
+                gaze_mode = "internal gaze guide (physical mouse untouched)"
             out.print(
                 f"Starting gaze loop ({gaze_mode}, dry_run={dry_run}, "
                 f"RMSE X={model.rmse_x:.1f}px Y={model.rmse_y:.1f}px). Press Ctrl+C to stop."
@@ -431,6 +530,7 @@ def run_combined_daemon(
                 on_step=_on_vision_step,
                 on_controller_ready=_on_controller_ready,
                 on_tracker_ready=_on_tracker_ready,
+                predict_gaze=online_learner.predict if online_learner is not None else None,
             )
         else:
             start_t = time.monotonic()
@@ -442,8 +542,10 @@ def run_combined_daemon(
         out.print("\nStopped.")
     finally:
         event_stop.set()
-        if mouse_harvester is not None:
-            mouse_harvester.stop()
+        if pointer_mode is not None:
+            pointer_mode.stop()
+        if click_harvester is not None:
+            click_harvester.stop()
         if event_thread is not None and event_thread.is_alive():
             event_thread.join(timeout=1.0)
         if active_listener is not None:

@@ -200,7 +200,7 @@ The UI is its own layer; it is not embedded in the daemon. Surfaces:
 | Main window | Home/status, Setup, Cameras, Calibration, Models, Settings, History, Diagnostics, About |
 | Tray/menu bar | Listening/Paused, Open, Pause, Calibrate, Quit |
 | Overlay | Gaze cursor/target, click confirmation, heard/understood pill, permission/error pill |
-| Onboarding | First-run story: welcome → permissions → cameras → calibration → model → practice → ready |
+| Onboarding | Engine-owned first-run story: welcome → devices → calibration → ready |
 | Settings | Hotkey/mode, pointer, gaze, cameras, audio, models, overlay, privacy, startup |
 | History | Recent actions, target, result, latency, tier, app; retry/copy |
 | Diagnostics | `doctor` summary, camera/mic previews, capability report, logs |
@@ -218,17 +218,18 @@ The desktop shell and landing page use the OhRats UI kit as the shared visual la
 
 ```
 Welcome
-  → Permissions       (per OS; rows with Allow/Open Settings/denied/stale/restart)
-  → Cameras           (two live previews, face found, identify/swap)
-  → Calibration       (guided dots/pursuits, quality, retry, per monitor)
-  → Models            (STT; LLM/VLM provider optional; progress; continue without)
-  → Practice          ("look here, say click"; contained card; success/failure)
-  → Ready             ("Listening"; where it lives; pause/quit)
+  → Devices           (TCC rows, camera/mic checks, offline speech model progress)
+  → Calibration       (guided dots; Continue gated on calibration.ready)
+  → Ready             ("Start listening"; where it lives; pause/quit)
 ```
 
-- Persist the current step in `onboarding.json`; resume after a crash/relaunch.
-- Never skip camera/calibration when vision is enabled; optional steps get a visible Skip.
-- A denied permission never dead-ends the whole flow; it offers Open Settings and marks the step unresolved.
+- The state machine lives in `keyless.ui.onboarding.flow` and is shared by both
+  shells; the step and completion are persisted in `onboarding.json` and served
+  by `GET/POST /v1/setup`. Resume after a crash/relaunch.
+- Camera/mic and speech-model readiness gate the Devices step; a "Skip for now"
+  path is available so a denied permission or failed download never dead-ends.
+- A denied permission offers the exact Settings pane and marks the step
+  unresolved; model downloads resume from `.partial` with Try again.
 
 ## 8. Migration order and status
 

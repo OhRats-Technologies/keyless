@@ -91,11 +91,17 @@ def test_screen_probe_reports_missing_gdbus() -> None:
     assert "gdbus" in info.detail
 
 
-def test_detect_capabilities_non_linux_is_an_honest_stub() -> None:
+def test_detect_capabilities_non_linux_probes_real_backends() -> None:
     report = detect_capabilities(platform_name="darwin")
     assert report.platform == "macos"
     assert report.get(Capability.POINTER) is not None
-    assert report.status(Capability.POINTER) is CapabilityStatus.UNSUPPORTED_PLATFORM
+    # macOS backends are really probed now (Hex-style): never a blanket stub.
+    assert report.status(Capability.POINTER) in (
+        CapabilityStatus.AVAILABLE,
+        CapabilityStatus.NEEDS_PERMISSION,
+        CapabilityStatus.UNAVAILABLE,
+    )
+    assert report.get(Capability.SWIFTUI) is not None
 
 
 def test_capability_report_serializes_for_doctor() -> None:

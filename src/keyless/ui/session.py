@@ -6,6 +6,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -186,6 +187,8 @@ class DaemonController:
         self._log: object | None = None
         self._status = SessionStatus()
         self._last_failure: DaemonFailureReport | None = None
+        self._lock = threading.RLock()
+        self._reaper: threading.Thread | None = None
 
     @property
     def failure_report(self) -> DaemonFailureReport | None:
@@ -193,17 +196,18 @@ class DaemonController:
 
     @property
     def status(self) -> SessionStatus:
-        if self._proc is not None and self._proc.poll() is not None:
-            code = int(self._proc.returncode or 1)
-            self._proc = None
-            self._close_log()
-            report = inspect_daemon_error(self.paths.logs_dir / "daemon.log", code)
-            self._last_failure = report
-            self._status = SessionStatus(
-                SessionState.ERROR,
-                f"{report.summary}. {report.hint}",
-            )
-        return self._status
+        with self._lock:
+            if self._proc is not None and self._proc.poll() is not None:
+                code = int(self._proc.returncode or 1)
+                self._proc = None
+                self._close_log()
+                report = inspect_daemon_error(self.paths.logs_dir / "daemon.log", code)
+                self._last_failure = report
+                self._status = SessionStatus(
+                    SessionState.ERROR,
+                    f"{report.summary}. {report.hint}",
+                )
+            return self._status
 
     def start(self) -> SessionStatus:
         if not self.paths.calibration_path.exists():
@@ -212,51 +216,79 @@ class DaemonController:
                 f"Calibration is missing. Run setup first ({self.paths.calibration_path}).",
             )
             return self._status
-        if self._proc is not None and self._proc.poll() is None:
-            self._status = SessionStatus(SessionState.LISTENING, "Already running.")
-            return self._status
-        self.paths.ensure_directories()
-        log_path = self.paths.logs_dir / "daemon.log"
-        args = list(self.extra_args)
-        try:
-            from keyless.config.schema import AppConfig
+        self._wait_for_reaper()
+        with self._lock:
+            if self._proc is not None and self._proc.poll() is None:
+                self._status = SessionStatus(SessionState.LISTENING, "Already running.")
+                return self._status
+            self.paths.ensure_directories()
+            log_path = self.paths.logs_dir / "daemon.log"
+            args = list(self.extra_args)
+            try:
+                from keyless.config.schema import AppConfig
 
-            backend = AppConfig.load(self.paths.settings_path).camera_backend
-            if backend == "pipewire" and "--camera-backend" not in args:
-                args.extend(["--camera-backend", "pipewire"])
-        except Exception:
-            pass
-        try:
-            log = log_path.open("ab")
-            self._log = log
-            self._proc = subprocess.Popen(
-                [self.python, "-m", "keyless.main", *args],
-                cwd=str(Path(__file__).resolve().parents[3]),
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-            )
-        except OSError as exc:
-            self._close_log()
-            self._status = SessionStatus(SessionState.ERROR, f"Could not start: {exc}")
+                backend = AppConfig.load(self.paths.settings_path).camera_backend
+                if backend == "pipewire" and "--camera-backend" not in args:
+                    args.extend(["--camera-backend", "pipewire"])
+            except Exception:
+                pass
+            try:
+                log = log_path.open("ab")
+                self._log = log
+                self._proc = subprocess.Popen(
+                    [self.python, "-m", "keyless.main", *args],
+                    cwd=str(Path(__file__).resolve().parents[3]),
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                )
+            except OSError as exc:
+                self._close_log()
+                self._status = SessionStatus(SessionState.ERROR, f"Could not start: {exc}")
+                return self._status
+            self._status = SessionStatus(SessionState.LISTENING, "Listening.")
             return self._status
-        self._status = SessionStatus(SessionState.LISTENING, "Listening.")
-        return self._status
 
     def pause(self) -> SessionStatus:
-        if self._proc is not None and self._proc.poll() is None:
-            # SIGINT lets the CLI unwind its context managers and release the
-            # camera and uinput device; SIGTERM skipped that cleanup.
-            self._proc.send_signal(signal.SIGINT)
+        """Report paused immediately and stop the child in the background.
+
+        The daemon does not unwind on SIGINT while its vision loop is inside a
+        camera call, so waiting for it here would stall the control plane for
+        seconds. The reaper escalates to SIGTERM and then SIGKILL; `start`
+        waits for it so a quick resume cannot race the old process.
+        """
+        with self._lock:
+            proc = self._proc
+            self._proc = None
+            self._close_log()
+            self._status = SessionStatus(SessionState.PAUSED, "Paused.")
+            if proc is None or proc.poll() is not None:
+                return self._status
+            proc.send_signal(signal.SIGINT)
+            reaper = threading.Thread(
+                target=self._reap, args=(proc,), name="keyless-daemon-reap", daemon=True
+            )
+            self._reaper = reaper
+            reaper.start()
+            return self._status
+
+    def _wait_for_reaper(self, timeout: float = 2.0) -> None:
+        reaper = self._reaper
+        if reaper is not None and reaper.is_alive():
+            reaper.join(timeout=timeout)
+
+    def _reap(self, proc: subprocess.Popen[bytes]) -> None:
+        try:
+            proc.wait(timeout=0.3)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
             try:
-                self._proc.wait(timeout=4.0)
+                proc.wait(timeout=1.5)
             except subprocess.TimeoutExpired:
-                self._proc.kill()
-                self._proc.wait(timeout=2.0)
-        self._proc = None
-        self._close_log()
-        self._status = SessionStatus(SessionState.PAUSED, "Paused (daemon stopped).")
-        return self._status
+                proc.kill()
+                proc.wait()
+        if self._reaper is threading.current_thread():
+            self._reaper = None
 
     def _close_log(self) -> None:
         if self._log is not None:
@@ -268,3 +300,4 @@ class DaemonController:
 
     def quit(self) -> None:
         self.pause()
+        self._wait_for_reaper(timeout=3.0)

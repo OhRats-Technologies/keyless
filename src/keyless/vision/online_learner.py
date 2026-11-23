@@ -88,6 +88,7 @@ class OnlineGazeLearner:
         self._pending_samples: list[tuple[np.ndarray, tuple[float, float], float]] = []
         self._refit_in_progress = False
         self.total_online_updates = 0
+        self.last_outcome: dict[str, object] | None = None
 
     @property
     def cam1_by_id(self) -> str:
@@ -132,15 +133,16 @@ class OnlineGazeLearner:
             min_x, max_x = self.model.bounds_min_x, self.model.bounds_max_x
             min_y, max_y = self.model.bounds_min_y, self.model.bounds_max_y
 
-        self._history.append(
-            _GazeHistoryFrame(
-                ts=ts,
-                feat=fv.copy(),
-                base_x=base_x,
-                base_y=base_y,
-                iris_speed=iris_speed,
+        with self._lock:
+            self._history.append(
+                _GazeHistoryFrame(
+                    ts=ts,
+                    feat=fv.copy(),
+                    base_x=base_x,
+                    base_y=base_y,
+                    iris_speed=iris_speed,
+                )
             )
-        )
 
         out_x = max(min_x, min(max_x, base_x + corr_x))
         out_y = max(min_y, min(max_y, base_y + corr_y))
@@ -149,28 +151,38 @@ class OnlineGazeLearner:
     def _find_best_fixation_frame(
         self,
         anchor_ts: float,
-        lookback_min_sec: float = 0.03,
+        lookback_min_sec: float = 0.06,
         lookback_max_sec: float = 0.35,
+        preferred_pre_click_sec: float = 0.18,
     ) -> _GazeHistoryFrame | None:
-        """Find the most stable (lowest iris velocity) eye frame right before a click or voice onset."""
+        """Find the stable eye frame just before a click or voice onset.
+
+        People often start a post-click saccade immediately, so the label comes
+        from ~180 ms before the button went down (a typical visual-reaction
+        interval) rather than from the click moment. For deliberate resting
+        clicks that is still the target the pointer was sitting on.
+        """
         if not self._history:
             return None
 
         t_hi = anchor_ts - lookback_min_sec
         t_lo = anchor_ts - lookback_max_sec
-        candidates = [f for f in self._history if t_lo <= f.ts <= t_hi and f.iris_speed < 0.020]
+        with self._lock:
+            history = list(self._history)
+        candidates = [f for f in history if t_lo <= f.ts <= t_hi and f.iris_speed < 0.020]
 
         if not candidates:
             near = [
                 f
-                for f in self._history
+                for f in history
                 if abs(f.ts - anchor_ts) <= 0.40 and f.iris_speed < 0.025
             ]
             if not near:
                 return None
             return min(near, key=lambda f: f.iris_speed)
 
-        candidates.sort(key=lambda f: f.iris_speed)
+        preferred_ts = anchor_ts - preferred_pre_click_sec
+        candidates.sort(key=lambda f: (abs(f.ts - preferred_ts), f.iris_speed))
         top = candidates[:3]
         mean_feat = np.mean([f.feat for f in top], axis=0)
         with self._lock:
@@ -207,6 +219,11 @@ class OnlineGazeLearner:
         else:
             fix_frame = self._find_best_fixation_frame(ts)
             if fix_frame is None:
+                self.last_outcome = {
+                    "accepted": False,
+                    "reason": "no_fixation",
+                    "source": source,
+                }
                 return False
 
         with self._lock:
@@ -217,6 +234,12 @@ class OnlineGazeLearner:
             # Strict spatial gate: reject clicks where user wasn't looking near the target
             max_gate_px = 200.0 if source == "mouse" else 240.0
             if live_err > max_gate_px:
+                self.last_outcome = {
+                    "accepted": False,
+                    "reason": "gate",
+                    "source": source,
+                    "error_px": round(live_err, 1),
+                }
                 return False
 
             # Smooth Huber weight + bounded Kalman gain (max 0.40 per click, max +/-38px step)
@@ -266,6 +289,14 @@ class OnlineGazeLearner:
             f"bias=({self._bias_x:+.0f}, {self._bias_y:+.0f})px | "
             f"updates={self.total_online_updates})"
         )
+        self.last_outcome = {
+            "accepted": True,
+            "reason": "accepted",
+            "source": source,
+            "error_px": round(live_err, 1),
+            "bias_x": round(self._bias_x, 1),
+            "bias_y": round(self._bias_y, 1),
+        }
         return True
 
     def _background_refit_worker(

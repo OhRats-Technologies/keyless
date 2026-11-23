@@ -41,6 +41,8 @@ class Capability(str, Enum):
     BROWSER_BRIDGE = "browser_bridge"
     KEYCHAIN = "keychain"
     LLM_PROVIDER = "llm_provider"
+    SWIFTUI = "swiftui"
+    CUA_DRIVER = "cua_driver"
 
 
 @dataclass
@@ -228,6 +230,87 @@ def probe_module(module: str, capability: Capability, label: str) -> CapabilityI
     return _ok(capability.value, f"{label} is installed.")
 
 
+def probe_swiftui(
+    *,
+    platform_name: str | None = None,
+    swiftc: str | None = None,
+    host_sources: Path | None = None,
+) -> CapabilityInfo:
+    """Probe the native macOS SwiftUI host seam (Capability.SWIFTUI).
+
+    The shared Python engine stays cross-platform; on macOS the preferred UI
+    is the native SwiftUI host in ``packaging/macos/`` talking to the engine
+    over the loopback control plane (``keyless serve``). This probe reports
+    whether that host can be built here — it never pretends the engine's
+    macOS input/camera/screen backends exist (those stay honest stubs until
+    CGEvent/AVFoundation/ScreenCaptureKit land).
+    """
+    name = platform_name if platform_name is not None else sys.platform
+    host = "macos" if name == "darwin" else name
+    sources = host_sources or (Path(__file__).resolve().parents[3] / "packaging" / "macos")
+    has_sources = (sources / "Keyless" / "KeylessApp.swift").exists() or (
+        sources / "KeylessApp.swift"
+    ).exists()
+    if host not in ("macos", "darwin"):
+        return CapabilityInfo(
+            name=Capability.SWIFTUI.value,
+            status=CapabilityStatus.UNAVAILABLE,
+            detail=(
+                "SwiftUI host runs on macOS only; "
+                + (
+                    "native host sources are present, build them on a Mac."
+                    if has_sources
+                    else "native host sources are not checked out here."
+                )
+            ),
+            action="Build packaging/macos on macOS with Xcode 15+.",
+        )
+    swift_bin = swiftc or shutil.which("swiftc") or shutil.which("swift")
+    if swift_bin is None:
+        return _bad(
+            Capability.SWIFTUI.value,
+            "Swift toolchain not found; install Xcode 15+ command line tools to build the native host.",
+            action="Install Xcode, then build packaging/macos.",
+        )
+    if not has_sources:
+        return _bad(
+            Capability.SWIFTUI.value,
+            f"Swift {swift_bin} found but packaging/macos sources are missing.",
+            action="Check out packaging/macos/KeylessApp sources.",
+        )
+    return _ok(
+        Capability.SWIFTUI.value,
+        f"Native SwiftUI host sources present; Swift toolchain at {swift_bin}.",
+    )
+
+
+def probe_cua_driver() -> CapabilityInfo:
+    """Probe the pinned cua-driver runtime (no process is spawned).
+
+    Available when ``keyless models download cua-driver`` has fetched and
+    verified the pinned binary; otherwise unavailable with the download as
+    the one action. Upgrading the driver is a version + hash bump in
+    ``keyless.models.runtimes``, never platform-code maintenance.
+    """
+    try:
+        from keyless.models import runtimes
+
+        info = runtimes.status()
+    except Exception as exc:
+        return _bad(Capability.CUA_DRIVER.value, f"cua-driver probe failed: {exc}")
+    if info.get("ready"):
+        return _ok(
+            Capability.CUA_DRIVER.value,
+            f"cua-driver {info.get('version')} verified ({info.get('target')}).",
+        )
+    return CapabilityInfo(
+        name=Capability.CUA_DRIVER.value,
+        status=CapabilityStatus.UNAVAILABLE,
+        detail="Pinned cua-driver binary not downloaded; discrete actions stay native.",
+        action="Run `keyless models download cua-driver`.",
+    )
+
+
 def probe_permissions(
     pointer: CapabilityInfo,
     hotkeys: CapabilityInfo,
@@ -373,5 +456,7 @@ def detect_capabilities(
     )
     report.set(probe_module("keyring", Capability.KEYCHAIN, "OS keychain"))
     report.set(probe_module("httpx", Capability.LLM_PROVIDER, "LLM provider transport"))
+    report.set(probe_swiftui(platform_name="linux"))
+    report.set(probe_cua_driver())
     report.permissions = probe_permissions(pointer, hotkeys, audio, screen)
     return report

@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import numpy as np
-from evdev import ecodes
+import pytest
 
 from keyless.audio.pop_detector import PopTriggerStateMachine
-from keyless.platform.linux.hotkeys import resolve_hotkey_code
 from keyless.input.pointer import DryRunPointerBackend
 from keyless.ipc.state import FLAG_FACE_DETECTED, SharedGazeReader, SharedGazeWriter
 from keyless.router.dispatcher import VoiceCommandRouter
@@ -113,7 +112,7 @@ def test_voice_router_deterministic_type_terminal_and_browser() -> None:
 
             r2 = router.dispatch("Copy!")
             assert r2.route == "deterministic"
-            assert ptr.combos[-1] == (ecodes.KEY_LEFTCTRL, ecodes.KEY_C)
+            assert ptr.combos[-1] == ("LEFTCTRL", "C")
 
             r3 = router.dispatch("Type: Hello, world!")
             assert r3.route == "type"
@@ -144,10 +143,13 @@ def test_voice_router_deterministic_type_terminal_and_browser() -> None:
 
 
 def test_llm_helpers_and_hotkey_resolution(monkeypatch) -> None:
+    evdev = pytest.importorskip("evdev")
+    from keyless.platform.linux.hotkeys import resolve_hotkey_code
+
     assert _strip_code_fences("```bash\ntar -xzvf a.tar.gz\n```") == "tar -xzvf a.tar.gz"
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     assert LLMAgent(backend="auto").backend == "ollama"
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     assert LLMAgent(backend="auto").backend == "gemini"
-    assert resolve_hotkey_code("RIGHTCTRL") == ecodes.KEY_RIGHTCTRL
-    assert resolve_hotkey_code("BTN_SIDE") == ecodes.BTN_SIDE
+    assert resolve_hotkey_code("RIGHTCTRL") == evdev.ecodes.KEY_RIGHTCTRL
+    assert resolve_hotkey_code("BTN_SIDE") == evdev.ecodes.BTN_SIDE

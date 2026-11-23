@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -230,8 +231,15 @@ class FaceFeatureExtractor:
             ts_ms = self._last_ts_ms + 1
         self._last_ts_ms = ts_ms
 
-        rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        # MediaPipe's Metal delegate on macOS only accepts 4-channel textures;
+        # Linux CPU delegates accept the 3-channel RGB we historically passed.
+        if sys.platform == "darwin":
+            data = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGBA)
+            image_format = mp.ImageFormat.SRGBA
+        else:
+            data = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+            image_format = mp.ImageFormat.SRGB
+        mp_image = mp.Image(image_format=image_format, data=data)
         result = self._landmarker.detect_for_video(mp_image, ts_ms)
 
         if not result.face_landmarks or len(result.face_landmarks[0]) < 478:

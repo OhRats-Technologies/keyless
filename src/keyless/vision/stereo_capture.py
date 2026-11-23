@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from collections import deque
@@ -56,7 +57,13 @@ class _CameraReaderThread:
         keep_images: bool = True,
         capture_backend: str = "v4l2",
     ) -> None:
-        if capture_backend == "pipewire":
+        if capture_backend == "opencv":
+            from keyless.platform.macos.capture import open_opencv_capture
+
+            self.cap, self.report = open_opencv_capture(
+                by_id_path, width=width, height=height, fps=fps
+            )
+        elif capture_backend == "pipewire":
             self.cap, self.report = open_pipewire_capture(by_id_path)
         else:
             try:
@@ -170,6 +177,10 @@ class StereoCapture:
                 "PipeWire camera sharing is mono-only; switch camera mode to mono "
                 "or use the V4L2 backend for stereo."
             )
+        # macOS has no /dev/v4l/by-id; always use the AVFoundation-backed
+        # OpenCV reader unless the caller explicitly chose another backend.
+        if capture_backend == "v4l2" and sys.platform == "darwin":
+            capture_backend = "opencv"
         self.mono = bool(mono or not cam2_by_id)
         self.capture_backend = capture_backend
         self._r1 = _CameraReaderThread(
@@ -198,6 +209,7 @@ class StereoCapture:
                     extract_landmarks=extract_landmarks,
                     use_gpu=use_gpu,
                     keep_images=keep_images,
+                    capture_backend=capture_backend,
                 )
             except Exception:
                 self._r1.stop()

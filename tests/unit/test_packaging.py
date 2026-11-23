@@ -87,16 +87,33 @@ def test_structure_only_deb_contains_rules_desktop_and_unit(tmp_path: Path) -> N
     assert "./usr/share/doc/keyless/README.Debian" in names
 
 
-def test_windows_and_macos_are_honest_capability_stubs(tmp_path: Path) -> None:
-    for platform_name, backend in (("win32", WindowsPointerBackend()), ("darwin", macOSPointerBackend())):
-        report = detect_capabilities(platform_name=platform_name)
-        assert report.status("pointer") is CapabilityStatus.UNSUPPORTED_PLATFORM
-        assert report.status("cameras") is CapabilityStatus.UNSUPPORTED_PLATFORM
-        assert report.permissions["camera"].state is PermissionState.UNKNOWN
+def test_windows_is_an_honest_capability_stub(tmp_path: Path) -> None:
+    report = detect_capabilities(platform_name="win32")
+    assert report.status("pointer") is CapabilityStatus.UNSUPPORTED_PLATFORM
+    assert report.status("cameras") is CapabilityStatus.UNSUPPORTED_PLATFORM
+    assert report.permissions["camera"].state is PermissionState.UNKNOWN
+    for backend in (WindowsPointerBackend(),):
         with pytest.raises(NotSupportedError):
             backend.move_absolute(1.0, 2.0)
         with pytest.raises(NotSupportedError):
             backend.click()
+
+
+def test_macos_probes_real_backends_no_click(tmp_path: Path) -> None:
+    report = detect_capabilities(platform_name="darwin")
+    assert report.status("pointer") in (
+        CapabilityStatus.AVAILABLE,
+        CapabilityStatus.NEEDS_PERMISSION,
+        CapabilityStatus.UNAVAILABLE,
+    )
+    assert report.status("swiftui") in (
+        CapabilityStatus.AVAILABLE,
+        CapabilityStatus.UNAVAILABLE,
+    )
+    # Never synthesize input in tests: construction is the contract.
+    backend = macOSPointerBackend()
+    assert hasattr(backend, "move_absolute")
+    assert hasattr(backend, "type_text")
 
 
 def test_paths_for_windows_and_macos_are_already_unit_testable(tmp_path: Path) -> None:

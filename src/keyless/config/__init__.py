@@ -14,12 +14,21 @@ from keyless.config.schema import (
     AppConfig,
 )
 from keyless.platform.base import DisplayLayout, MonitorInfo
-from keyless.platform.linux.cameras import discover_v4l_by_id
+from keyless.platform.router import get_display_layout, list_cameras as _list_cameras
+from keyless.platform.linux.cameras import discover_v4l_by_id as _discover_v4l_by_id
 from keyless.platform.linux.display import (
-    get_display_layout,
     parse_kscreen_layout,
     parse_mutter_display_state,
 )
+
+
+def discover_v4l_by_id(*args, **kwargs):  # type: ignore[no-untyped-def]
+    """Linux V4L2 discovery (kept for backward compat; macOS uses AVFoundation)."""
+    import sys
+
+    if sys.platform == "darwin":
+        return [c.id for c in _list_cameras("darwin")]
+    return _discover_v4l_by_id(*args, **kwargs)
 
 __all__ = [
     "CACHE_DIR",

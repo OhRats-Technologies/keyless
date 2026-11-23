@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from evdev import ecodes
+
+from keyless.input.keys import BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT
 
 from keyless.input.pointer import DryRunPointerBackend, PointerBackend
 from keyless.ipc.firefox_bridge import FirefoxDOMBridge
@@ -59,6 +60,7 @@ class VoiceCommandRouter:
         on_before_click: Callable[[int, int], None] | None = None,
         firefox_bridge: FirefoxDOMBridge | None = None,
         on_recenter_gaze: Callable[[], str] | None = None,
+        on_steer_to_mouse: Callable[[], str] | None = None,
     ) -> None:
         self.pointer = pointer
         self.llm_agent = llm_agent
@@ -70,6 +72,7 @@ class VoiceCommandRouter:
         self.gaze_state_provider = gaze_state_provider
         self.on_before_click = on_before_click
         self.on_recenter_gaze = on_recenter_gaze
+        self.on_steer_to_mouse = on_steer_to_mouse
         self.firefox_bridge = (
             firefox_bridge
             if firefox_bridge is not None
@@ -78,71 +81,71 @@ class VoiceCommandRouter:
         self._window_cycle_step = 0
         self._window_cycle_last_t = 0.0
 
-        self._media_map: dict[str, tuple[str, int]] = {
-            "pause": ("pause", ecodes.KEY_PLAYPAUSE),
-            "pause video": ("pause", ecodes.KEY_PLAYPAUSE),
-            "pause the video": ("pause", ecodes.KEY_PLAYPAUSE),
-            "play": ("play", ecodes.KEY_PLAYPAUSE),
-            "play video": ("play", ecodes.KEY_PLAYPAUSE),
-            "play the video": ("play", ecodes.KEY_PLAYPAUSE),
-            "resume": ("resume", ecodes.KEY_PLAYPAUSE),
-            "resume video": ("resume", ecodes.KEY_PLAYPAUSE),
-            "mute": ("mute", ecodes.KEY_MUTE),
-            "mute video": ("mute", ecodes.KEY_MUTE),
-            "mute audio": ("mute", ecodes.KEY_MUTE),
-            "unmute": ("unmute", ecodes.KEY_MUTE),
-            "unmute video": ("unmute", ecodes.KEY_MUTE),
-            "unmute audio": ("unmute", ecodes.KEY_MUTE),
-            "fullscreen": ("fullscreen", ecodes.KEY_F),
-            "full screen": ("fullscreen", ecodes.KEY_F),
-            "exit fullscreen": ("exit_fullscreen", ecodes.KEY_ESC),
-            "exit full screen": ("exit_fullscreen", ecodes.KEY_ESC),
+        self._media_map: dict[str, tuple[str, str]] = {
+            "pause": ("pause", "PLAYPAUSE"),
+            "pause video": ("pause", "PLAYPAUSE"),
+            "pause the video": ("pause", "PLAYPAUSE"),
+            "play": ("play", "PLAYPAUSE"),
+            "play video": ("play", "PLAYPAUSE"),
+            "play the video": ("play", "PLAYPAUSE"),
+            "resume": ("resume", "PLAYPAUSE"),
+            "resume video": ("resume", "PLAYPAUSE"),
+            "mute": ("mute", "MUTE"),
+            "mute video": ("mute", "MUTE"),
+            "mute audio": ("mute", "MUTE"),
+            "unmute": ("unmute", "MUTE"),
+            "unmute video": ("unmute", "MUTE"),
+            "unmute audio": ("unmute", "MUTE"),
+            "fullscreen": ("fullscreen", "F"),
+            "full screen": ("fullscreen", "F"),
+            "exit fullscreen": ("exit_fullscreen", "ESC"),
+            "exit full screen": ("exit_fullscreen", "ESC"),
         }
 
         # Require explicit "click here" / "click now" / "left click" / "tap" for in-place clicks.
         # Bare "click" is ignored so truncated utterances never blind-click random spots.
         self._deterministic_map: dict[str, tuple[str, Callable[[], None]]] = {
-            "click here": ("click_left", lambda: self.pointer.click(ecodes.BTN_LEFT)),
-            "click now": ("click_left", lambda: self.pointer.click(ecodes.BTN_LEFT)),
-            "tap": ("click_left", lambda: self.pointer.click(ecodes.BTN_LEFT)),
-            "tap here": ("click_left", lambda: self.pointer.click(ecodes.BTN_LEFT)),
-            "left click": ("click_left", lambda: self.pointer.click(ecodes.BTN_LEFT)),
-            "right click": ("click_right", lambda: self.pointer.click(ecodes.BTN_RIGHT)),
-            "middle click": ("click_middle", lambda: self.pointer.click(ecodes.BTN_MIDDLE)),
-            "double click": ("double_click", lambda: self.pointer.double_click(ecodes.BTN_LEFT)),
+            "click here": ("click_left", lambda: self.pointer.click(BUTTON_LEFT)),
+            "click now": ("click_left", lambda: self.pointer.click(BUTTON_LEFT)),
+            "tap": ("click_left", lambda: self.pointer.click(BUTTON_LEFT)),
+            "tap here": ("click_left", lambda: self.pointer.click(BUTTON_LEFT)),
+            "left click": ("click_left", lambda: self.pointer.click(BUTTON_LEFT)),
+            "right click": ("click_right", lambda: self.pointer.click(BUTTON_RIGHT)),
+            "middle click": ("click_middle", lambda: self.pointer.click(BUTTON_MIDDLE)),
+            "double click": ("double_click", lambda: self.pointer.double_click(BUTTON_LEFT)),
             "scroll down": ("scroll_down", lambda: self.pointer.scroll(dy=-4)),
             "scroll up": ("scroll_up", lambda: self.pointer.scroll(dy=4)),
-            "page down": ("page_down", lambda: self.pointer.key_combo(ecodes.KEY_PAGEDOWN)),
-            "page up": ("page_up", lambda: self.pointer.key_combo(ecodes.KEY_PAGEUP)),
-            "go back": ("nav_back", lambda: self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_LEFT)),
-            "back": ("nav_back", lambda: self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_LEFT)),
+            "page down": ("page_down", lambda: self.pointer.key_combo("PAGEDOWN")),
+            "page up": ("page_up", lambda: self.pointer.key_combo("PAGEUP")),
+            "go back": ("nav_back", lambda: self.pointer.key_combo("LEFTALT", "LEFT")),
+            "back": ("nav_back", lambda: self.pointer.key_combo("LEFTALT", "LEFT")),
             "go forward": (
                 "nav_forward",
-                lambda: self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_RIGHT),
+                lambda: self.pointer.key_combo("LEFTALT", "RIGHT"),
             ),
             "forward": (
                 "nav_forward",
-                lambda: self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_RIGHT),
+                lambda: self.pointer.key_combo("LEFTALT", "RIGHT"),
             ),
-            "copy": ("copy", lambda: self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_C)),
-            "paste": ("paste", lambda: self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_V)),
-            "cut": ("cut", lambda: self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_X)),
-            "undo": ("undo", lambda: self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_Z)),
+            "copy": ("copy", lambda: self.pointer.key_combo("LEFTCTRL", "C")),
+            "paste": ("paste", lambda: self.pointer.key_combo("LEFTCTRL", "V")),
+            "cut": ("cut", lambda: self.pointer.key_combo("LEFTCTRL", "X")),
+            "undo": ("undo", lambda: self.pointer.key_combo("LEFTCTRL", "Z")),
             "redo": (
                 "redo",
-                lambda: self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTSHIFT, ecodes.KEY_Z),
+                lambda: self.pointer.key_combo("LEFTCTRL", "LEFTSHIFT", "Z"),
             ),
-            "select all": ("select_all", lambda: self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_A)),
-            "close tab": ("close_tab", lambda: self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_W)),
-            "new tab": ("new_tab", lambda: self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_T)),
-            "next tab": ("next_tab", lambda: self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_TAB)),
+            "select all": ("select_all", lambda: self.pointer.key_combo("LEFTCTRL", "A")),
+            "close tab": ("close_tab", lambda: self.pointer.key_combo("LEFTCTRL", "W")),
+            "new tab": ("new_tab", lambda: self.pointer.key_combo("LEFTCTRL", "T")),
+            "next tab": ("next_tab", lambda: self.pointer.key_combo("LEFTCTRL", "TAB")),
             "previous tab": (
                 "prev_tab",
-                lambda: self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTSHIFT, ecodes.KEY_TAB),
+                lambda: self.pointer.key_combo("LEFTCTRL", "LEFTSHIFT", "TAB"),
             ),
             "prev tab": (
                 "prev_tab",
-                lambda: self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTSHIFT, ecodes.KEY_TAB),
+                lambda: self.pointer.key_combo("LEFTCTRL", "LEFTSHIFT", "TAB"),
             ),
             "switch tab": ("os_window_next", self._cycle_next_window),
             "switch window": ("os_window_next", self._cycle_next_window),
@@ -150,7 +153,7 @@ class VoiceCommandRouter:
             "cycle window": ("os_window_next", self._cycle_next_window),
             "alt tab": (
                 "os_alt_tab",
-                lambda: self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_TAB),
+                lambda: self.pointer.key_combo("LEFTALT", "TAB"),
             ),
             "next window": ("os_window_next", self._cycle_next_window),
             "previous window": ("os_window_prev", self._cycle_prev_window),
@@ -159,68 +162,68 @@ class VoiceCommandRouter:
             "switch back": (
                 "os_alt_shift_tab",
                 lambda: self.pointer.key_combo(
-                    ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_TAB
+                    "LEFTALT", "LEFTSHIFT", "TAB"
                 ),
             ),
             "switch same app": (
                 "os_alt_grave",
-                lambda: self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_GRAVE),
+                lambda: self.pointer.key_combo("LEFTALT", "GRAVE"),
             ),
             "next app window": (
                 "os_alt_grave",
-                lambda: self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_GRAVE),
+                lambda: self.pointer.key_combo("LEFTALT", "GRAVE"),
             ),
             "alt grave": (
                 "os_alt_grave",
-                lambda: self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_GRAVE),
+                lambda: self.pointer.key_combo("LEFTALT", "GRAVE"),
             ),
-            "overview": ("os_overview", lambda: self.pointer.key_combo(ecodes.KEY_LEFTMETA)),
-            "show windows": ("os_overview", lambda: self.pointer.key_combo(ecodes.KEY_LEFTMETA)),
-            "activities": ("os_overview", lambda: self.pointer.key_combo(ecodes.KEY_LEFTMETA)),
+            "overview": ("os_overview", lambda: self.pointer.key_combo("LEFTMETA")),
+            "show windows": ("os_overview", lambda: self.pointer.key_combo("LEFTMETA")),
+            "activities": ("os_overview", lambda: self.pointer.key_combo("LEFTMETA")),
             "next workspace": (
                 "os_workspace_next",
                 lambda: self.pointer.key_combo(
-                    ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTALT, ecodes.KEY_RIGHT
+                    "LEFTCTRL", "LEFTALT", "RIGHT"
                 ),
             ),
             "workspace right": (
                 "os_workspace_next",
                 lambda: self.pointer.key_combo(
-                    ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTALT, ecodes.KEY_RIGHT
+                    "LEFTCTRL", "LEFTALT", "RIGHT"
                 ),
             ),
             "previous workspace": (
                 "os_workspace_prev",
                 lambda: self.pointer.key_combo(
-                    ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTALT, ecodes.KEY_LEFT
+                    "LEFTCTRL", "LEFTALT", "LEFT"
                 ),
             ),
             "prev workspace": (
                 "os_workspace_prev",
                 lambda: self.pointer.key_combo(
-                    ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTALT, ecodes.KEY_LEFT
+                    "LEFTCTRL", "LEFTALT", "LEFT"
                 ),
             ),
             "workspace left": (
                 "os_workspace_prev",
                 lambda: self.pointer.key_combo(
-                    ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTALT, ecodes.KEY_LEFT
+                    "LEFTCTRL", "LEFTALT", "LEFT"
                 ),
             ),
-            "enter": ("enter", lambda: self.pointer.key_combo(ecodes.KEY_ENTER)),
-            "press enter": ("enter", lambda: self.pointer.key_combo(ecodes.KEY_ENTER)),
-            "escape": ("escape", lambda: self.pointer.key_combo(ecodes.KEY_ESC)),
-            "press escape": ("escape", lambda: self.pointer.key_combo(ecodes.KEY_ESC)),
-            "tab": ("tab", lambda: self.pointer.key_combo(ecodes.KEY_TAB)),
-            "space": ("space", lambda: self.pointer.key_combo(ecodes.KEY_SPACE)),
-            "backspace": ("backspace", lambda: self.pointer.key_combo(ecodes.KEY_BACKSPACE)),
+            "enter": ("enter", lambda: self.pointer.key_combo("ENTER")),
+            "press enter": ("enter", lambda: self.pointer.key_combo("ENTER")),
+            "escape": ("escape", lambda: self.pointer.key_combo("ESC")),
+            "press escape": ("escape", lambda: self.pointer.key_combo("ESC")),
+            "tab": ("tab", lambda: self.pointer.key_combo("TAB")),
+            "space": ("space", lambda: self.pointer.key_combo("SPACE")),
+            "backspace": ("backspace", lambda: self.pointer.key_combo("BACKSPACE")),
             "delete line": ("delete_line", self._delete_line),
         }
 
     def _delete_line(self) -> None:
-        self.pointer.key_combo(ecodes.KEY_HOME)
-        self.pointer.key_combo(ecodes.KEY_LEFTSHIFT, ecodes.KEY_END)
-        self.pointer.key_combo(ecodes.KEY_BACKSPACE)
+        self.pointer.key_combo("HOME")
+        self.pointer.key_combo("LEFTSHIFT", "END")
+        self.pointer.key_combo("BACKSPACE")
 
     def current_gaze_xy(self) -> tuple[float, float] | None:
         if self.gaze_provider is not None:
@@ -291,13 +294,13 @@ class VoiceCommandRouter:
         )
         if not already_executed:
             if resolved_intent.action == "click":
-                self.pointer.click(ecodes.BTN_LEFT)
+                self.pointer.click(BUTTON_LEFT)
             elif resolved_intent.action == "double_click":
-                self.pointer.double_click(ecodes.BTN_LEFT)
+                self.pointer.double_click(BUTTON_LEFT)
             elif resolved_intent.action == "right_click":
-                self.pointer.click(ecodes.BTN_RIGHT)
+                self.pointer.click(BUTTON_RIGHT)
             elif resolved_intent.action == "type_into":
-                self.pointer.click(ecodes.BTN_LEFT)
+                self.pointer.click(BUTTON_LEFT)
                 if not isinstance(self.pointer, DryRunPointerBackend):
                     time.sleep(0.025)
                 self.pointer.type_text(resolved_intent.text_to_type)
@@ -328,12 +331,12 @@ class VoiceCommandRouter:
         else:
             self._window_cycle_step = 1
         self._window_cycle_last_t = now
-        self.pointer.hold_and_tap(ecodes.KEY_LEFTALT, ecodes.KEY_TAB, count=self._window_cycle_step)
+        self.pointer.hold_and_tap("LEFTALT", "TAB", count=self._window_cycle_step)
 
     def _cycle_prev_window(self) -> None:
         """Jump back to the immediately preceding window in MRU order (Alt+Shift+Tab)."""
         self._window_cycle_step = 0
-        self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_TAB)
+        self.pointer.key_combo("LEFTALT", "LEFTSHIFT", "TAB")
 
     _APP_SEARCH_ALIASES: dict[str, str] = {
         "vscode": "visual studio code",
@@ -345,40 +348,40 @@ class VoiceCommandRouter:
     def _focus_os_app_via_overview(self, app_name: str) -> None:
         """Focus or launch an OS window/app in GNOME Shell via Super + search + Enter."""
         query = self._APP_SEARCH_ALIASES.get(app_name.strip().lower(), app_name.strip())
-        self.pointer.key_combo(ecodes.KEY_LEFTMETA)
+        self.pointer.key_combo("LEFTMETA")
         if not isinstance(self.pointer, DryRunPointerBackend):
             time.sleep(0.18)
         self.pointer.type_text(query)
         if not isinstance(self.pointer, DryRunPointerBackend):
             time.sleep(0.15)
-        self.pointer.key_combo(ecodes.KEY_ENTER)
+        self.pointer.key_combo("ENTER")
 
     def _handle_tab_or_window_command(self, norm: str, raw: str) -> DispatchResult | None:
         ordinal_keys = {
-            "1": ecodes.KEY_1,
-            "first": ecodes.KEY_1,
-            "one": ecodes.KEY_1,
-            "2": ecodes.KEY_2,
-            "second": ecodes.KEY_2,
-            "two": ecodes.KEY_2,
-            "3": ecodes.KEY_3,
-            "third": ecodes.KEY_3,
-            "three": ecodes.KEY_3,
-            "4": ecodes.KEY_4,
-            "fourth": ecodes.KEY_4,
-            "four": ecodes.KEY_4,
-            "5": ecodes.KEY_5,
-            "fifth": ecodes.KEY_5,
-            "five": ecodes.KEY_5,
-            "6": ecodes.KEY_6,
-            "sixth": ecodes.KEY_6,
-            "six": ecodes.KEY_6,
-            "7": ecodes.KEY_7,
-            "seventh": ecodes.KEY_7,
-            "seven": ecodes.KEY_7,
-            "8": ecodes.KEY_8,
-            "eighth": ecodes.KEY_8,
-            "eight": ecodes.KEY_8,
+            "1": "1",
+            "first": "1",
+            "one": "1",
+            "2": "2",
+            "second": "2",
+            "two": "2",
+            "3": "3",
+            "third": "3",
+            "three": "3",
+            "4": "4",
+            "fourth": "4",
+            "four": "4",
+            "5": "5",
+            "fifth": "5",
+            "five": "5",
+            "6": "6",
+            "sixth": "6",
+            "six": "6",
+            "7": "7",
+            "seventh": "7",
+            "seven": "7",
+            "8": "8",
+            "eighth": "8",
+            "eight": "8",
         }
 
         # 0. New browser tab: "new tab", "open a new tab", "new tab <url/query>"
@@ -394,7 +397,7 @@ class VoiceCommandRouter:
                     detail = f"Firefox new tab ({target_q})" if target_q else "Firefox new tab"
                     return DispatchResult("tab_new", raw, detail)
             if target_q is None:
-                self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_T)
+                self.pointer.key_combo("LEFTCTRL", "T")
                 return DispatchResult("deterministic", raw, "new_tab")
 
         # 0.5. Close / minimize / maximize active OS window
@@ -408,15 +411,15 @@ class VoiceCommandRouter:
             "close application",
             "alt f4",
         ):
-            self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_F4)
+            self.pointer.key_combo("LEFTALT", "F4")
             return DispatchResult("deterministic", raw, "close_window")
 
         if norm in ("minimize window", "minimize this window", "minimize the window", "minimize"):
-            self.pointer.key_combo(ecodes.KEY_LEFTMETA, ecodes.KEY_H)
+            self.pointer.key_combo("LEFTMETA", "H")
             return DispatchResult("deterministic", raw, "minimize_window")
 
         if norm in ("maximize window", "maximize this window", "maximize the window", "maximize"):
-            self.pointer.key_combo(ecodes.KEY_LEFTALT, ecodes.KEY_F10)
+            self.pointer.key_combo("LEFTALT", "F10")
             return DispatchResult("deterministic", raw, "maximize_window")
 
         # 0.6. Explicit next/previous window cycling: strip leading fillers ("a", "the", "and",
@@ -506,7 +509,7 @@ class VoiceCommandRouter:
                 if title is not None:
                     return DispatchResult("tab_switch", raw, f"Firefox tab: {title}")
             if browser_target in ordinal_keys:
-                self.pointer.key_combo(ecodes.KEY_LEFTALT, ordinal_keys[browser_target])
+                self.pointer.key_combo("LEFTALT", ordinal_keys[browser_target])
                 return DispatchResult("deterministic", raw, f"tab_ordinal:{browser_target}")
             if self.gaze_vlm_clicker is not None:
                 vlm_tab = self._execute_vlm_intent(f"click {browser_target}", f"click {browser_target}")
@@ -524,10 +527,10 @@ class VoiceCommandRouter:
             wants_tab = raw_target.endswith(" tab")
             target = re.sub(r"\s+tab$", "", raw_target).strip()
             if target in ("next", "next tab"):
-                self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_TAB)
+                self.pointer.key_combo("LEFTCTRL", "TAB")
                 return DispatchResult("deterministic", raw, "next_tab")
             if target in ("prev", "previous", "previous tab"):
-                self.pointer.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTSHIFT, ecodes.KEY_TAB)
+                self.pointer.key_combo("LEFTCTRL", "LEFTSHIFT", "TAB")
                 return DispatchResult("deterministic", raw, "prev_tab")
             if target and self.firefox_bridge is not None and self.firefox_bridge.is_connected:
                 title = self.firefox_bridge.switch_tab(target)
@@ -575,17 +578,17 @@ class VoiceCommandRouter:
         # 1. Zero-latency deterministic control layer.
         # In-place click words click at the live gaze point (not wherever the physical mouse is).
         _gaze_click_words = {
-            "click": ("click_left", ecodes.BTN_LEFT, False),
-            "click here": ("click_left", ecodes.BTN_LEFT, False),
-            "click now": ("click_left", ecodes.BTN_LEFT, False),
-            "click it": ("click_left", ecodes.BTN_LEFT, False),
-            "click that": ("click_left", ecodes.BTN_LEFT, False),
-            "tap": ("click_left", ecodes.BTN_LEFT, False),
-            "tap here": ("click_left", ecodes.BTN_LEFT, False),
-            "left click": ("click_left", ecodes.BTN_LEFT, False),
-            "right click": ("click_right", ecodes.BTN_RIGHT, False),
-            "middle click": ("click_middle", ecodes.BTN_MIDDLE, False),
-            "double click": ("double_click", ecodes.BTN_LEFT, True),
+            "click": ("click_left", BUTTON_LEFT, False),
+            "click here": ("click_left", BUTTON_LEFT, False),
+            "click now": ("click_left", BUTTON_LEFT, False),
+            "click it": ("click_left", BUTTON_LEFT, False),
+            "click that": ("click_left", BUTTON_LEFT, False),
+            "tap": ("click_left", BUTTON_LEFT, False),
+            "tap here": ("click_left", BUTTON_LEFT, False),
+            "left click": ("click_left", BUTTON_LEFT, False),
+            "right click": ("click_right", BUTTON_RIGHT, False),
+            "middle click": ("click_middle", BUTTON_MIDDLE, False),
+            "double click": ("double_click", BUTTON_LEFT, True),
         }
         if norm in _gaze_click_words:
             if self.gaze_vlm_clicker is not None:
@@ -599,7 +602,7 @@ class VoiceCommandRouter:
                 # If Firefox DOM bridge is active and a green-highlighted DOM element is under gaze,
                 # click that exact DOM element directly so slight gaze jitter never misses the button.
                 if (
-                    button == ecodes.BTN_LEFT
+                    button == BUTTON_LEFT
                     and not is_double
                     and self.firefox_bridge is not None
                     and self.firefox_bridge.is_connected
@@ -700,6 +703,26 @@ class VoiceCommandRouter:
                 detail = self.on_recenter_gaze()
                 return DispatchResult("recenter_gaze", raw, detail)
             return DispatchResult("recenter_gaze", raw, "No active gaze model to recenter.")
+
+        # One-point correction: the user looks at the real mouse and asks the
+        # eye cursor to align to it. Useful when gaze drifts during a session.
+        if norm in (
+            "adjust",
+            "adjust gaze",
+            "steer to mouse",
+            "steer to the mouse",
+            "snap to mouse",
+            "snap to the mouse",
+            "train to mouse",
+            "look at mouse",
+            "calibrate to mouse",
+        ):
+            if self.gaze_vlm_clicker is not None:
+                self.gaze_vlm_clicker.clear_pending_snapshot()
+            if self.on_steer_to_mouse is not None:
+                detail = self.on_steer_to_mouse()
+                return DispatchResult("steer_to_mouse", raw, detail)
+            return DispatchResult("steer_to_mouse", raw, "No active gaze model to steer.")
 
         # Gaze-aware Firefox DOM scrolling & gaze-warped native app scrolling
         scroll_cmd = parse_voice_scroll_command(raw)
@@ -888,6 +911,8 @@ class VoiceCommandRouter:
             return self._dispatch_single(phrase_map[intent], _from_llm=True)
         if intent == "recenter":
             return self._dispatch_single("recenter gaze", _from_llm=True)
+        if intent == "steer_to_mouse":
+            return self._dispatch_single("steer to mouse", _from_llm=True)
         if intent == "scroll":
             direction = str(plan.get("direction") or "down").lower()
             amount = str(plan.get("amount") or "normal").lower()

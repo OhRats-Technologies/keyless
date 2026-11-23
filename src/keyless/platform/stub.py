@@ -41,7 +41,7 @@ class UnsupportedPointer:
     def scroll(self, dy: int = 0, dx: int = 0) -> None:
         raise _fail(self.os_name, "Pointer scroll")
 
-    def key_combo(self, *keycodes: int) -> None:
+    def key_combo(self, *keys: str) -> None:
         raise _fail(self.os_name, "Keyboard injection")
 
     def type_text(self, text: str) -> None:

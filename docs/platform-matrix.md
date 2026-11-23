@@ -57,6 +57,7 @@
 
 ## macOS notes
 
+- **UI host (new):** native SwiftUI app in `packaging/macos/` (`MenuBarExtra`, Home/Activity/Settings, `NSPanel` pill, TCC onboarding). It drives the shared Python engine over the loopback control plane (`keyless serve`, `src/keyless/ipc/control.py`). `Capability.swiftui` reports toolchain + sources; `doctor` stays honest about engine backends until they land.
 - **Input:** `CGEventPost` for absolute/relative moves, clicks, scroll, and Unicode typing. Requires Accessibility. Test against a non-elevated app and a secure input field; Secure Input can block synthesized keys.
 - **Hotkeys:** `CGEventTap` in listen-only mode for PTT, or `IOHIDManager`. Requires Input Monitoring. Do not install a kernel extension.
 - **Cameras:** AVFoundation device discovery (`uniqueID` is the stable identity); convert frames to the shared numpy format. Camera permission is TCC.

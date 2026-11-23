@@ -233,16 +233,19 @@ class UInputManager:
                 self._rel_dev.write(ecodes.EV_REL, ecodes.REL_Y, iy)
             self._rel_dev.syn()
 
-    def click(self, button: int = ecodes.BTN_LEFT) -> None:
+    def click(self, button: int = 1) -> None:
         """Press and release a mouse button via the relative/button device."""
+        from keyless.input.keys import linux_button
+
+        code = linux_button(button)
         with self._io_lock:
-            self._rel_dev.write(ecodes.EV_KEY, button, 1)
+            self._rel_dev.write(ecodes.EV_KEY, code, 1)
             self._rel_dev.syn()
             time.sleep(0.01)
-            self._rel_dev.write(ecodes.EV_KEY, button, 0)
+            self._rel_dev.write(ecodes.EV_KEY, code, 0)
             self._rel_dev.syn()
 
-    def double_click(self, button: int = ecodes.BTN_LEFT) -> None:
+    def double_click(self, button: int = 1) -> None:
         with self._io_lock:
             self.click(button)
             time.sleep(0.04)
@@ -258,50 +261,56 @@ class UInputManager:
             if dy != 0 or dx != 0:
                 self._rel_dev.syn()
 
-    def key_combo(self, *keycodes: int) -> None:
+    def key_combo(self, *keys: str) -> None:
         """Press modifier keys first, tap the final key, then release in reverse order."""
-        if not keycodes:
+        from keyless.input.keys import linux_keycode
+
+        codes = [linux_keycode(k) for k in keys]
+        if not codes:
             return
         with self._io_lock:
-            if len(keycodes) > 1:
-                for code in keycodes[:-1]:
+            if len(codes) > 1:
+                for code in codes[:-1]:
                     self._rel_dev.write(ecodes.EV_KEY, code, 1)
                 self._rel_dev.syn()
                 time.sleep(0.015)
-            self._rel_dev.write(ecodes.EV_KEY, keycodes[-1], 1)
+            self._rel_dev.write(ecodes.EV_KEY, codes[-1], 1)
             self._rel_dev.syn()
             time.sleep(0.02)
-            self._rel_dev.write(ecodes.EV_KEY, keycodes[-1], 0)
+            self._rel_dev.write(ecodes.EV_KEY, codes[-1], 0)
             self._rel_dev.syn()
-            if len(keycodes) > 1:
+            if len(codes) > 1:
                 time.sleep(0.01)
-                for code in reversed(keycodes[:-1]):
+                for code in reversed(codes[:-1]):
                     self._rel_dev.write(ecodes.EV_KEY, code, 0)
                 self._rel_dev.syn()
 
     def hold_and_tap(
         self,
-        hold_key: int,
-        tap_key: int,
+        hold_key: str,
+        tap_key: str,
         count: int = 1,
         tap_delay: float = 0.035,
     ) -> None:
         """Hold `hold_key` while tapping `tap_key` `count` times (for GNOME Alt+Tab MRU cycling)."""
+        from keyless.input.keys import linux_keycode
+
+        hold, tap = linux_keycode(hold_key), linux_keycode(tap_key)
         taps = max(1, int(count))
         with self._io_lock:
-            self._rel_dev.write(ecodes.EV_KEY, hold_key, 1)
+            self._rel_dev.write(ecodes.EV_KEY, hold, 1)
             self._rel_dev.syn()
             time.sleep(tap_delay)
             try:
                 for _ in range(taps):
-                    self._rel_dev.write(ecodes.EV_KEY, tap_key, 1)
+                    self._rel_dev.write(ecodes.EV_KEY, tap, 1)
                     self._rel_dev.syn()
                     time.sleep(0.02)
-                    self._rel_dev.write(ecodes.EV_KEY, tap_key, 0)
+                    self._rel_dev.write(ecodes.EV_KEY, tap, 0)
                     self._rel_dev.syn()
                     time.sleep(tap_delay)
             finally:
-                self._rel_dev.write(ecodes.EV_KEY, hold_key, 0)
+                self._rel_dev.write(ecodes.EV_KEY, hold, 0)
                 self._rel_dev.syn()
 
     def type_text(self, text: str, inter_key_delay: float = 0.003) -> None:
@@ -311,7 +320,7 @@ class UInputManager:
         if not text.isascii() and shutil.which("wl-copy"):
             subprocess.run(["wl-copy", "--", text], check=True)
             time.sleep(0.02)
-            self.key_combo(ecodes.KEY_LEFTCTRL, ecodes.KEY_V)
+            self.key_combo("LEFTCTRL", "V")
             return
 
         with self._io_lock:

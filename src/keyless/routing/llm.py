@@ -177,6 +177,7 @@ class LLMAgent:
             "- `focus_app`: {\"intent\": \"focus_app\", \"target\": \"<app name>\"}\n"
             "- `next_window` / `prev_window` / `close_window` / `minimize_window` / `maximize_window`\n"
             "- `recenter`: recenter eye gaze calibration\n"
+            "- `steer_to_mouse`: align the eye cursor to the current real mouse position (the user is looking at the mouse)\n"
             "- `scroll`: {\"intent\": \"scroll\", \"direction\": \"down|up|left|right|top|bottom\", \"amount\": \"small|normal|large\"}\n"
             "- `type_text`: {\"intent\": \"type_text\", \"text\": \"<literal text>\"}\n"
             "- `type_into`: {\"intent\": \"type_into\", \"target\": \"<field name>\", \"text\": \"<literal text>\"}\n"

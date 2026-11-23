@@ -132,12 +132,12 @@
       <h2 id="first-run">First run</h2>
       <p>Launch <strong>Keyless</strong> from your application menu. First run walks through a resumable guided setup:</p>
       <ol>
-        <li>Permissions (camera, microphone, input devices, optional screen capture)</li>
-        <li>Camera selection using stable <code>/dev/v4l/by-id</code> paths</li>
-        <li>Calibration and acoustic pop-click check</li>
-        <li>Local speech model download (pinned &amp; SHA-256 verified)</li>
-        <li>Optional bring-your-own AI provider</li>
+        <li><strong>Welcome</strong> — what Keyless does and how it stays private</li>
+        <li><strong>Devices</strong> — permissions, camera/mic checks, and the pinned offline speech model (downloaded in the background with progress)</li>
+        <li><strong>Calibration</strong> — a short gaze-calibration overlay</li>
+        <li><strong>Ready</strong> — start listening</li>
       </ol>
+      <p>Step order and completion are owned by the engine, so the macOS and Linux apps show the same guided setup and resume in place after a restart.</p>
 
       <h2 id="cli">CLI &amp; diagnostics</h2>
       <p>Use the CLI to inspect hardware readiness or dry-run without emitting input events:</p>
@@ -151,8 +151,8 @@ keyless run --dry-run</code></pre>
 
       <h2 id="limitations">Platform status</h2>
       <div class="or-callout">
-        <span class="or-callout-label">Linux only today</span>
-        macOS (<code>CGEvent</code>, <code>AVFoundation</code>, <code>ScreenCaptureKit</code>) and Windows (<code>SendInput</code>, Media Foundation, UI Automation) hosts are not implemented yet and no installers are published for those platforms.
+        <span class="or-callout-label">Linux and macOS</span>
+        The Linux PySide6 shell and the native SwiftUI macOS host share the same engine-owned setup flow and control plane. Windows (<code>SendInput</code>, Media Foundation, UI Automation) is not implemented yet.
       </div>
     </article>
   </main>

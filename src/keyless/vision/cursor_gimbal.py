@@ -12,8 +12,7 @@ import numpy as np
 
 from keyless.config import AppConfig, get_display_layout
 from keyless.input.pointer import DryRunPointerBackend, PointerBackend
-from keyless.platform.linux.cameras import resolve_camera_config
-from keyless.platform.linux.pointer import UInputManager
+from keyless.platform.router import create_pointer_backend, resolve_camera_config
 from keyless.ipc.state import (
     FLAG_BLINKING,
     FLAG_FACE_DETECTED,
@@ -277,6 +276,17 @@ def _averaged_nose(
     )
 
 
+def _eye_cursor_sink(
+    config: AppConfig,
+    action_pointer: PointerBackend,
+    dry_run: bool,
+) -> tuple[PointerBackend, object | None, bool]:
+    """Pick the eye-cursor sink and say whether the gaze loop may move it."""
+    from keyless.platform.cua.agent_cursor import create_gaze_sink
+
+    return create_gaze_sink(config, action_pointer, dry_run)
+
+
 def run_vision_loop(
     config: AppConfig,
     model: StereoGazeModel | GeoGazeModel,
@@ -287,6 +297,7 @@ def run_vision_loop(
     stop_event: threading.Event | None = None,
     on_controller_ready: Callable[[GazeGimbalController], None] | None = None,
     on_tracker_ready: Callable[[GeoGazeTracker], None] | None = None,
+    predict_gaze: Callable[[np.ndarray, float], tuple[float, float]] | None = None,
 ) -> None:
     """Run the 30Hz dual-camera vision + 60Hz cursor/IPC loop until interrupted."""
     config.camera_mode, config.cam1_by_id, config.cam2_by_id = resolve_camera_config(
@@ -319,8 +330,14 @@ def run_vision_loop(
         else (
             DryRunPointerBackend(layout.total_width, layout.total_height)
             if dry_run
-            else UInputManager(layout.total_width, layout.total_height)
+            else create_pointer_backend(
+                layout.total_width, layout.total_height,
+                action_backend=getattr(config, "action_backend", "native"),
+            )
         )
+    )
+    gaze_pointer, overlay, move_eye_cursor = _eye_cursor_sink(
+        config, active_pointer, dry_run
     )
     shm_writer = SharedGazeWriter()
     controller = GazeGimbalController(
@@ -331,7 +348,7 @@ def run_vision_loop(
         gimbal_gain=config.gimbal_gain,
         min_cutoff=config.one_euro_min_cutoff,
         beta=config.one_euro_beta,
-        move_cursor=config.gaze_cursor_control,
+        move_cursor=move_eye_cursor,
     )
     if on_controller_ready is not None:
         on_controller_ready(controller)
@@ -402,7 +419,11 @@ def run_vision_loop(
                         feat, both_ok = build_stereo_feature_vector(o1, o2)
                         if both_ok:
                             last_stereo_feat = feat
-                            raw_gaze = model.predict(feat)
+                            raw_gaze = (
+                                predict_gaze(feat, loop_start)
+                                if predict_gaze is not None
+                                else model.predict(feat)
+                            )
 
                     controller.update_vision(
                         raw_gaze_xy=raw_gaze,
@@ -412,7 +433,7 @@ def run_vision_loop(
                     )
 
                 step = controller.step_output(
-                    pointer=active_pointer,
+                    pointer=gaze_pointer,
                     face_detected=last_face_detected,
                     is_blinking=last_blinking,
                     t_sec=loop_start,
@@ -429,5 +450,7 @@ def run_vision_loop(
                     time.sleep(sleep_s)
     finally:
         shm_writer.close(unlink=True)
+        if overlay is not None:
+            overlay.close()
         if owns_pointer:
             active_pointer.close()

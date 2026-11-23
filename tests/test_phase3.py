@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import Any
 
 import cv2
 import numpy as np
-from evdev import ecodes
+import pytest
+from keyless.input.keys import BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT
 
 from keyless.audio.active_listener import (
     BLOCK_SIZE,
@@ -215,12 +217,12 @@ def test_router_and_gimbal_warp_hold_and_harvest_persistence(tmp_path) -> None:
         r_bare = router.dispatch("click")
         assert r_bare.route == "deterministic"
         assert ptr.last_abs == (950, 530)
-        assert ptr.clicks == [ecodes.BTN_LEFT]
+        assert ptr.clicks == [BUTTON_LEFT]
 
         r_det = router.dispatch("click here")
         assert r_det.route == "deterministic"
         assert ptr.last_abs == (950, 530)
-        assert ptr.clicks == [ecodes.BTN_LEFT, ecodes.BTN_LEFT]
+        assert ptr.clicks == [BUTTON_LEFT, BUTTON_LEFT]
 
         # Explicit "Type: ..." stays literal typing
         r_type = router.dispatch("Type: Hello in world")
@@ -232,7 +234,7 @@ def test_router_and_gimbal_warp_hold_and_harvest_persistence(tmp_path) -> None:
         assert r_vlm.route == "gaze_vlm_click"
         assert ptr.last_abs is not None
         assert 890 <= ptr.last_abs[0] <= 1070
-        assert ptr.clicks[-1] == ecodes.BTN_LEFT
+        assert ptr.clicks[-1] == BUTTON_LEFT
         assert 890 <= ctrl.cursor_x <= 1070
 
         # "type openai in search" clicks search box and types "openai"
@@ -702,7 +704,7 @@ def test_pause_video_and_box_that_says_ask_gemini() -> None:
     r_fallback = VoiceCommandRouter(pointer=ptr)
     res_fb = r_fallback.dispatch("pause video")
     assert res_fb.route == "deterministic"
-    assert ptr.combos[-1] == (ecodes.KEY_PLAYPAUSE,)
+    assert ptr.combos[-1] == ("PLAYPAUSE",)
 
     # 2. "click box that says ask gemini" strips filler words in BOTH Tier-1 OCR and Tier-0 DOM
     assert _clean_target_keywords("box that says ask gemini") == "ask gemini"
@@ -795,44 +797,44 @@ def test_os_window_and_browser_tab_switching() -> None:
     # Individual window stepping via Alt+Tab (hold Alt, tap Tab N times) so tiled/paired windows
     # are never collapsed into one and repeated calls step through every window without ping-pong.
     assert router.dispatch("next window").detail == "os_window_next"
-    assert ptr.hold_taps[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB, 1)
+    assert ptr.hold_taps[-1] == ("LEFTALT", "TAB", 1)
 
     assert router.dispatch("the next window").detail == "os_window_next"
-    assert ptr.hold_taps[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB, 2)
+    assert ptr.hold_taps[-1] == ("LEFTALT", "TAB", 2)
 
     assert router.dispatch("go to next window").detail == "os_window_next"
-    assert ptr.hold_taps[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB, 3)
+    assert ptr.hold_taps[-1] == ("LEFTALT", "TAB", 3)
 
     for variant in ("a next window", "uh next window", "mm next window", "move to next window", "text window", "net window"):
         assert router.dispatch(variant).detail == "os_window_next"
-        assert ptr.hold_taps[-1][0:2] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB)
+        assert ptr.hold_taps[-1][0:2] == ("LEFTALT", "TAB")
 
     assert router.dispatch("switch tab").detail == "os_window_next"
-    assert ptr.hold_taps[-1][0:2] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB)
+    assert ptr.hold_taps[-1][0:2] == ("LEFTALT", "TAB")
 
     assert router.dispatch("previous window").detail == "os_window_prev"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_TAB)
+    assert ptr.combos[-1] == ("LEFTALT", "LEFTSHIFT", "TAB")
 
     router.dispatch("scroll down")
     assert router.dispatch("next window").detail == "os_window_next"
-    assert ptr.hold_taps[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB, 1)
+    assert ptr.hold_taps[-1] == ("LEFTALT", "TAB", 1)
 
     assert router.dispatch("alt tab").detail == "os_alt_tab"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_TAB)
+    assert ptr.combos[-1] == ("LEFTALT", "TAB")
 
     assert router.dispatch("switch back").detail == "os_alt_shift_tab"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_TAB)
+    assert ptr.combos[-1] == ("LEFTALT", "LEFTSHIFT", "TAB")
 
     assert router.dispatch("switch same app").detail == "os_alt_grave"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_GRAVE)
+    assert ptr.combos[-1] == ("LEFTALT", "GRAVE")
 
     assert router.dispatch("next workspace").detail == "os_workspace_next"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTALT, ecodes.KEY_RIGHT)
+    assert ptr.combos[-1] == ("LEFTCTRL", "LEFTALT", "RIGHT")
 
     assert router.dispatch("close window").detail == "close_window"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_F4)
+    assert ptr.combos[-1] == ("LEFTALT", "F4")
     assert router.dispatch("close this app").detail == "close_window"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_F4)
+    assert ptr.combos[-1] == ("LEFTALT", "F4")
 
     # Named OS app focus via "<app> window" and "switch to <app>"
     for spoken, expected_query in (
@@ -844,9 +846,9 @@ def test_os_window_and_browser_tab_switching() -> None:
     ):
         r_app = router.dispatch(spoken)
         assert r_app.route == "os_window_switch"
-        assert ptr.combos[-2] == (ecodes.KEY_LEFTMETA,)
+        assert ptr.combos[-2] == ("LEFTMETA",)
         assert ptr.typed_texts[-1] == expected_query
-        assert ptr.combos[-1] == (ecodes.KEY_ENTER,)
+        assert ptr.combos[-1] == ("ENTER",)
 
     # Named browser tab switch when matching Firefox tab exists ("switch to youtube")
     r_yt = router.dispatch("switch to youtube")
@@ -857,7 +859,7 @@ def test_os_window_and_browser_tab_switching() -> None:
     router_no_fx = VoiceCommandRouter(pointer=ptr)
     r_ord = router_no_fx.dispatch("second tab")
     assert r_ord.route == "deterministic"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTALT, ecodes.KEY_2)
+    assert ptr.combos[-1] == ("LEFTALT", "2")
 
 
 def test_new_tab_via_firefox_bridge_and_uinput_fallback() -> None:
@@ -904,7 +906,7 @@ def test_new_tab_via_firefox_bridge_and_uinput_fallback() -> None:
     router_no_fx = VoiceCommandRouter(pointer=ptr)
     r4 = router_no_fx.dispatch("open a new tab")
     assert r4.route == "deterministic"
-    assert ptr.combos[-1] == (ecodes.KEY_LEFTCTRL, ecodes.KEY_T)
+    assert ptr.combos[-1] == ("LEFTCTRL", "T")
 
 
 def test_popup_disambiguation_nested_contours_and_tier_order() -> None:
@@ -1115,7 +1117,7 @@ def test_teams_ckeditor_type_a_message_click_triggers_trusted_focus() -> None:
         assert res.route == "gaze_vlm_click"
         assert "Tier-0 Firefox DOM Focus" in res.detail
         assert ptr.last_abs == (2400.0, 1280.0)
-        assert ptr.clicks == [ecodes.BTN_LEFT]  # Emits trusted OS click on CKEditor textbox!
+        assert ptr.clicks == [BUTTON_LEFT]  # Emits trusted OS click on CKEditor textbox!
     finally:
         clicker.shutdown()
 
@@ -1312,7 +1314,7 @@ def test_command_splitter_and_compound_dispatch() -> None:
         )
         res = router.dispatch("type rust vs zig into search bar and press enter")
         assert ff_bridge.actions == [(50, "type_into", "rust vs zig")]
-        assert (ecodes.KEY_ENTER,) in ptr.combos
+        assert ("ENTER",) in ptr.combos
         assert "gaze_vlm_click:" in res.detail
         assert "deterministic:enter" in res.detail
     finally:
@@ -1441,6 +1443,7 @@ def test_pose_invariant_rbf_and_online_gaze_learner(tmp_path) -> None:
     assert learner.bias_xy == bias_before
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Wayland cursor harvesting is Linux-only")
 def test_wayland_cursor_sprite_diff_and_scroll_handler() -> None:
     from keyless.input.click_harvest import WaylandCursorPositionResolver
     from keyless.router.scroll_handler import parse_voice_scroll_command

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleDisplayName</key><string>Keyless</string>
+    <key>CFBundleExecutable</key><string>Keyless</string>
+    <key>CFBundleIdentifier</key><string>party.ohrats.Keyless</string>
+    <key>CFBundleName</key><string>Keyless</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.2</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSUIElement</key><false/>
+    <key>NSCameraUsageDescription</key><string>Keyless uses the camera for on-device gaze tracking. Video never leaves your Mac.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Keyless listens for pop-clicks and voice commands on-device.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>Keyless shows live captions of what you say on-device.</string>
+    <key>NSScreenCaptureDescription</key><string>Keyless captures screen regions to ground “click by name” without sending images off-device.</string>
+    <key>NSAccessibilityUsageDescription</key><string>Keyless moves the pointer and reads UI structure to click what you look at.</string>
+</dict>
+</plist>

@@ -331,7 +331,7 @@ class SettingsPanel(QWidget):
         self.gaze_model.currentIndexChanged.connect(self._auto_save)
         gform.addRow("Gaze model", self.gaze_model)
 
-        self.eye_mouse = QCheckBox("Move the mouse pointer with gaze")
+        self.eye_mouse = QCheckBox("Show eye cursor (does not move your mouse)")
         self.eye_mouse.setChecked(self.config.gaze_cursor_control)
         self.eye_mouse.toggled.connect(self._auto_save)
         gform.addRow("", self.eye_mouse)
