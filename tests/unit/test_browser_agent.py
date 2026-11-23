@@ -290,7 +290,7 @@ def test_cli_browser_sync_command(tmp_path: Path) -> None:
 
 
 def test_bare_click_with_dom_candidate_and_filler_prefixed_browser_commands() -> None:
-    from evdev import ecodes
+    from keyless.input.keys import BUTTON_LEFT
     from keyless.ipc.firefox_bridge import DOMCandidate
 
     class _FakeBridge:
@@ -336,7 +336,7 @@ def test_bare_click_with_dom_candidate_and_filler_prefixed_browser_commands() ->
     router2 = VoiceCommandRouter(pointer=ptr2)
     res2 = router2.dispatch("Click.")
     assert res2.route == "deterministic"
-    assert ptr2.clicks[-1] == ecodes.BTN_LEFT
+    assert ptr2.clicks[-1] == BUTTON_LEFT  # keyless.input.keys abstract id, mapped to ecodes.BTN_LEFT by real backends
 
     # Filler words ("Uh scroll down.", "Can you find me a video about GTA 6") route to browser
     class _FakeAgent:

@@ -125,7 +125,10 @@ def test_updater_checks_channels_and_verifies_download(tmp_path) -> None:
     assert updater.should_auto_check(cfg, now=datetime.now(timezone.utc) + timedelta(hours=5)) is True
 
 
-def test_detect_install_mode_identifies_source_git(tmp_path) -> None:
+def test_detect_install_mode_identifies_source_git(tmp_path, monkeypatch) -> None:
+    # Detection is environment-sensitive (APPIMAGE wins); keep the test hermetic
+    # so a desktop session that exports APPIMAGE cannot flip the result.
+    monkeypatch.delenv("APPIMAGE", raising=False)
     (tmp_path / ".git").mkdir()
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts" / "install.sh").write_text("#!/bin/sh\n")

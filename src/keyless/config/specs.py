@@ -160,6 +160,8 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     _float("gaze_keyword_threshold", 82.0, "Gaze keyword threshold", "Score required to ground a spoken keyword.", "Advanced", minimum=0.0, maximum=100.0, apply="restart"),
     _bool("firefox_bridge_enabled", True, "Firefox bridge", "Enable the local Firefox automation bridge.", "Advanced", apply="restart"),
     _int("firefox_bridge_port", 8765, "Firefox bridge port", "Loopback port for the Firefox bridge.", "Advanced", minimum=1, maximum=65535, apply="restart"),
+    _bool("playwright_browser_enabled", True, "Browser agent", "Run the visible Playwright Firefox browser agent for spoken browser tasks.", "Advanced", apply="restart"),
+    _bool("playwright_auto_seed_firefox", True, "Seed browser profile", "Copy the Firefox profile into the browser agent's profile on first run.", "Advanced"),
 )
 
 _BY_KEY: dict[str, SettingSpec] = {spec.key: spec for spec in SETTING_SPECS}
