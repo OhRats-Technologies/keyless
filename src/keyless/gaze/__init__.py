@@ -6,8 +6,8 @@ or an external research process) plugs in here without the daemon knowing how
 the mapping was obtained.
 
 Phase 0 adds the data flywheel seam: record session-keyed events
-(:mod:`keyless.gaze.collect`) and, in time, replay them offline.  No model
-lives here.
+(:mod:`keyless.gaze.collect`) and replay them offline
+(:mod:`keyless.gaze.replay`).  No model lives here.
 """
 
 from keyless.gaze.types import GazeFrame, GazeSource
@@ -15,6 +15,13 @@ from keyless.gaze.shared_memory import SharedMemoryGazeSource
 from keyless.gaze.runtime import run_gaze_loop
 from keyless.gaze.schema import SCHEMA_VERSION, make_event, validate_event
 from keyless.gaze.collect import SessionCollector
+from keyless.gaze.replay import (
+    SchemaError,
+    Session,
+    iter_sessions,
+    load_session,
+    split_sessions,
+)
 
 __all__ = [
     "GazeFrame",
@@ -25,4 +32,9 @@ __all__ = [
     "make_event",
     "validate_event",
     "SessionCollector",
+    "SchemaError",
+    "Session",
+    "iter_sessions",
+    "load_session",
+    "split_sessions",
 ]
