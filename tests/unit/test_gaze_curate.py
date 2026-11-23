@@ -131,3 +131,20 @@ def test_export_curated_split_preserves_session_isolation_and_filters_rejected(
     assert (out_dir / "manifest.json").exists()
     loaded = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert loaded["accepted_only"] is True
+
+
+def test_probe_lab_environment_and_seed_demo_session(paths: AppPaths) -> None:
+    from keyless.gaze.curate import probe_lab_environment, seed_demo_session
+
+    env = probe_lab_environment(host="macos", strata_port=1)
+    assert env.host == "macos"
+    assert env.input_group_active is True
+    assert env.strata_serving is False
+
+    sdir = seed_demo_session(paths)
+    assert sdir.exists()
+    summaries = list_session_summaries(paths.data_dir / "sessions")
+    assert len(summaries) == 1
+    assert summaries[0].session_id == "sample-session-01"
+    assert summaries[0].click_count == 4
+    assert summaries[0].covered_clicks == 3

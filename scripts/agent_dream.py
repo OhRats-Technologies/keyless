@@ -236,7 +236,7 @@ def run_eval(repo_root: Path = REPO_ROOT, *, include_ui: bool = True) -> dict[st
         checks.append(
             _run_subprocess_check(
                 "pytest_ui",
-                [py, "-m", "pytest", "tests/ui/test_ui.py", "-q", "-m", "ui"],
+                [py, "-m", "pytest", "tests/ui", "--ignore=tests/ui/test_instance_lock.py", "-q", "-m", "ui"],
                 repo_root,
             )
         )

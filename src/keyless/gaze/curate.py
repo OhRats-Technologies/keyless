@@ -324,6 +324,7 @@ def export_curated_split(
 
 
 __all__ = [
+    "LabEnvironmentStatus",
     "PHASE1_RECALL_GATE",
     "AppRecallRow",
     "RecallSummary",
@@ -335,5 +336,204 @@ __all__ = [
     "export_curated_split",
     "list_session_summaries",
     "summarize_session",
+    "grant_linux_input_access",
+    "probe_lab_environment",
+    "seed_demo_session",
     "update_event",
 ]
+
+
+@dataclass(frozen=True)
+class LabEnvironmentStatus:
+    """Host capability and local service snapshot for Keyless Lab."""
+
+    host: str
+    input_group_active: bool
+    input_group_configured: bool
+    pkexec_available: bool
+    strata_cli_available: bool
+    strata_serving: bool
+    pi_cli_available: bool
+
+
+def _tcp_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def probe_lab_environment(
+    *,
+    host: str | None = None,
+    strata_port: int = 8080,
+) -> LabEnvironmentStatus:
+    """Inspect click-capture permissions and local Strata/Pi availability."""
+    import getpass
+    import os
+    from keyless.platform.router import current_host
+
+    resolved_host = host or current_host()
+    home = Path.home()
+
+    if resolved_host == "linux":
+        events = sorted(Path("/dev/input").glob("event*"))
+        input_active = any(os.access(p, os.R_OK) for p in events)
+        user = os.environ.get("USER") or getpass.getuser()
+        input_configured = input_active
+        try:
+            import grp
+
+            members = grp.getgrnam("input").gr_mem
+            if user in members:
+                input_configured = True
+        except Exception:
+            pass
+        pkexec_ok = shutil.which("pkexec") is not None
+    else:
+        input_active = True
+        input_configured = True
+        pkexec_ok = False
+
+    strata_cli = (
+        shutil.which("strata") is not None
+        or (home / ".local" / "bin" / "strata").exists()
+    )
+    pi_cli = (
+        shutil.which("pi-strata") is not None
+        or (home / ".local" / "bin" / "pi-strata").exists()
+        or shutil.which("pi") is not None
+        or (home / ".bun" / "bin" / "pi").exists()
+    )
+    return LabEnvironmentStatus(
+        host=resolved_host,
+        input_group_active=input_active,
+        input_group_configured=input_configured,
+        pkexec_available=pkexec_ok,
+        strata_cli_available=strata_cli,
+        strata_serving=_tcp_port_open("127.0.0.1", strata_port),
+        pi_cli_available=pi_cli,
+    )
+
+
+def grant_linux_input_access() -> tuple[bool, str]:
+    """Grant persistent + immediate /dev/input/event* read access via PolicyKit (pkexec)."""
+    import getpass
+    import os
+    import subprocess
+
+    pkexec = shutil.which("pkexec")
+    if not pkexec:
+        return False, "pkexec is not installed on this system."
+
+    user = os.environ.get("USER") or getpass.getuser()
+    if not user or not all(ch.isalnum() or ch in ("_", "-", ".") for ch in user):
+        return False, f"Refusing unsafe username {user!r}."
+
+    script = (
+        'usermod -aG input "$1" && '
+        '(command -v udevadm >/dev/null 2>&1 && udevadm control --reload-rules && udevadm trigger --subsystem-match=input || true) && '
+        '(command -v setfacl >/dev/null 2>&1 && setfacl -m "u:$1:rw" /dev/input/event* || true)'
+    )
+    try:
+        proc = subprocess.run(
+            [pkexec, "/bin/sh", "-c", script, "keyless-grant-input", user],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except Exception as exc:
+        return False, str(exc)
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        return False, detail or f"Authorization cancelled or failed (exit {proc.returncode})."
+
+    events = sorted(Path("/dev/input").glob("event*"))
+    if any(os.access(p, os.R_OK) for p in events):
+        return True, "Input capture granted and active immediately."
+    return (
+        True,
+        "Added to the input group. Sign out and back in once if event devices are still locked.",
+    )
+
+
+def seed_demo_session(paths: Any, *, session_id: str = "sample-session-01") -> Path:
+    """Create a realistic sample session so newcomers can explore the curator immediately."""
+    from keyless.gaze.collect import SessionCollector
+    from keyless.gaze.schema import make_event
+
+    collector = SessionCollector(paths, session_id=session_id)
+    candidates = [
+        {
+            "id": "btn-primary",
+            "bbox": [140, 140, 240, 56],
+            "role": "button",
+            "text": "Start listening",
+            "score": 0.96,
+            "source": "ax",
+        },
+        {
+            "id": "btn-settings",
+            "bbox": [420, 140, 180, 56],
+            "role": "button",
+            "text": "Settings",
+            "score": 0.89,
+            "source": "ax",
+        },
+        {
+            "id": "tab-activity",
+            "bbox": [140, 240, 260, 44],
+            "role": "tab",
+            "text": "Recent activity",
+            "score": 0.84,
+            "source": "ocr",
+        },
+        {
+            "id": "link-docs",
+            "bbox": [440, 240, 220, 44],
+            "role": "link",
+            "text": "Architecture docs",
+            "score": 0.78,
+            "source": "dom",
+        },
+    ]
+    base_ts = time.time_ns()
+    samples = [
+        ("Firefox", 101, [255.0, 165.0], [260.0, 168.0], "btn-primary", True),
+        ("Firefox", 101, [505.0, 168.0], [510.0, 166.0], "btn-settings", True),
+        ("Code", 202, [270.0, 260.0], [265.0, 262.0], "tab-activity", None),
+        ("Code", 202, [760.0, 460.0], [550.0, 262.0], None, None),
+    ]
+    for idx, (app_name, win_id, mouse_xy, pred_xy, target_id, accepted) in enumerate(samples):
+        collector.record(
+            make_event(
+                session_id,
+                base_ts + idx * 500_000_000,
+                screen={
+                    "display_id": 0,
+                    "app": app_name,
+                    "window_id": win_id,
+                    "candidates": candidates,
+                },
+                prediction={
+                    "top": target_id or "link-docs",
+                    "p": 0.91 if target_id else 0.38,
+                    "entropy": 0.24 if target_id else 0.92,
+                    "pixel": pred_xy,
+                },
+                interaction={
+                    "kind": "click",
+                    "mouse": mouse_xy,
+                    "target": target_id,
+                    "accepted": accepted,
+                    "latency_ms": 85 + idx * 12,
+                },
+            )
+        )
+    collector.close()
+    return collector.session_dir

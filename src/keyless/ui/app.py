@@ -420,6 +420,7 @@ class MainWindow(QMainWindow):
         self.tray = None
         self.overlay = None
         self._flow_window: OnboardingWindow | None = None
+        self._lab_window = None
         self._commands_dialog = None
         self._inline_setup: OnboardingWidget | None = None
         self._update_worker: _UpdateWorker | None = None
@@ -473,6 +474,11 @@ class MainWindow(QMainWindow):
         self.nav.setCurrentRow(0)
         self.nav.currentRowChanged.connect(self._select)
         side_layout.addWidget(self.nav, 1)
+
+        self.lab_button = QPushButton("Keyless Lab")
+        self.lab_button.setObjectName("Ghost")
+        self.lab_button.clicked.connect(self.open_lab)
+        side_layout.addWidget(self.lab_button, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.theme_button = QPushButton("Dark mode")
         self.theme_button.setObjectName("Ghost")
@@ -551,6 +557,16 @@ class MainWindow(QMainWindow):
         self.controller.pause()
         self.controller.start()
         self.home.poll_state()
+
+    def open_lab(self):
+        from keyless.ui.lab.window import LabWindow
+
+        if self._lab_window is None:
+            self._lab_window = LabWindow(paths=self.paths, theme=self.theme_tokens.name)
+        self._lab_window.show()
+        self._lab_window.raise_()
+        self._lab_window.activateWindow()
+        return self._lab_window
 
     def open_commands_help(self):
         from keyless.ui.commands_help import CommandsHelpDialog
@@ -659,6 +675,9 @@ class MainWindow(QMainWindow):
         return widget
 
     def _on_inline_setup_complete(self) -> None:
+        if self._lab_window is not None:
+            self._lab_window.close()
+            self._lab_window = None
         if self._inline_setup is not None:
             self._inline_setup.close_resources()
         self.config = AppConfig.load(self.paths.settings_path)
@@ -853,6 +872,7 @@ def run_ui(
         on_pause=window.home.toggle,
         on_quit=app.quit,
         on_calibrate=window.launch_calibration,
+        on_open_lab=window.open_lab,
     )
     if tray.start():
         window.tray = tray

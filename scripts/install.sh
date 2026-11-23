@@ -43,14 +43,16 @@ EOF
   esac
 done
 
-command -v uv >/dev/null 2>&1 || {
-  echo "keyless: 'uv' is required (https://docs.astral.sh/uv/)" >&2
-  exit 1
-}
+PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+export PATH
 
 cd "$REPO_ROOT"
 
 if [ "$SKIP_SYNC" -eq 0 ]; then
+  command -v uv >/dev/null 2>&1 || {
+    echo "keyless: 'uv' is required (https://docs.astral.sh/uv/)" >&2
+    exit 1
+  }
   if [ "$EDITABLE" -eq 1 ]; then
     if [ -x "${VENV_DIR}/bin/python" ]; then
       uv pip install --python "${VENV_DIR}/bin/python" --no-deps -e "$REPO_ROOT"
@@ -89,6 +91,17 @@ Exec=${BIN_DIR}/keyless ui
 Icon=keyless
 Terminal=false
 Categories=Utility;Accessibility;
+EOF
+
+cat > "${DESKTOP_DIR}/keyless-lab.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Keyless Lab
+Comment=Gaze v2 data curator, recall inspector, and Dream-RSI console
+Exec=${BIN_DIR}/keyless gaze lab
+Icon=keyless
+Terminal=false
+Categories=Development;Utility;
 EOF
 
 cp "${REPO_ROOT}/packaging/linux/keyless.svg" "${ICON_DIR}/scalable/apps/keyless.svg"

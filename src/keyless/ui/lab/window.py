@@ -10,6 +10,7 @@ Follows .agents/skills/ohrats-ui/SKILL.md:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any
 from PySide6.QtCore import QPointF, QRectF, Qt, QThread, Signal
 from PySide6.QtGui import (
     QColor,
+    QGuiApplication,
     QKeySequence,
     QMouseEvent,
     QPainter,
@@ -34,6 +36,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -56,7 +59,10 @@ from keyless.gaze.curate import (
     evaluate_recall_summary,
     event_click_covered,
     export_curated_split,
+    grant_linux_input_access,
     list_session_summaries,
+    probe_lab_environment,
+    seed_demo_session,
     update_event,
 )
 from keyless.gaze.metrics import bbox_contains, metric_table
@@ -64,7 +70,6 @@ from keyless.gaze.replay import Session, load_session
 from keyless.ui.components import Card, divider, eyebrow
 from keyless.ui.theme.tokens import (
     ThemeName,
-    ThemeTokens,
     load_bundled_fonts,
     stylesheet,
     system_theme_name,
@@ -83,16 +88,30 @@ def _telemetry(text: str, *, role: str = "Telemetry") -> QLabel:
 class _CommandWorker(QThread):
     finished_output = Signal(int, str)
 
-    def __init__(self, cmd: list[str], cwd: Path, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        cmd: list[str],
+        cwd: Path,
+        *,
+        extra_env: dict[str, str] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._cmd = cmd
         self._cwd = cwd
+        self._extra_env = extra_env or {}
 
     def run(self) -> None:
         try:
+            env = dict(os.environ)
+            home = Path.home()
+            env["PATH"] = f"{home / '.local' / 'bin'}:{home / '.bun' / 'bin'}:{env.get('PATH', '')}"
+            env.update(self._extra_env)
             proc = subprocess.run(
                 self._cmd,
                 cwd=self._cwd,
+                env=env,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -101,6 +120,21 @@ class _CommandWorker(QThread):
             self.finished_output.emit(proc.returncode, out.strip())
         except Exception as exc:
             self.finished_output.emit(1, str(exc))
+
+
+class _CallableWorker(QThread):
+    finished_result = Signal(bool, str)
+
+    def __init__(self, fn, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            ok, msg = self._fn()
+            self.finished_result.emit(bool(ok), str(msg))
+        except Exception as exc:
+            self.finished_result.emit(False, str(exc))
 
 
 class EventCanvas(QWidget):
@@ -112,7 +146,7 @@ class EventCanvas(QWidget):
 
     candidate_clicked = Signal(str)
 
-    def __init__(self, tokens: ThemeTokens, parent: QWidget | None = None) -> None:
+    def __init__(self, tokens, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._tokens = tokens
         self._pixmap: QPixmap | None = None
@@ -123,7 +157,7 @@ class EventCanvas(QWidget):
         self.setMinimumSize(360, 260)
         self.setCursor(Qt.CursorShape.CrossCursor)
 
-    def set_tokens(self, tokens: ThemeTokens) -> None:
+    def set_tokens(self, tokens) -> None:
         self._tokens = tokens
         self.update()
 
@@ -211,7 +245,6 @@ class EventCanvas(QWidget):
             if isinstance(c, dict) and bbox_contains(c.get("bbox", (0, 0, 0, 0)), sx, sy)
         ]
         if hits:
-            # Prefer smallest box when candidates nest
             hits.sort(
                 key=lambda c: max(1.0, float(c["bbox"][2]) * float(c["bbox"][3]))
             )
@@ -226,7 +259,6 @@ class EventCanvas(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         t = self._tokens
 
-        # Surface backdrop
         painter.fillRect(self.rect(), QColor(t.surface_alt))
         rect = self._compute_draw_rect()
         self._canvas_rect = rect
@@ -240,7 +272,6 @@ class EventCanvas(QWidget):
             )
             return
 
-        # Draw screenshot or schematic viewport
         if self._pixmap is not None and not self._pixmap.isNull():
             painter.drawPixmap(rect.toRect(), self._pixmap)
         else:
@@ -261,7 +292,6 @@ class EventCanvas(QWidget):
         sx = rect.width() / max(1.0, cw)
         sy = rect.height() / max(1.0, ch)
 
-        # Draw candidate boxes
         candidates = (self._event.get("screen") or {}).get("candidates") or []
         for cand in candidates:
             if not isinstance(cand, dict):
@@ -295,14 +325,12 @@ class EventCanvas(QWidget):
                     elided,
                 )
 
-        # Draw gaze prediction pixel if present
         pred_px = (self._event.get("prediction") or {}).get("pixel")
         if isinstance(pred_px, (list, tuple)) and len(pred_px) == 2:
             gp = self._to_widget(float(pred_px[0]), float(pred_px[1]), rect)
             painter.setPen(QPen(QColor(t.warning), 2.0))
             painter.drawEllipse(gp, 7.0, 7.0)
 
-        # Draw click crosshair (green if covered by candidate, red if missed)
         mouse = (self._event.get("interaction") or {}).get("mouse")
         if isinstance(mouse, (list, tuple)) and len(mouse) == 2:
             mp = self._to_widget(float(mouse[0]), float(mouse[1]), rect)
@@ -315,7 +343,7 @@ class EventCanvas(QWidget):
 
 
 class LabWindow(QMainWindow):
-    """Unified Gaze v2 Data Curator, Phase 1 Recall Dashboard, and Dream-RSI Console."""
+    """Unified Gaze v2 Guide, Data Curator, Phase 1 Recall Dashboard, and Dream-RSI Console."""
 
     def __init__(
         self,
@@ -341,6 +369,7 @@ class LabWindow(QMainWindow):
         self._recorder: Any = None
         self._click_observer: Any = None
         self._worker: _CommandWorker | None = None
+        self._perm_worker: _CallableWorker | None = None
 
         self.setWindowTitle("Keyless Lab")
         self.resize(1180, 720)
@@ -380,17 +409,17 @@ class LabWindow(QMainWindow):
         title_box.setSpacing(2)
         title = QLabel("Keyless Lab")
         title.setObjectName("Title")
-        self.subtitle = QLabel("Gaze v2 curator")
+        self.subtitle = QLabel("Gaze v2 workbench")
         self.subtitle.setObjectName("Muted")
         title_box.addWidget(title)
         title_box.addWidget(self.subtitle)
         top.addLayout(title_box)
 
-        top.addSpacing(16)
+        top.addSpacing(12)
 
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
-        nav_labels = ("Curator", "Recall & Replay", "Dream-RSI")
+        nav_labels = ("Guide", "Curator", "Recall & Replay", "Dream-RSI")
         self._nav_buttons: list[QPushButton] = []
         for idx, label in enumerate(nav_labels):
             btn = QPushButton(label)
@@ -425,12 +454,12 @@ class LabWindow(QMainWindow):
         root.addWidget(divider())
 
         self.pages = QStackedWidget()
+        self.pages.addWidget(self._build_guide_page())
         self.pages.addWidget(self._build_curator_page())
         self.pages.addWidget(self._build_recall_page())
         self.pages.addWidget(self._build_dream_page())
         root.addWidget(self.pages, 1)
 
-        # Compact status footer
         footer = QHBoxLayout()
         footer.setContentsMargins(0, 2, 0, 0)
         self.status_label = QLabel("")
@@ -440,11 +469,159 @@ class LabWindow(QMainWindow):
         footer.addWidget(self.shortcuts_hint)
         root.addLayout(footer)
 
+    # --- Page 0: Newcomer Guide & 1-Click Readiness ---------------------
+
+    def _build_guide_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        # Readiness card
+        ready_card = Card()
+        ready_card.layout.addWidget(eyebrow("ENVIRONMENT & READINESS"))
+
+        # Row 1: Input capture permission
+        r1 = QHBoxLayout()
+        r1.setSpacing(10)
+        self.guide_input_title = QLabel("Global click capture")
+        self.guide_input_title.setObjectName("Heading")
+        self.guide_input_detail = QLabel("")
+        self.guide_input_detail.setObjectName("Muted")
+        self.guide_grant_input_btn = QPushButton("Grant input access")
+        self.guide_grant_input_btn.setObjectName("Ghost")
+        self.guide_grant_input_btn.clicked.connect(self._on_grant_input_access)
+        r1.addWidget(self.guide_input_title)
+        r1.addWidget(self.guide_input_detail, 1)
+        r1.addWidget(self.guide_grant_input_btn)
+        ready_card.layout.addLayout(r1)
+
+        ready_card.layout.addWidget(divider())
+
+        # Row 2: Local Strata server
+        r2 = QHBoxLayout()
+        r2.setSpacing(10)
+        self.guide_strata_title = QLabel("Local model server (Strata)")
+        self.guide_strata_title.setObjectName("Heading")
+        self.guide_strata_detail = QLabel("")
+        self.guide_strata_detail.setObjectName("Muted")
+        self.guide_strata_btn = QPushButton("Start Strata")
+        self.guide_strata_btn.setObjectName("Ghost")
+        self.guide_strata_btn.clicked.connect(self._toggle_strata_server)
+        r2.addWidget(self.guide_strata_title)
+        r2.addWidget(self.guide_strata_detail, 1)
+        r2.addWidget(self.guide_strata_btn)
+        ready_card.layout.addLayout(r2)
+
+        ready_card.layout.addWidget(divider())
+
+        # Row 3: Phase 1 Gate progress
+        r3 = QHBoxLayout()
+        r3.setSpacing(10)
+        self.guide_gate_title = QLabel("Phase 1 candidate recall gate (>95%)")
+        self.guide_gate_title.setObjectName("Heading")
+        self.guide_gate_detail = QLabel("")
+        self.guide_gate_detail.setObjectName("Muted")
+        self.guide_sample_btn = QPushButton("Create sample session")
+        self.guide_sample_btn.setObjectName("Ghost")
+        self.guide_sample_btn.clicked.connect(self._on_seed_sample_session)
+        r3.addWidget(self.guide_gate_title)
+        r3.addWidget(self.guide_gate_detail, 1)
+        r3.addWidget(self.guide_sample_btn)
+        ready_card.layout.addLayout(r3)
+
+        layout.addWidget(ready_card)
+
+        # 3-step pipeline cards
+        steps_row = QHBoxLayout()
+        steps_row.setSpacing(14)
+
+        s1 = Card(subtle=True)
+        s1.layout.addWidget(eyebrow("STEP 1 · COLLECT"))
+        t1 = QLabel("Record natural clicks")
+        t1.setObjectName("Heading")
+        d1 = QLabel(
+            "Gaze v2 has no calibration grid. Your physical clicks are the labels. "
+            "Press Record session above, use your desktop normally, then press Stop recording."
+        )
+        d1.setWordWrap(True)
+        d1.setObjectName("Muted")
+        b1 = QPushButton("Open Curator")
+        b1.setObjectName("Ghost")
+        b1.clicked.connect(lambda: self._select_tab(1))
+        s1.layout.addWidget(t1)
+        s1.layout.addWidget(d1, 1)
+        s1.layout.addWidget(b1, 0, Qt.AlignmentFlag.AlignLeft)
+
+        s2 = Card(subtle=True)
+        s2.layout.addWidget(eyebrow("STEP 2 · VERIFY GATE"))
+        t2 = QLabel("Curate & reach >95% recall")
+        t2.setObjectName("Heading")
+        d2 = QLabel(
+            "Inspect clicks against detected UI targets. Click any box on the canvas to reassign "
+            "a target, reject noisy events, and verify recall exceeds 95% before model training."
+        )
+        d2.setWordWrap(True)
+        d2.setObjectName("Muted")
+        b2 = QPushButton("View recall & metrics")
+        b2.setObjectName("Ghost")
+        b2.clicked.connect(lambda: self._select_tab(2))
+        s2.layout.addWidget(t2)
+        s2.layout.addWidget(d2, 1)
+        s2.layout.addWidget(b2, 0, Qt.AlignmentFlag.AlignLeft)
+
+        s3 = Card(subtle=True)
+        s3.layout.addWidget(eyebrow("STEP 3 · ITERATE"))
+        t3 = QLabel("Export splits & Dream-RSI")
+        t3.setObjectName("Heading")
+        d3 = QLabel(
+            "Export session-held-out train/val/test splits with zero frame leakage, or run local "
+            "Pi + Strata tasks and monotonically promote verified skill updates."
+        )
+        d3.setWordWrap(True)
+        d3.setObjectName("Muted")
+        b3 = QPushButton("Open Dream-RSI")
+        b3.setObjectName("Ghost")
+        b3.clicked.connect(lambda: self._select_tab(3))
+        s3.layout.addWidget(t3)
+        s3.layout.addWidget(d3, 1)
+        s3.layout.addWidget(b3, 0, Qt.AlignmentFlag.AlignLeft)
+
+        steps_row.addWidget(s1, 1)
+        steps_row.addWidget(s2, 1)
+        steps_row.addWidget(s3, 1)
+        layout.addLayout(steps_row, 1)
+        return page
+
+    # --- Page 1: Visual Curator -----------------------------------------
+
     def _build_curator_page(self) -> QWidget:
         page = QWidget()
-        layout = QHBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(10)
+
+        # Inline permission banner (hidden once /dev/input/event* is readable)
+        self.curator_perm_bar = Card(subtle=True)
+        self.curator_perm_bar.layout.setContentsMargins(14, 10, 14, 10)
+        p_row = QHBoxLayout()
+        p_row.setSpacing(10)
+        self.curator_perm_label = QLabel(
+            "Global click recording needs read access to Linux input devices."
+        )
+        self.curator_perm_label.setObjectName("Muted")
+        self.curator_grant_btn = QPushButton("Grant input access")
+        self.curator_grant_btn.setObjectName("Ghost")
+        self.curator_grant_btn.clicked.connect(self._on_grant_input_access)
+        self.curator_sample_btn = QPushButton("Create sample session")
+        self.curator_sample_btn.setObjectName("Ghost")
+        self.curator_sample_btn.clicked.connect(self._on_seed_sample_session)
+        p_row.addWidget(self.curator_perm_label, 1)
+        p_row.addWidget(self.curator_sample_btn)
+        p_row.addWidget(self.curator_grant_btn)
+        self.curator_perm_bar.layout.addLayout(p_row)
+        self.curator_perm_bar.setVisible(False)
+        outer.addWidget(self.curator_perm_bar)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -538,8 +715,10 @@ class LabWindow(QMainWindow):
         splitter.addWidget(center_card)
         splitter.addWidget(right_card)
         splitter.setSizes([270, 560, 310])
-        layout.addWidget(splitter)
+        outer.addWidget(splitter, 1)
         return page
+
+    # --- Page 2: Recall & Replay ----------------------------------------
 
     def _build_recall_page(self) -> QWidget:
         page = QWidget()
@@ -579,6 +758,8 @@ class LabWindow(QMainWindow):
         layout.addWidget(right, 1)
         return page
 
+    # --- Page 3: Dream-RSI Harness Console ------------------------------
+
     def _build_dream_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -589,20 +770,56 @@ class LabWindow(QMainWindow):
         hdr = QHBoxLayout()
         hdr.addWidget(eyebrow("DREAM-RSI LOCAL + FRONTIER HARNESS"))
         hdr.addStretch(1)
+        self.dream_strata_btn = QPushButton("Start Strata")
+        self.dream_strata_btn.setObjectName("Ghost")
+        self.dream_strata_btn.clicked.connect(self._toggle_strata_server)
         self.dream_eval_btn = QPushButton("Run invariant eval")
         self.dream_eval_btn.setObjectName("Ghost")
         self.dream_eval_btn.clicked.connect(self._run_dream_eval)
         self.dream_digest_btn = QPushButton("Compile digest")
         self.dream_digest_btn.setObjectName("Ghost")
         self.dream_digest_btn.clicked.connect(self._run_dream_digest)
+        self.dream_copy_btn = QPushButton("Copy frontier prompt")
+        self.dream_copy_btn.setObjectName("Ghost")
+        self.dream_copy_btn.clicked.connect(self._copy_frontier_prompt)
+        hdr.addWidget(self.dream_strata_btn)
         hdr.addWidget(self.dream_eval_btn)
         hdr.addWidget(self.dream_digest_btn)
+        hdr.addWidget(self.dream_copy_btn)
         top_card.layout.addLayout(hdr)
 
         self.dream_summary_label = QLabel("No policy ledger or traces loaded.")
         self.dream_summary_label.setWordWrap(True)
         self.dream_summary_label.setObjectName("Muted")
         top_card.layout.addWidget(self.dream_summary_label)
+
+        # Local Pi + Strata task runner row
+        run_row = QHBoxLayout()
+        run_row.setSpacing(8)
+        self.dream_task_input = QLineEdit()
+        self.dream_task_input.setPlaceholderText(
+            "Describe a scoped coding task for the local Pi + Strata agent…"
+        )
+        self.dream_run_btn = QPushButton("Run local task")
+        self.dream_run_btn.setObjectName("Ghost")
+        self.dream_run_btn.clicked.connect(self._run_dream_task)
+        run_row.addWidget(self.dream_task_input, 1)
+        run_row.addWidget(self.dream_run_btn)
+        top_card.layout.addLayout(run_row)
+
+        # Monotonic policy promotion row
+        prom_row = QHBoxLayout()
+        prom_row.setSpacing(8)
+        self.dream_note_input = QLineEdit()
+        self.dream_note_input.setPlaceholderText(
+            "Policy revision note (promotes AGENTS.md + skills only if all 6 invariants pass)…"
+        )
+        self.dream_promote_btn = QPushButton("Promote policy")
+        self.dream_promote_btn.setObjectName("Ghost")
+        self.dream_promote_btn.clicked.connect(self._run_dream_promote)
+        prom_row.addWidget(self.dream_note_input, 1)
+        prom_row.addWidget(self.dream_promote_btn)
+        top_card.layout.addLayout(prom_row)
 
         self.dream_output = QPlainTextEdit()
         self.dream_output.setReadOnly(True)
@@ -617,12 +834,19 @@ class LabWindow(QMainWindow):
         QShortcut(QKeySequence("R"), self, activated=lambda: self._set_current_accepted(False))
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self, activated=self._delete_current_event)
 
+    def _select_tab(self, index: int) -> None:
+        if 0 <= index < len(self._nav_buttons):
+            self._nav_buttons[index].setChecked(True)
+        self._on_nav_changed(index)
+
     def _on_nav_changed(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
-        if index == 2:
+        if index == 0:
+            self._refresh_environment_view()
+        elif index == 3:
             self._refresh_dream_view()
 
-    # --- Data loading & refresh -----------------------------------------
+    # --- Data & Environment refresh -------------------------------------
 
     def refresh_all(self) -> None:
         selected_id = self._current_session.session_id if self._current_session else None
@@ -642,6 +866,7 @@ class LabWindow(QMainWindow):
         self.session_list.blockSignals(False)
 
         self._refresh_recall_tables()
+        self._refresh_environment_view()
         self._refresh_dream_view()
 
         if self._summaries:
@@ -654,9 +879,45 @@ class LabWindow(QMainWindow):
             self.canvas.set_event(None, None)
             self.canvas_meta.setText("No sessions recorded")
             self.inspector_detail.setText(
-                f"No sessions found in {self._sessions_dir}. Record one to begin curating."
+                "No sessions recorded yet. Click Record session above or Create sample session to explore."
             )
             self._set_curation_enabled(False)
+
+    def _refresh_environment_view(self) -> None:
+        env = probe_lab_environment()
+        if env.input_group_active:
+            self.guide_input_detail.setText("Active · physical mouse clicks can be recorded.")
+            self.guide_grant_input_btn.setVisible(False)
+            self.curator_perm_bar.setVisible(False)
+        else:
+            if env.input_group_configured:
+                msg = "Group configured · click Grant input access to apply ACL now (or sign out and back in)."
+            else:
+                msg = "Permission needed · click Grant input access to authorize global click capture."
+            self.guide_input_detail.setText(msg)
+            self.guide_grant_input_btn.setVisible(env.pkexec_available)
+            self.curator_perm_label.setText(msg)
+            self.curator_grant_btn.setVisible(env.pkexec_available)
+            self.curator_perm_bar.setVisible(True)
+
+        if env.strata_serving:
+            self.guide_strata_detail.setText("Ready on 127.0.0.1:8080 (Qwen3.8-Flash-Next).")
+            self.guide_strata_btn.setText("Stop Strata")
+            self.dream_strata_btn.setText("Stop Strata")
+            self.guide_strata_btn.setVisible(env.strata_cli_available)
+            self.dream_strata_btn.setVisible(env.strata_cli_available)
+        elif env.strata_cli_available:
+            self.guide_strata_detail.setText("Stopped · click Start Strata to launch the local model.")
+            self.guide_strata_btn.setText("Start Strata")
+            self.dream_strata_btn.setText("Start Strata")
+            self.guide_strata_btn.setVisible(True)
+            self.dream_strata_btn.setVisible(True)
+        else:
+            self.guide_strata_detail.setText("Not installed on this machine.")
+            self.guide_strata_btn.setVisible(False)
+            self.dream_strata_btn.setVisible(False)
+
+        self.guide_sample_btn.setVisible(len(self._summaries) == 0)
 
     def _refresh_recall_tables(self) -> None:
         summary = evaluate_recall_summary(self._sessions_dir)
@@ -667,6 +928,9 @@ class LabWindow(QMainWindow):
             self.recall_summary_label.setText(
                 "No labeled clicks with candidates yet. Record a session to measure Phase 1 recall."
             )
+            self.guide_gate_detail.setText(
+                f"{summary.sessions} session(s) · 0 labeled clicks recorded yet."
+            )
         else:
             self.recall_metric.setText(
                 f"RECALL {summary.overall_recall:.1%} ({summary.hits}/{summary.clicks})"
@@ -674,12 +938,17 @@ class LabWindow(QMainWindow):
             if summary.gate_met:
                 self.gate_badge.setText("GATE  MET (>95%)")
                 self.gate_badge.setObjectName("Success")
+                gate_txt = "Gate met (>95%) · ready for Phase 2 target scorer."
             else:
                 self.gate_badge.setText("GATE  BELOW 95%")
                 self.gate_badge.setObjectName("Warning")
+                gate_txt = "Below 95% · inspect missed clicks in Curator before training."
             self.recall_summary_label.setText(
                 f"{summary.sessions} session(s), {summary.clicks} labeled click(s), "
                 f"overall geometric recall {summary.overall_recall:.1%}."
+            )
+            self.guide_gate_detail.setText(
+                f"{summary.overall_recall:.1%} ({summary.hits}/{summary.clicks} clicks) · {gate_txt}"
             )
         self.gate_badge.style().unpolish(self.gate_badge)
         self.gate_badge.style().polish(self.gate_badge)
@@ -703,6 +972,7 @@ class LabWindow(QMainWindow):
         except Exception as exc:
             self.status_label.setText(f"Failed to load session: {exc}")
             self._current_session = None
+            self._current_session_dir = None
             return
 
         self._rebuild_event_list()
@@ -806,8 +1076,7 @@ class LabWindow(QMainWindow):
             f"Target: {target or 'none'}\n"
             f"Voice: {interaction.get('voice') or 'none'}"
         )
-        has_interaction = bool(interaction)
-        self._set_curation_enabled(True, can_label=has_interaction)
+        self._set_curation_enabled(True, can_label=bool(interaction))
 
     def _set_curation_enabled(self, has_event: bool, *, can_label: bool = False) -> None:
         self.accept_btn.setEnabled(has_event and can_label)
@@ -815,10 +1084,32 @@ class LabWindow(QMainWindow):
         self.clear_target_btn.setEnabled(has_event and can_label)
         self.delete_event_btn.setEnabled(has_event)
 
-    # --- Curation actions -----------------------------------------------
+    # --- Curation & Onboarding actions ----------------------------------
+
+    def _on_grant_input_access(self) -> None:
+        if self._perm_worker is not None and self._perm_worker.isRunning():
+            return
+        self.guide_grant_input_btn.setEnabled(False)
+        self.curator_grant_btn.setEnabled(False)
+        self.status_label.setText("Requesting input-device authorization…")
+        self._perm_worker = _CallableWorker(grant_linux_input_access, self)
+        self._perm_worker.finished_result.connect(self._on_grant_input_finished)
+        self._perm_worker.start()
+
+    def _on_grant_input_finished(self, ok: bool, message: str) -> None:
+        self.guide_grant_input_btn.setEnabled(True)
+        self.curator_grant_btn.setEnabled(True)
+        self.status_label.setText(message)
+        self._refresh_environment_view()
+
+    def _on_seed_sample_session(self) -> None:
+        sdir = seed_demo_session(self._paths)
+        self.status_label.setText(f"Created sample session {sdir.name} for exploration.")
+        self.refresh_all()
+        self._select_tab(1)
 
     def _set_current_accepted(self, value: bool) -> None:
-        if self._current_session is None or self._current_event_index is None:
+        if self._current_session_dir is None or self._current_event_index is None:
             return
         row = self.event_list.currentRow()
         try:
@@ -832,7 +1123,7 @@ class LabWindow(QMainWindow):
         self._reload_current_session(restore_row=row)
 
     def _on_canvas_target_assigned(self, candidate_id: str) -> None:
-        if self._current_session is None or self._current_event_index is None:
+        if self._current_session_dir is None or self._current_event_index is None:
             return
         row = self.event_list.currentRow()
         try:
@@ -851,7 +1142,7 @@ class LabWindow(QMainWindow):
         self._reload_current_session(restore_row=row)
 
     def _clear_current_target(self) -> None:
-        if self._current_session is None or self._current_event_index is None:
+        if self._current_session_dir is None or self._current_event_index is None:
             return
         row = self.event_list.currentRow()
         try:
@@ -863,7 +1154,7 @@ class LabWindow(QMainWindow):
         self._reload_current_session(restore_row=row)
 
     def _delete_current_event(self) -> None:
-        if self._current_session is None or self._current_event_index is None:
+        if self._current_session_dir is None or self._current_event_index is None:
             return
         row = self.event_list.currentRow()
         try:
@@ -877,17 +1168,18 @@ class LabWindow(QMainWindow):
         self._reload_current_session(restore_row=max(0, min(row, remaining - 1)))
 
     def _reload_current_session(self, *, restore_row: int = 0) -> None:
-        if self._current_session is None:
+        if self._current_session_dir is None:
             return
         self._current_session = load_session(self._current_session_dir)
         self._refresh_recall_tables()
+        self._refresh_environment_view()
         self._refresh_session_metrics()
         self._rebuild_event_list()
         if 0 <= restore_row < self.event_list.count():
             self.event_list.setCurrentRow(restore_row)
 
     def _on_delete_session(self) -> None:
-        if self._current_session is None:
+        if self._current_session is None or self._current_session_dir is None:
             return
         sid = self._current_session.session_id
         sdir = self._current_session_dir
@@ -952,8 +1244,9 @@ class LabWindow(QMainWindow):
                 reason = observer.unavailable_reason
                 recorder.close()
                 self.status_label.setText(
-                    f"Cannot record clicks: {reason}. Start Lab from `newgrp input`."
+                    f"Cannot record clicks: {reason}. Click Grant input access in Guide or Curator."
                 )
+                self._refresh_environment_view()
                 return
         self._recorder = recorder
         self._click_observer = observer
@@ -976,8 +1269,10 @@ class LabWindow(QMainWindow):
             )
         self.record_btn.setText("Record session")
         self.refresh_all()
+        if self._summaries:
+            self._select_tab(1)
 
-    # --- Dream-RSI harness tab ------------------------------------------
+    # --- Dream-RSI & Strata controls ------------------------------------
 
     def _refresh_dream_view(self) -> None:
         ledger_path = self._repo_root / ".agents" / "harness" / "policy-ledger.jsonl"
@@ -1000,27 +1295,93 @@ class LabWindow(QMainWindow):
         if digest_md.exists() and not self.dream_output.toPlainText().strip():
             self.dream_output.setPlainText(digest_md.read_text(encoding="utf-8"))
 
+    def _toggle_strata_server(self) -> None:
+        env = probe_lab_environment()
+        if env.strata_serving:
+            self._launch_dream_cmd(
+                ["strata", "launch", "--stop"],
+                "Stopping local Strata server…",
+            )
+        else:
+            preset = os.environ.get("STRATA_PRESET", "qwen38-iq3s-128k")
+            self._launch_dream_cmd(
+                ["strata", "launch", "--preset", preset, "--no-tui", "--yes"],
+                f"Starting local Strata server ({preset})…",
+            )
+
+    def _run_dream_task(self) -> None:
+        task = self.dream_task_input.text().strip()
+        if not task:
+            self.status_label.setText("Enter a scoped task for the local Pi + Strata agent first.")
+            return
+        env = probe_lab_environment()
+        if not env.strata_serving:
+            self.status_label.setText("Start Strata first so the local model server is ready on :8080.")
+            return
+        self._launch_dream_cmd(
+            [sys.executable, "scripts/agent_dream.py", "run", task],
+            "Running local Pi + Strata agent task…",
+        )
+
     def _run_dream_eval(self) -> None:
-        self._launch_dream_cmd([sys.executable, "scripts/agent_dream.py", "eval"], "Running invariant eval…")
+        self._launch_dream_cmd(
+            [sys.executable, "scripts/agent_dream.py", "eval"],
+            "Running all 6 deterministic repo invariants…",
+        )
 
     def _run_dream_digest(self) -> None:
-        self._launch_dream_cmd([sys.executable, "scripts/agent_dream.py", "digest"], "Compiling trace digest…")
+        self._launch_dream_cmd(
+            [sys.executable, "scripts/agent_dream.py", "digest"],
+            "Compiling local traces into dream-digest.md…",
+        )
+
+    def _run_dream_promote(self) -> None:
+        note = self.dream_note_input.text().strip() or "ui-policy-update"
+        self._launch_dream_cmd(
+            [sys.executable, "scripts/agent_dream.py", "promote", "--note", note],
+            "Evaluating invariants for monotonic policy promotion…",
+        )
+
+    def _copy_frontier_prompt(self) -> None:
+        digest_md = self._repo_root / ".agents" / "traces" / "dream-digest.md"
+        body = (
+            digest_md.read_text(encoding="utf-8")
+            if digest_md.exists()
+            else (
+                "Read .agents/skills/dream-harness/SKILL.md, AGENTS.md, and .agents/skills/**/SKILL.md.\n"
+                "Propose minimal, surgical edits to improve local Pi+Strata execution without bloating the prompt."
+            )
+        )
+        cb = QGuiApplication.clipboard()
+        if cb is not None:
+            cb.setText(body)
+        self.status_label.setText("Copied Dream-RSI frontier prompt and digest to clipboard.")
+
+    def _set_dream_buttons_enabled(self, enabled: bool) -> None:
+        for btn in (
+            self.guide_strata_btn,
+            self.dream_strata_btn,
+            self.dream_eval_btn,
+            self.dream_digest_btn,
+            self.dream_run_btn,
+            self.dream_promote_btn,
+        ):
+            btn.setEnabled(enabled)
 
     def _launch_dream_cmd(self, cmd: list[str], message: str) -> None:
         if self._worker is not None and self._worker.isRunning():
             return
-        self.dream_eval_btn.setEnabled(False)
-        self.dream_digest_btn.setEnabled(False)
+        self._set_dream_buttons_enabled(False)
         self.status_label.setText(message)
-        self._worker = _CommandWorker(cmd, self._repo_root, self)
+        self._worker = _CommandWorker(cmd, self._repo_root, parent=self)
         self._worker.finished_output.connect(self._on_dream_finished)
         self._worker.start()
 
     def _on_dream_finished(self, rc: int, output: str) -> None:
-        self.dream_eval_btn.setEnabled(True)
-        self.dream_digest_btn.setEnabled(True)
+        self._set_dream_buttons_enabled(True)
         self.dream_output.setPlainText(output)
-        self.status_label.setText("Harness command passed." if rc == 0 else f"Harness exited with {rc}.")
+        self.status_label.setText("Completed." if rc == 0 else f"Command exited with {rc}.")
+        self._refresh_environment_view()
         self._refresh_dream_view()
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
