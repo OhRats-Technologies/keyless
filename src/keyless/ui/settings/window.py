@@ -323,25 +323,10 @@ class SettingsPanel(QWidget):
         self.cam2.currentIndexChanged.connect(self._auto_save)
         gform.addRow(self.cam2_label, self.cam2)
 
-        self.gaze_model = _compact_combo(QComboBox())
-        self.gaze_model.addItem("Precision RBF (recommended)", "rbf")
-        self.gaze_model.addItem("3-D Geometric (experimental)", "geo")
-        gm_idx = self.gaze_model.findData(getattr(self.config, "gaze_model", "rbf"))
-        self.gaze_model.setCurrentIndex(gm_idx if gm_idx >= 0 else 0)
-        self.gaze_model.currentIndexChanged.connect(self._auto_save)
-        gform.addRow("Gaze model", self.gaze_model)
-
         self.eye_mouse = QCheckBox("Show eye cursor (does not move your mouse)")
         self.eye_mouse.setChecked(self.config.gaze_cursor_control)
         self.eye_mouse.toggled.connect(self._auto_save)
         gform.addRow("", self.eye_mouse)
-
-        self.online_adapt = QCheckBox("Automatically adapt to posture and camera drift")
-        self.online_adapt.setChecked(
-            bool(getattr(self.config, "gaze_online_ekf", True))
-        )
-        self.online_adapt.toggled.connect(self._auto_save)
-        gform.addRow("", self.online_adapt)
 
         self.share_camera = QCheckBox("Share camera with video calls and other apps")
         self.share_camera.setChecked(self.config.camera_backend == "pipewire")
@@ -352,14 +337,12 @@ class SettingsPanel(QWidget):
 
         calib_row = QHBoxLayout()
         calib_row.setSpacing(8)
-        self.calib_status = _wrap_label(QLabel(""))
+        self.calib_status = _wrap_label(
+            QLabel("Target-level gaze model v2 is not installed yet.")
+        )
         self.calib_status.setObjectName("Muted")
         calib_row.addWidget(self.calib_status, 1)
-        self.clear_calib_button = QPushButton("Clear data")
-        self.clear_calib_button.setObjectName("Ghost")
-        self.clear_calib_button.clicked.connect(self._clear_calibration_data)
-        calib_row.addWidget(self.clear_calib_button)
-        self.calibrate_button = QPushButton("Calibrate")
+        self.calibrate_button = QPushButton("Align gaze")
         self.calibrate_button.clicked.connect(self._trigger_calibrate)
         calib_row.addWidget(self.calibrate_button)
         gaze_card.layout.addLayout(calib_row)
@@ -620,11 +603,7 @@ class SettingsPanel(QWidget):
         self.dl_button.setVisible(not ready)
         self.speech_test.setEnabled(ready)
 
-        calibrated = self.paths.calibration_path.exists()
-        dataset_exists = (self.paths.calibration_path.parent / "calib_dataset.npz").exists()
-        self.calib_status.setText("Eye tracking calibrated" if calibrated else "Not calibrated yet")
-        self.calibrate_button.setText("Recalibrate" if calibrated else "Calibrate")
-        self.clear_calib_button.setVisible(calibrated or dataset_exists)
+        self.calib_status.setText("Target-level gaze model v2 is not installed yet.")
 
         try:
             from keyless.voice.tts import tts_report
@@ -702,17 +681,6 @@ class SettingsPanel(QWidget):
         if self._on_calibrate is not None:
             self._on_calibrate()
 
-    def _clear_calibration_data(self) -> None:
-        for path in (
-            self.paths.calibration_path,
-            self.paths.calibration_path.parent / "calib_dataset.npz",
-        ):
-            try:
-                if path.exists():
-                    path.unlink()
-            except OSError:
-                pass
-        self.refresh()
         if self._on_config_changed is not None:
             self._on_config_changed()
 
@@ -969,9 +937,6 @@ class SettingsPanel(QWidget):
         cfg.require_command_prefix = self.require_prefix.isChecked()
         cfg.enable_pop_click = self.pop_click.isChecked()
         cfg.gaze_cursor_control = self.eye_mouse.isChecked()
-        cfg.gaze_model = str(self.gaze_model.currentData() or "rbf")
-        cfg.gaze_online_ekf = self.online_adapt.isChecked()
-        cfg.gaze_online_chase = self.online_adapt.isChecked()
         cfg.camera_backend = "pipewire" if self.share_camera.isChecked() else "v4l2"
         if self.cam_mode.isVisible():
             cfg.camera_mode = str(self.cam_mode.currentData() or "auto")

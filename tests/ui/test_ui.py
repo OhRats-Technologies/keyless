@@ -107,7 +107,6 @@ def test_onboarding_flow_persists_and_resumes(tmp_path: Path) -> None:
 
 def test_onboarding_window_resumes_and_reaches_ready(qapp, tmp_path: Path, monkeypatch) -> None:
     paths = _paths(tmp_path)
-    paths.calibration_path.write_text('{"rmse_x": 12.0}\n')
     monkeypatch.setattr(
         "keyless.ui.onboarding.steps.stt_report",
         lambda *_a, **_k: {
@@ -411,20 +410,8 @@ def test_settings_panel_never_overflows_viewport_at_minimum_width(qapp, tmp_path
         window.close()
 
 
-def test_overlay_cursor_hides_without_live_gaze_and_daemon_error_is_readable(tmp_path: Path) -> None:
-    from keyless.ui.gaze_overlay import CursorEngine
-    from keyless.ui.gaze_region import GazeRegion
+def test_daemon_error_is_readable(tmp_path: Path) -> None:
     from keyless.ui.session import _extract_daemon_error
-
-    engine = CursorEngine(live_region=GazeRegion(0, 0, 1920, 1080), demo_only=False)
-    try:
-        engine._gaze = SimpleNamespace(read=lambda: None, close=lambda: None)
-        frame = engine.frame(now=10.0)
-        assert frame.point is None
-        assert frame.mode == "hidden"
-        assert frame.label == ""
-    finally:
-        engine.close()
 
     log = tmp_path / "daemon.log"
     log.write_text("Traceback...\nRuntimeError: Failed to open V4L2 capture on /dev/video0\n")

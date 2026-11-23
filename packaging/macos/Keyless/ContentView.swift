@@ -251,7 +251,7 @@ struct HomeView: View {
         if engine.detail.contains("Not connected") { return "Engine offline" }
         if engine.state == "listening" { return "Listening." }
         if !engine.setupComplete { return "Finish setup" }
-        if !engine.calibrationReady { return "Calibrate to begin" }
+        if !engine.calibrationReady { return "Gaze model v2 pending" }
         return "Ready when you are."
     }
 
@@ -266,7 +266,7 @@ struct HomeView: View {
             return "A short setup connects your devices and aligns the eye cursor."
         }
         if !engine.calibrationReady {
-            return "Eye tracking has no saved calibration yet; align the eye cursor from Settings."
+            return "The target-level gaze model is in development; voice control is ready."
         }
         return "Start listening whenever you like. Pause here or from the menu bar."
     }
@@ -405,23 +405,12 @@ struct SettingsView: View {
                     Text("Two cameras").tag("stereo")
                 }
                 Toggle("Show eye cursor (doesn't move your mouse)", isOn: eyeCursorBinding)
-                Text("Look at your mouse and say “steer to mouse” whenever the eye cursor drifts. No dot calibration.")
+                Text("The target-level gaze model v2 is in development. It will learn from your own clicks and corrections; voice control works now.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Toggle("Learn from my mouse clicks", isOn: clickLearningBinding)
-                Text("Deliberate resting clicks teach the gaze model where you were looking ~180 ms before the click. Quick drag-clicks are ignored.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("Adapt to posture and drift", isOn: boolBinding("gaze_online_ekf"))
-                LabeledContent("Calibration") {
-                    HStack(spacing: 6) {
-                        Circle().fill(engine.calibrationReady ? .green : .orange)
-                            .frame(width: 7, height: 7)
-                        Text(engine.calibrationReady ? "Saved" : "No saved calibration")
-                            .foregroundStyle(.secondary)
-                    }
+                LabeledContent("Gaze model") {
+                    Text("v2 pending").foregroundStyle(.secondary)
                 }
-                Button("Align eye cursor…") { openSetup(.calibration) }
                 Button("Run setup…") { showOnboarding() }
             } header: {
                 Text("Camera & gaze")
@@ -481,6 +470,13 @@ struct SettingsView: View {
         )
     }
 
+    private func stringBinding(_ key: String) -> Binding<String> {
+        Binding(
+            get: { engine.config[key] as? String ?? "" },
+            set: { value in Task { await engine.saveConfig([key: value]) } }
+        )
+    }
+
     private var cuaDriver: [String: Any] {
         engine.doctor["cua_driver"] as? [String: Any] ?? [:]
     }
@@ -525,29 +521,6 @@ struct SettingsView: View {
                     }
                 }
             }
-        )
-    }
-
-    private var clickLearningBinding: Binding<Bool> {
-        Binding(
-            get: { engine.config["gaze_click_learning"] as? Bool ?? true },
-            set: { value in
-                Task {
-                    let wasListening = engine.state == "listening"
-                    await engine.saveConfig(["gaze_click_learning": value])
-                    if wasListening {
-                        await engine.pause()
-                        await engine.start()
-                    }
-                }
-            }
-        )
-    }
-
-    private func stringBinding(_ key: String) -> Binding<String> {
-        Binding(
-            get: { engine.config[key] as? String ?? "" },
-            set: { value in Task { await engine.saveConfig([key: value]) } }
         )
     }
 

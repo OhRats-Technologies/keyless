@@ -72,16 +72,6 @@ COMMAND_CATEGORIES: tuple[CommandCategory, ...] = (
                 "“type hello in message box”",
             ),
             CommandEntry(
-                "recenter gaze / recenter",
-                "Look at the center of your current screen to snap calibration offset.",
-                "“recenter gaze”",
-            ),
-            CommandEntry(
-                "steer to mouse / adjust",
-                "Look at your mouse and snap the eye cursor to it; the correction applies immediately.",
-                "“steer to mouse”",
-            ),
-            CommandEntry(
                 "save icon as <name>",
                 "Remember the icon under your gaze for instant future clicks.",
                 "“save icon as compose”",

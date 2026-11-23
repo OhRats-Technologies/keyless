@@ -13,7 +13,6 @@ from rich.console import Console
 from rich.table import Table
 
 from keyless.config import (
-    DEFAULT_CALIB_PATH,
     DEFAULT_CONFIG_PATH,
     AppConfig,
     discover_v4l_by_id,
@@ -21,7 +20,6 @@ from keyless.config import (
 )
 from keyless.daemon import run_combined_daemon
 from keyless.platform.router import resolve_camera_config
-from keyless.vision.calibrator import run_calibration_ui
 from keyless.vision.landmarks import CameraObservation
 from keyless.vision.stereo_capture import StereoCapture
 
@@ -253,55 +251,8 @@ def test_cams(
             cv2.destroyAllWindows()
 
 
-@app.command("calibrate")
-def calibrate(
-    samples: int = typer.Option(12, help="Valid frames to capture per static anchor dot"),
-    exp1: int | None = typer.Option(None, help="Cam1 manual exposure"),
-    gain1: int | None = typer.Option(None, help="Cam1 sensor gain"),
-    exp2: int | None = typer.Option(None, help="Cam2 manual exposure"),
-    gain2: int | None = typer.Option(None, help="Cam2 sensor gain"),
-    connector: str | None = typer.Option(None, help="Target monitor connector (default: primary)"),
-    output: Path = typer.Option(DEFAULT_CALIB_PATH, help="Output calibration JSON path"),
-    legacy_cv: bool = typer.Option(False, "--legacy-cv", help="Use legacy fullscreen OpenCV window"),
-) -> None:
-    """Run interactive stereo/mono gaze calibration overlay."""
-    cfg = AppConfig.load()
-    if exp1 is not None:
-        cfg.cam1_exposure = exp1
-    if gain1 is not None:
-        cfg.cam1_gain = gain1
-    if exp2 is not None:
-        cfg.cam2_exposure = exp2
-    if gain2 is not None:
-        cfg.cam2_gain = gain2
-    cfg.save(DEFAULT_CONFIG_PATH)
-
-    model = run_calibration_ui(
-        config=cfg,
-        calib_path=output,
-        samples_per_point=samples,
-        connector=connector,
-        legacy_cv=legacy_cv,
-    )
-    cfg.save(DEFAULT_CONFIG_PATH)
-    extra = (
-        f"monitors={len(model.monitors)}, mode={model.camera_mode}"
-        if hasattr(model, "monitors")
-        else f"rbf_centers={len(model.rbf_centers)}"
-    )
-    console.print(
-        f"[green]Calibration saved to {output}[/green] | "
-        f"Train RMSE: X={model.rmse_x:.1f}px, Y={model.rmse_y:.1f}px | "
-        f"CV RMSE: X={model.cv_rmse_x:.1f}px, Y={model.cv_rmse_y:.1f}px | "
-        f"samples={model.n_train_samples}, {extra}"
-    )
-
-
 def _apply_runtime_overrides(
     cfg: AppConfig,
-    saccade_px: float | None = None,
-    saccade_ms: float | None = None,
-    gimbal_gain: float | None = None,
     camera_backend: str | None = None,
     exp1: int | None = None,
     gain1: int | None = None,
@@ -327,12 +278,6 @@ def _apply_runtime_overrides(
     pop_peak: float | None = None,
     pop_rms: float | None = None,
 ) -> AppConfig:
-    if saccade_px is not None:
-        cfg.saccade_threshold_px = saccade_px
-    if saccade_ms is not None:
-        cfg.saccade_hold_ms = saccade_ms
-    if gimbal_gain is not None:
-        cfg.gimbal_gain = gimbal_gain
     if camera_backend in ("v4l2", "pipewire"):
         cfg.camera_backend = camera_backend
     if exp1 is not None:
@@ -386,10 +331,6 @@ def _apply_runtime_overrides(
 
 @app.command("run")
 def run_all(
-    calib_path: Path = typer.Option(DEFAULT_CALIB_PATH, help="Stereo calibration JSON path"),
-    saccade_px: float | None = typer.Option(None, help="Saccade jump threshold in px"),
-    saccade_ms: float | None = typer.Option(None, help="Saccade confirmation hold in ms"),
-    gimbal_gain: float | None = typer.Option(None, help="Head-gimbal sensitivity multiplier"),
     exp1: int | None = typer.Option(None, help="Cam1 manual exposure"),
     gain1: int | None = typer.Option(None, help="Cam1 sensor gain"),
     exp2: int | None = typer.Option(None, help="Cam2 manual exposure"),
@@ -436,17 +377,9 @@ def run_all(
     dry_run: bool = typer.Option(False, help="Run without emitting /dev/uinput events"),
     seconds: float | None = typer.Option(None, help="Optional run duration in seconds"),
 ) -> None:
-    """Run the combined Dual-Cam Gaze + Always-On VAD/VLM Voice daemon."""
-    if not no_vision and not calib_path.exists():
-        console.print(f"[red]Calibration file not found: {calib_path}[/red]")
-        console.print("Run `uv run keyless calibrate` first (or pass --no-vision).")
-        raise typer.Exit(code=1)
-
+    """Run the combined gaze-overlay + always-on VAD/VLM voice daemon."""
     cfg = _apply_runtime_overrides(
         AppConfig.load(),
-        saccade_px=saccade_px,
-        saccade_ms=saccade_ms,
-        gimbal_gain=gimbal_gain,
         camera_backend=camera_backend,
         action_backend=action_backend,
         exp1=exp1,
@@ -474,61 +407,9 @@ def run_all(
     )
     run_combined_daemon(
         config=cfg,
-        calib_path=calib_path,
         enable_vision=not no_vision,
         enable_audio=not no_audio,
         dictate_unprefixed=dictate_unprefixed,
-        dry_run=dry_run,
-        duration_sec=seconds,
-        console=console,
-    )
-
-
-@app.command("run-vision")
-def run_vision(
-    calib_path: Path = typer.Option(DEFAULT_CALIB_PATH, help="Stereo calibration JSON path"),
-    saccade_px: float | None = typer.Option(None, help="Saccade jump threshold in px (default 110)"),
-    saccade_ms: float | None = typer.Option(None, help="Saccade confirmation hold in ms (default 16)"),
-    gimbal_gain: float | None = typer.Option(None, help="Head-gimbal sensitivity multiplier"),
-    exp1: int | None = typer.Option(None, help="Cam1 manual exposure"),
-    gain1: int | None = typer.Option(None, help="Cam1 sensor gain"),
-    exp2: int | None = typer.Option(None, help="Cam2 manual exposure"),
-    gain2: int | None = typer.Option(None, help="Cam2 sensor gain"),
-    eye_mouse: bool = typer.Option(
-        True,
-        "--eye-mouse/--no-eye-mouse",
-        help="Drive OS cursor with gaze+gimbal (default True for run-vision)",
-    ),
-    camera_backend: str | None = typer.Option(
-        None,
-        help="Camera capture backend: v4l2 | pipewire (mono sharing)",
-    ),
-    dry_run: bool = typer.Option(False, help="Run without writing to /dev/uinput"),
-    seconds: float | None = typer.Option(None, help="Optional run duration in seconds"),
-) -> None:
-    """Run only the 30Hz dual-camera stereo gaze + 60Hz head-gimbal cursor loop."""
-    if not calib_path.exists():
-        console.print(f"[red]Calibration file not found: {calib_path}[/red]")
-        console.print("Run `uv run keyless calibrate` first.")
-        raise typer.Exit(code=1)
-
-    cfg = _apply_runtime_overrides(
-        AppConfig.load(),
-        saccade_px=saccade_px,
-        saccade_ms=saccade_ms,
-        gimbal_gain=gimbal_gain,
-        camera_backend=camera_backend,
-        exp1=exp1,
-        gain1=gain1,
-        exp2=exp2,
-        gain2=gain2,
-        eye_mouse=eye_mouse,
-    )
-    run_combined_daemon(
-        config=cfg,
-        calib_path=calib_path,
-        enable_vision=True,
-        enable_audio=False,
         dry_run=dry_run,
         duration_sec=seconds,
         console=console,
@@ -645,7 +526,6 @@ def run_voice(
     )
     run_combined_daemon(
         config=cfg,
-        calib_path=None,
         enable_vision=False,
         enable_audio=True,
         dictate_unprefixed=dictate_unprefixed,

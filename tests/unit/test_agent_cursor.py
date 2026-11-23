@@ -193,37 +193,6 @@ def test_overlay_clicks_the_window_under_the_eye_not_the_real_pointer() -> None:
     overlay.close()
 
 
-def test_steer_to_mouse_phrases_pass_the_voice_prefix_gate() -> None:
-    from keyless.audio.active_listener import _VALID_COMMAND_PREFIXES
-
-    for phrase in (
-        "adjust",
-        "steer to mouse",
-        "steer to the mouse",
-        "snap to mouse",
-        "look at mouse",
-        "calibrate to mouse",
-    ):
-        assert phrase.startswith(_VALID_COMMAND_PREFIXES)
-
-
-def test_steer_to_mouse_phrases_route_to_the_acknowledged_recenter() -> None:
-    from keyless.input.pointer import DryRunPointerBackend
-    from keyless.router.dispatcher import VoiceCommandRouter
-
-    pointer = DryRunPointerBackend(1920, 1080)
-    calls: list[str] = []
-    router = VoiceCommandRouter(
-        pointer=pointer,
-        on_steer_to_mouse=lambda: calls.append("steer") or "snapped",
-    )
-    for phrase in ("adjust", "steer to mouse", "snap to the mouse", "look at mouse"):
-        result = router.dispatch(phrase)
-        assert result.route == "steer_to_mouse"
-        assert result.detail == "snapped"
-    assert calls == ["steer"] * 4
-
-
 def test_create_gaze_sink_keeps_system_pointer_when_overlay_is_off(monkeypatch) -> None:
     action = _FakeAction()
     config = SimpleNamespace(gaze_cursor_control=True, gaze_cursor_overlay=False)

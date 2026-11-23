@@ -464,22 +464,20 @@ struct OnboardingView: View {
 
     private var calibrationStep: some View {
         VStack(spacing: 0) {
-            stepTitle("Align the eye cursor",
-                      "No dots and no full-screen overlay. Correct the cursor whenever it drifts.")
+            stepTitle("Gaze engine v2",
+                      "No calibration grid. Voice control is ready now; the target-level model is in development.")
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 12) {
                     ZStack {
-                        Circle().fill((flow.calibrationReady ? Color.green : Color.orange).opacity(0.18))
-                        Image(systemName: flow.calibrationReady ? "checkmark.circle.fill" : "eye.circle")
-                            .foregroundStyle(flow.calibrationReady ? .green : .orange)
+                        Circle().fill(Color.green.opacity(0.18))
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
                     }
                     .frame(width: 36, height: 36)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(flow.calibrationReady ? "Saved calibration loaded" : "No saved calibration yet")
+                        Text("Voice control ready")
                             .font(.headline)
-                        Text(flow.calibrationReady
-                             ? "Keep it aligned live: look at your mouse and steer the eye cursor to it."
-                             : "Look at your mouse and steer the eye cursor to it; the correction applies immediately.")
+                        Text("The new model learns from your own clicks and corrections. No dot grid, no full-screen overlay, no startup gate.")
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.55))
                             .fixedSize(horizontal: false, vertical: true)
@@ -488,20 +486,13 @@ struct OnboardingView: View {
 
                 Divider().opacity(0.16)
 
-                Text("Look at your mouse pointer, then say:")
+                Text("What changes")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.62))
-                Text("“steer to mouse”")
-                    .font(.system(size: 30, weight: .semibold, design: .rounded))
-                Text("The eye cursor snaps to your mouse and applies the correction right away. Repeat it whenever the cursor drifts — there is no long dot calibration to sit through.")
+                Text("The eye cursor will rank the targets on screen and act on the one you mean. Until that model ships, use voice commands as usual.")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.55))
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    phraseChip("adjust")
-                    phraseChip("snap to mouse")
-                    phraseChip("look at mouse")
-                }
             }
             .cardStyle()
             .padding(.top, 24)
@@ -529,7 +520,7 @@ struct OnboardingView: View {
                 .padding(.top, 8)
             VStack(alignment: .leading, spacing: 10) {
                 tip("Move naturally", "Head movement and multiple screens are tracked automatically.")
-                tip("Steer anytime", "Look at your mouse and say “steer to mouse” to snap the eye cursor back.")
+                tip("Learns from you", "The new gaze model learns from your own clicks and corrections — no recalibration ritual.")
                 tip("Stay in control", "Pause or quit from the menu bar icon.")
             }
             .cardStyle()

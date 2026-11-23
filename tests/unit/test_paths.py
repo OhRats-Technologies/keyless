@@ -60,19 +60,13 @@ def test_migration_copies_legacy_files_and_keeps_the_originals(tmp_path: Path) -
     paths = default_paths(env={HOME_ENV: str(tmp_path)}, platform_name="linux")
     paths.ensure_directories()
     paths.legacy_settings_path.write_text('{"ptt_hotkey": "KEY_F9"}\n')
-    paths.legacy_calibration_path.write_text('{"rmse_x": 12.5}\n')
-    paths.legacy_calibration_dataset_path.write_bytes(b"npz-bytes")
 
     report = ensure_migrated(paths)
 
     assert report.changed
     assert paths.settings_path.read_text() == '{"ptt_hotkey": "KEY_F9"}\n'
-    assert paths.calibration_path.read_text() == '{"rmse_x": 12.5}\n'
-    assert paths.calibration_dataset_path.read_bytes() == b"npz-bytes"
     # Old files are kept in place.
     assert paths.legacy_settings_path.exists()
-    assert paths.legacy_calibration_path.exists()
-    assert paths.legacy_calibration_dataset_path.exists()
     assert json.loads(paths.migration_marker_path.read_text())["version"] == 1
 
     second = ensure_migrated(paths)

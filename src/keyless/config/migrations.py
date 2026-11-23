@@ -50,8 +50,6 @@ def legacy_file_map(paths: AppPaths) -> list[tuple[Path, Path]]:
     """Legacy file -> new location pairs, in migration order."""
     return [
         (paths.legacy_settings_path, paths.settings_path),
-        (paths.legacy_calibration_path, paths.calibration_path),
-        (paths.legacy_calibration_dataset_path, paths.calibration_dataset_path),
     ]
 
 

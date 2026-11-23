@@ -5,7 +5,6 @@ from keyless.config.paths import AppPaths, current_paths, default_paths
 from keyless.config.schema import (
     CACHE_DIR,
     CONFIG_DIR,
-    DEFAULT_CALIB_PATH,
     DEFAULT_CAM1_ID,
     DEFAULT_CAM2_ID,
     DEFAULT_CONFIG_PATH,
@@ -33,7 +32,6 @@ def discover_v4l_by_id(*args, **kwargs):  # type: ignore[no-untyped-def]
 __all__ = [
     "CACHE_DIR",
     "CONFIG_DIR",
-    "DEFAULT_CALIB_PATH",
     "DEFAULT_CAM1_ID",
     "DEFAULT_CAM2_ID",
     "DEFAULT_CONFIG_PATH",

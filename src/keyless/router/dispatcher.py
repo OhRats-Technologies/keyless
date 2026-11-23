@@ -59,8 +59,6 @@ class VoiceCommandRouter:
         | None = None,
         on_before_click: Callable[[int, int], None] | None = None,
         firefox_bridge: FirefoxDOMBridge | None = None,
-        on_recenter_gaze: Callable[[], str] | None = None,
-        on_steer_to_mouse: Callable[[], str] | None = None,
     ) -> None:
         self.pointer = pointer
         self.llm_agent = llm_agent
@@ -71,8 +69,6 @@ class VoiceCommandRouter:
         self.gaze_vlm_clicker = gaze_vlm_clicker
         self.gaze_state_provider = gaze_state_provider
         self.on_before_click = on_before_click
-        self.on_recenter_gaze = on_recenter_gaze
-        self.on_steer_to_mouse = on_steer_to_mouse
         self.firefox_bridge = (
             firefox_bridge
             if firefox_bridge is not None
@@ -695,35 +691,6 @@ class VoiceCommandRouter:
             det.icon_bank.save_icon_patch(icon_name, patch)
             return DispatchResult("save_icon", raw, f"Learned visual icon template for '{icon_name}'")
 
-        # Explicit manual gaze recenter command ("recenter gaze" / "calibrate center")
-        if norm in ("recenter gaze", "recenter", "calibrate center"):
-            if self.gaze_vlm_clicker is not None:
-                self.gaze_vlm_clicker.clear_pending_snapshot()
-            if self.on_recenter_gaze is not None:
-                detail = self.on_recenter_gaze()
-                return DispatchResult("recenter_gaze", raw, detail)
-            return DispatchResult("recenter_gaze", raw, "No active gaze model to recenter.")
-
-        # One-point correction: the user looks at the real mouse and asks the
-        # eye cursor to align to it. Useful when gaze drifts during a session.
-        if norm in (
-            "adjust",
-            "adjust gaze",
-            "steer to mouse",
-            "steer to the mouse",
-            "snap to mouse",
-            "snap to the mouse",
-            "train to mouse",
-            "look at mouse",
-            "calibrate to mouse",
-        ):
-            if self.gaze_vlm_clicker is not None:
-                self.gaze_vlm_clicker.clear_pending_snapshot()
-            if self.on_steer_to_mouse is not None:
-                detail = self.on_steer_to_mouse()
-                return DispatchResult("steer_to_mouse", raw, detail)
-            return DispatchResult("steer_to_mouse", raw, "No active gaze model to steer.")
-
         # Gaze-aware Firefox DOM scrolling & gaze-warped native app scrolling
         scroll_cmd = parse_voice_scroll_command(raw)
         if scroll_cmd is not None:
@@ -909,10 +876,6 @@ class VoiceCommandRouter:
                 "maximize_window": "maximize window",
             }
             return self._dispatch_single(phrase_map[intent], _from_llm=True)
-        if intent == "recenter":
-            return self._dispatch_single("recenter gaze", _from_llm=True)
-        if intent == "steer_to_mouse":
-            return self._dispatch_single("steer to mouse", _from_llm=True)
         if intent == "scroll":
             direction = str(plan.get("direction") or "down").lower()
             amount = str(plan.get("amount") or "normal").lower()

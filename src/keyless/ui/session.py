@@ -210,12 +210,6 @@ class DaemonController:
             return self._status
 
     def start(self) -> SessionStatus:
-        if not self.paths.calibration_path.exists():
-            self._status = SessionStatus(
-                SessionState.ERROR,
-                f"Calibration is missing. Run setup first ({self.paths.calibration_path}).",
-            )
-            return self._status
         self._wait_for_reaper()
         with self._lock:
             if self._proc is not None and self._proc.poll() is None:

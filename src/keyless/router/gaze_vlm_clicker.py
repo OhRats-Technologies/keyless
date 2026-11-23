@@ -164,7 +164,6 @@ class GazeVLMClicker:
         ollama_client: Any | None = None,
         vlm_provider: Provider | None = None,
         enable_vlm: bool = True,
-        on_harvest: Callable[[np.ndarray, tuple[float, float]], None] | None = None,
         firefox_bridge: FirefoxDOMBridge | None = None,
         desktop_atspi: LinuxDesktopAccessibilityBridge | None = None,
     ) -> None:
@@ -179,7 +178,6 @@ class GazeVLMClicker:
         self._ollama = ollama_client if ollama_client is not None else ollama
         self._vlm_provider = vlm_provider
         self.enable_vlm = bool(enable_vlm)
-        self._on_harvest = on_harvest
         self.firefox_bridge = firefox_bridge
         self.desktop_atspi = desktop_atspi
 
@@ -189,8 +187,6 @@ class GazeVLMClicker:
         self._pending_dom_future: Future[list[DOMCandidate]] | None = None
         self._pending_onset: tuple[float, float, np.ndarray | None] | None = None
         self._cached_dom_candidates: list[DOMCandidate] = []
-        # Harvested (stereo_20d_feat, (true_x, true_y)) pairs from successful voice clicks
-        self.harvested_calib_samples: list[tuple[np.ndarray, tuple[float, float]]] = []
 
     def warm_model_in_vram(self) -> bool:
         """Lock gemma4:e4b in GPU VRAM on startup with keep_alive=-1."""
@@ -516,8 +512,6 @@ class GazeVLMClicker:
                     invoked = False
                 gx_ref = onset[0] if onset is not None else current_gaze_x
                 gy_ref = onset[1] if onset is not None else current_gaze_y
-                feat_ref = onset[2] if onset is not None else current_stereo_feat
-                self._harvest_raw(gx_ref, gy_ref, feat_ref, (node.cx, node.cy))
                 label = node.name or node.description or node.role
                 return (
                     intent,
@@ -591,7 +585,6 @@ class GazeVLMClicker:
             fast_box = self._tier1_fast_keyword_match(intent.target_query, snapshot, search_all_text=True)
         if fast_box is not None:
             target_xy = fast_box.center_xy
-            self._harvest_calibration_point(snapshot, target_xy)
             if use_window_scope and app_id:
                 return intent, target_xy, f"Tier-1 Window OCR ({app_id}: '{fast_box.label}')"
             if single_pass_monitor and app_id:
@@ -652,7 +645,6 @@ class GazeVLMClicker:
         # Tier 2: Ollama gemma4:e4b Set-of-Marks Grounding on Gaze Crop (for unlabeled icons)
         vlm_xy = self._tier2_gemma4_som_grounding(intent, snapshot, app_id=app_id)
         if vlm_xy is not None:
-            self._harvest_calibration_point(snapshot, vlm_xy)
             return intent, vlm_xy, f"Tier-2 {self.model_name} Gaze-SoM"
 
         vlm_full = self._tier2_gemma4_som_grounding(intent, full_snap, app_id=app_id)
@@ -707,43 +699,7 @@ class GazeVLMClicker:
             return None
         gx_ref = onset[0] if onset is not None else current_gaze_x
         gy_ref = onset[1] if onset is not None else current_gaze_y
-        feat_ref = onset[2] if onset is not None else current_stereo_feat
-        self._harvest_raw(gx_ref, gy_ref, feat_ref, clicked_xy)
         return intent, clicked_xy, tier_label
-
-    def _harvest_raw(
-        self,
-        gaze_x: float,
-        gaze_y: float,
-        stereo_feat: np.ndarray | None,
-        true_target_xy: tuple[int, int],
-    ) -> None:
-        if stereo_feat is None:
-            return
-        dist = math.hypot(true_target_xy[0] - gaze_x, true_target_xy[1] - gaze_y)
-        if dist <= 240.0:
-            sample = (
-                stereo_feat.copy(),
-                (float(true_target_xy[0]), float(true_target_xy[1])),
-            )
-            with self._lock:
-                self.harvested_calib_samples.append(sample)
-            if self._on_harvest is not None:
-                self._on_harvest(sample[0], sample[1])
-
-    def _harvest_calibration_point(
-        self,
-        snapshot: GazeROISnapshot,
-        true_target_xy: tuple[int, int],
-    ) -> None:
-        """Passively harvest ground-truth (20-D feature -> clicked button center) pairs."""
-        self._harvest_raw(snapshot.gaze_x, snapshot.gaze_y, snapshot.stereo_feat, true_target_xy)
-
-    def pop_harvested_samples(self) -> list[tuple[np.ndarray, tuple[float, float]]]:
-        with self._lock:
-            out = list(self.harvested_calib_samples)
-            self.harvested_calib_samples.clear()
-            return out
 
     def shutdown(self) -> None:
         self._pool.shutdown(wait=False)

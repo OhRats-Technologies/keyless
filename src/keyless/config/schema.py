@@ -23,7 +23,6 @@ CACHE_DIR = _PATHS.cache_dir
 # Kept as import-time constants for CLI option defaults and existing imports.
 # New code should use `current_paths()` so `KEYLESS_HOME` applies.
 DEFAULT_CONFIG_PATH = _PATHS.settings_path
-DEFAULT_CALIB_PATH = _PATHS.calibration_path
 DEFAULT_LANDMARKER_MODEL_PATH = _PATHS.landmarker_path
 
 FACE_LANDMARKER_URL = (
@@ -52,11 +51,6 @@ class AppConfig:
     cam1_gain: int = 180
     cam2_exposure: int = 300
     cam2_gain: int = 160
-    saccade_threshold_px: float = 110.0
-    saccade_hold_ms: float = 16.0
-    gimbal_gain: float = 2800.0
-    one_euro_min_cutoff: float = 1.4
-    one_euro_beta: float = 0.008
     blink_threshold: float = 0.55
     use_gpu: bool = True
     # Phase 2: audio pop-click, speech-to-text, and LLM routing
@@ -75,18 +69,12 @@ class AppConfig:
     pop_min_peak: float = 0.25
     pop_min_rms: float = 0.032
     audio_device: int | str | None = None
-    # Phase 3: Gaze-Foveated Voice + Vision Grounding & Always-On VAD
-    gaze_model: str = "rbf"
-    gaze_online_ekf: bool = False
-    gaze_online_chase: bool = False
+    # Phase 3: gaze overlay + voice grounding & always-on VAD
     gaze_cursor_control: bool = False
     # macOS: draw eye-driven motion on cua-driver's per-session agent cursor
     # (click-through overlay) instead of warping the real mouse pointer.
     # Unavailable platforms keep their existing pointer behavior.
     gaze_cursor_overlay: bool = True
-    # Learn from deliberate physical clicks: use the gaze sample ~180 ms before
-    # a stationary mouse-down as a verified target. Quick drag-clicks are ignored.
-    gaze_click_learning: bool = True
     gaze_vlm_enabled: bool = True
     gaze_vlm_provider: str = "auto"
     gaze_vlm_preset: str = "openai"
@@ -95,11 +83,9 @@ class AppConfig:
     gaze_crop_w: int = 680
     gaze_crop_h: int = 480
     gaze_keyword_threshold: float = 82.0
-    harvest_calib: bool = True
     always_on_voice: bool = True
     enable_pop_click: bool = False
     require_command_prefix: bool = True
-    attention_max_yaw_deg: float = 38.0
     firefox_bridge_enabled: bool = True
     firefox_bridge_port: int = 8765
     # Phase 4: Local Underdog-Woof TTS & t3code-style update checks

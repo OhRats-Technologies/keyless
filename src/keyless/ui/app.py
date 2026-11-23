@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from collections.abc import Callable
 
@@ -30,12 +29,11 @@ from keyless.config.schema import AppConfig
 from keyless.platform.router import get_display_layout, resolve_camera_config
 from keyless.ui.components import Card, divider, eyebrow
 from keyless.ui.gaze_field import GazeField
-from keyless.ui.gaze_region import calibration_region
+from keyless.ui.gaze_region import gaze_region
 from keyless.ui.history.db import HistoryStore
 from keyless.ui.history.window import HistoryPanel
 from keyless.ui.onboarding.flow import OnboardingFlow
 from keyless.ui.onboarding.steps import OnboardingWidget, OnboardingWindow
-from keyless.ui.screen_cursor import ScreenCursor
 from keyless.ui.session import (
     DaemonController,
     NullController,
@@ -157,7 +155,7 @@ class HomePanel(QWidget):
         self.primary.clicked.connect(self.toggle)
         actions.addWidget(self.primary)
 
-        self.calibrate_button = QPushButton("Calibrate")
+        self.calibrate_button = QPushButton("Align gaze")
         self.calibrate_button.clicked.connect(window.launch_calibration)
         actions.addWidget(self.calibrate_button)
 
@@ -172,26 +170,15 @@ class HomePanel(QWidget):
         controls = Card()
         controls.layout.addWidget(eyebrow("Controls"))
 
-        self.cursor_button = QPushButton("Show gaze dot")
-        self.cursor_button.setCheckable(True)
-        self.cursor_button.clicked.connect(self._toggle_cursor)
-
         self.transcript_button = QPushButton("Show live captions")
         self.transcript_button.setCheckable(True)
         self.transcript_button.clicked.connect(self._toggle_transcript)
 
         overlay_row = QHBoxLayout()
         overlay_row.setSpacing(10)
-        overlay_row.addWidget(self.cursor_button)
         overlay_row.addWidget(self.transcript_button)
         overlay_row.addStretch(1)
         controls.layout.addLayout(overlay_row)
-
-        self.cursor_note = QLabel("")
-        self.cursor_note.setObjectName("Muted")
-        self.cursor_note.setWordWrap(True)
-        self.cursor_note.setVisible(False)
-        controls.layout.addWidget(self.cursor_note)
 
         self.transcript_note = QLabel("")
         self.transcript_note.setObjectName("Muted")
@@ -232,7 +219,7 @@ class HomePanel(QWidget):
         gaze_card.setMaximumWidth(360)
         gaze_card.layout.addWidget(eyebrow("Gaze"))
         layout_info = window.display_layout
-        self.live_region = calibration_region(window.paths.calibration_path, layout_info)
+        self.live_region = gaze_region(layout_info)
         self.gaze_field = GazeField(
             window,
             source_size=(layout_info.total_width, layout_info.total_height),
@@ -250,7 +237,6 @@ class HomePanel(QWidget):
         right.addStretch(1)
         layout.addLayout(right, 2)
 
-        self.gaze_field.mode_changed.connect(self._on_gaze_mode)
         self._cursor_timer = QTimer(self)
         self._cursor_timer.setInterval(1000)
         self._cursor_timer.timeout.connect(self._poll_cursor)
@@ -289,14 +275,9 @@ class HomePanel(QWidget):
             self.error_actions.setVisible(True)
         else:
             self.error_actions.setVisible(False)
-            calibrated = self.window.paths.calibration_path.exists()
-            self.state_label.setText("Ready" if calibrated else "Needs calibration")
-            self.headline.setText("Ready." if calibrated else "Calibrate to start.")
-            self.detail.setText(
-                "Start listening when you're ready."
-                if calibrated
-                else "Run a quick calibration so eye tracking knows your screen."
-            )
+            self.state_label.setText("Ready")
+            self.headline.setText("Ready.")
+            self.detail.setText("Start listening when you're ready.")
             self.primary.setText("Start listening")
 
         if status.state is not SessionState.ERROR:
@@ -318,16 +299,12 @@ class HomePanel(QWidget):
             self.window.config.cam1_by_id,
             self.window.config.cam2_by_id,
         )
-        calibrated = self.window.paths.calibration_path.exists()
         cams_txt = "2 cameras" if cam2 else "1 camera"
         mons = len(self.window.display_layout.monitors)
         mon_txt = f"{mons} displays" if mons > 1 else "1 display"
-        cal_txt = "Calibrated" if calibrated else "Not calibrated"
-        self.hardware_summary.setText(f"{cams_txt} · {mon_txt} · {cal_txt}")
+        self.hardware_summary.setText(f"{cams_txt} · {mon_txt}")
 
-        needs_calib = not self.window.paths.calibration_path.exists() and status.state is SessionState.STOPPED
-        self.primary.setObjectName("" if needs_calib else "Primary")
-        self.calibrate_button.setObjectName("Primary" if needs_calib else "")
+        self.primary.setObjectName("Primary")
         for btn in (self.primary, self.calibrate_button):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
@@ -337,7 +314,6 @@ class HomePanel(QWidget):
         self.eye_mouse.blockSignals(False)
 
         self.window.primary_action = self.primary
-        self._sync_cursor_controls()
         self._sync_transcript_controls()
 
     def _toggle_eye_mouse(self, checked: bool) -> None:
@@ -345,52 +321,9 @@ class HomePanel(QWidget):
         self.window.config.save(self.window.paths.settings_path)
         self.window.apply_live_config_change()
 
-    def _toggle_cursor(self, checked: bool) -> None:
-        if checked:
-            self.live_region = calibration_region(
-                self.window.paths.calibration_path, self.window.display_layout
-            )
-            status = self.window.screen_cursor.start(self.live_region)
-            if not status.running:
-                self.cursor_button.blockSignals(True)
-                self.cursor_button.setChecked(False)
-                self.cursor_button.blockSignals(False)
-                self.cursor_note.setText(status.error or "Gaze dot unavailable on this session.")
-                self.cursor_note.setVisible(True)
-                return
-        else:
-            self.window.screen_cursor.stop()
-        self._sync_cursor_controls()
-
     def _poll_cursor(self) -> None:
-        status = self.window.screen_cursor.refresh()
-        if not status.running and self.cursor_button.isChecked():
-            self.cursor_button.blockSignals(True)
-            self.cursor_button.setChecked(False)
-            self.cursor_button.blockSignals(False)
-        if status.error:
-            self.cursor_note.setText(status.error)
-            self.cursor_note.setVisible(True)
-        elif status.running:
-            self._sync_cursor_controls()
         if not self.window.transcript_overlay.refresh() and self.transcript_button.isChecked():
             self._sync_transcript_controls()
-
-    def _sync_cursor_controls(self) -> None:
-        running = self.window.screen_cursor.running
-        self.cursor_button.blockSignals(True)
-        self.cursor_button.setChecked(running)
-        self.cursor_button.blockSignals(False)
-        self.cursor_button.setText("Hide gaze dot" if running else "Show gaze dot")
-        if self.window.screen_cursor.error:
-            self.cursor_note.setText(self.window.screen_cursor.error)
-            self.cursor_note.setVisible(True)
-        else:
-            self.cursor_note.setVisible(False)
-
-    def _on_gaze_mode(self, _mode: str) -> None:
-        if self.window.screen_cursor.running:
-            self._sync_cursor_controls()
 
     def _toggle_transcript(self, checked: bool) -> None:
         if checked:
@@ -431,7 +364,6 @@ class HomePanel(QWidget):
     def shutdown(self) -> None:
         self._cursor_timer.stop()
         self.gaze_field.shutdown()
-        self.window.screen_cursor.stop()
         self.window.transcript_overlay.stop()
 
     def _copy_error(self) -> None:
@@ -444,7 +376,6 @@ class HomePanel(QWidget):
         if status.state is SessionState.LISTENING:
             self.window.controller.pause()
         else:
-            self.window.stop_calibration()
             self.window.controller.start()
         self._last_state = None
         self.poll_state()
@@ -470,7 +401,6 @@ class MainWindow(QMainWindow):
         self.paths = paths or current_paths()
         self.config = config or AppConfig.load(self.paths.settings_path)
         self.controller = controller or NullController()
-        self.screen_cursor = ScreenCursor(paths=self.paths)
         self.transcript_overlay = TranscriptOverlayController(paths=self.paths)
         self.flow = flow or OnboardingFlow(self.paths)
         self.enable_previews = enable_previews
@@ -482,7 +412,6 @@ class MainWindow(QMainWindow):
         self._flow_window: OnboardingWindow | None = None
         self._commands_dialog = None
         self._inline_setup: OnboardingWidget | None = None
-        self._calib_proc: subprocess.Popen[bytes] | None = None
         self._update_worker: _UpdateWorker | None = None
         self._updater = None
         self._instance_server = None
@@ -578,10 +507,6 @@ class MainWindow(QMainWindow):
         self._status_timer.setInterval(1000)
         self._status_timer.timeout.connect(self.home.poll_state)
         self._status_timer.start()
-
-        self._calib_timer = QTimer(self)
-        self._calib_timer.setInterval(500)
-        self._calib_timer.timeout.connect(self._poll_calibration)
 
         self._restart_timer = QTimer(self)
         self._restart_timer.setSingleShot(True)
@@ -692,26 +617,12 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Align the eye cursor",
-            "Look at your mouse pointer and say “steer to mouse”.\n\n"
-            "The eye cursor snaps to the mouse and applies the correction immediately. "
-            "Repeat it whenever the cursor drifts — there is no full-screen calibration.",
+            "The legacy calibration engine has been removed.\n\n"
+            "The new target-level gaze model is not installed yet. "
+            "Voice control remains available.",
         )
         self.home.refresh()
         self.settings.refresh()
-
-    def _poll_calibration(self) -> None:
-        if self._calib_proc is None or self._calib_proc.poll() is not None:
-            self._calib_timer.stop()
-            self._calib_proc = None
-            self.home.live_region = calibration_region(
-                self.paths.calibration_path, self.display_layout
-            )
-            self.home.refresh()
-            self.settings.refresh()
-            if getattr(self, "_resume_after_calib", False):
-                self._resume_after_calib = False
-                self.controller.start()
-                self.home.poll_state()
 
     def show_inline_setup(self) -> OnboardingWidget:
         """Show the distraction-free setup flow inline inside this single window."""
@@ -743,7 +654,7 @@ class MainWindow(QMainWindow):
         self.show_page("Home")
         self.settings.refresh()
         self.home.refresh()
-        if self.paths.calibration_path.exists() and self.controller.status.state is not SessionState.LISTENING:
+        if self.controller.status.state is not SessionState.LISTENING:
             self.controller.start()
             self.home.poll_state()
 
@@ -836,28 +747,13 @@ class MainWindow(QMainWindow):
         self.show_page("Settings")
         self.settings.expand_error_details()
 
-    def stop_calibration(self) -> None:
-        """Terminate an in-flight calibration overlay so the camera device is freed."""
-        self._calib_timer.stop()
-        proc = self._calib_proc
-        self._calib_proc = None
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=1.0)
-
     def shutdown(self) -> None:
         if self._shutdown:
             return
         self._shutdown = True
         self._status_timer.stop()
-        self._calib_timer.stop()
         self._restart_timer.stop()
         self._update_poll_timer.stop()
-        self.stop_calibration()
         if self._update_worker is not None and self._update_worker.isRunning():
             self._update_worker.wait(2000)
         if self._inline_setup is not None:

@@ -6,7 +6,6 @@ import queue
 import threading
 import time
 from collections.abc import Callable
-from pathlib import Path
 
 import numpy as np
 from rich.console import Console
@@ -14,34 +13,22 @@ from rich.console import Console
 from keyless.audio.active_listener import ActiveVoiceListener
 from keyless.audio.pop_detector import PopTriggerStateMachine
 from keyless.audio.stt_engine import UnifiedAudioService
-from keyless.config import AppConfig, DEFAULT_CALIB_PATH, current_paths, get_display_layout
+from keyless.config import AppConfig, current_paths, get_display_layout
+from keyless.gaze import GazeFrame, SharedMemoryGazeSource, run_gaze_loop
 from keyless.input.pointer import DryRunPointerBackend, PointerBackend
 from keyless.platform.router import (
     create_pointer_backend,
     current_host,
     monitor_at_point,
-    pointer_position,
 )
 from keyless.ipc.firefox_bridge import FirefoxDOMBridge
-from keyless.ipc.state import FLAG_FACE_DETECTED, SharedGazeReader
+from keyless.ipc.state import FLAG_FACE_DETECTED
 from keyless.ipc.transcript import write_transcript
 from keyless.router.dispatcher import VoiceCommandRouter
 from keyless.router.gaze_vlm_clicker import GazeVLMClicker
 from keyless.models.providers.roles import resolve_gaze_vlm_role, resolve_text_role
 from keyless.routing.llm import LLMAgent
 from keyless.voice.stt.factory import SttModelMissing, create_stt_engine
-from keyless.vision.calibrator import (
-    StereoGazeModel,
-    append_harvested_calibration_samples,
-    load_gaze_model,
-)
-from keyless.vision.cursor_gimbal import (
-    GazeGimbalController,
-    GimbalStepResult,
-    run_vision_loop,
-)
-from keyless.vision.geo_gaze import GeoGazeModel, GeoGazeTracker
-from keyless.vision.online_learner import OnlineGazeLearner
 from keyless.vision.ui_detector import GazeUIDetector
 
 
@@ -57,7 +44,6 @@ def _desktop_bridge():  # type: ignore[no-untyped-def]
 
 def run_combined_daemon(
     config: AppConfig,
-    calib_path: Path | None = None,
     enable_vision: bool = True,
     enable_audio: bool = True,
     dictate_unprefixed: bool = False,
@@ -65,19 +51,28 @@ def run_combined_daemon(
     duration_sec: float | None = None,
     console: Console | None = None,
 ) -> None:
-    """Run vision gaze tracking, acoustic pop-click, and voice STT in one process."""
+    """Run the gaze-overlay/voice daemon around the new model-agnostic seam.
+
+    The legacy in-process calibration stack is gone. ``enable_vision`` now
+    means "attach to the gaze frame channel published by a model process";
+    if no publisher exists, the daemon runs voice-only instead of failing.
+    """
     out = console or Console()
     if not enable_vision and not enable_audio:
         raise ValueError("At least one of vision or audio must be enabled.")
 
     layout = get_display_layout()
-    model: StereoGazeModel | GeoGazeModel | None = None
+    gaze_source = None
     if enable_vision:
-        if calib_path is None or not calib_path.exists():
-            raise FileNotFoundError(
-                f"Calibration file not found: {calib_path}. Run `uv run keyless calibrate` first."
+        try:
+            gaze_source = SharedMemoryGazeSource()
+        except FileNotFoundError:
+            out.print(
+                "[yellow]No gaze model is publishing frames yet; "
+                "running voice-only until one starts.[/yellow]"
             )
-        model = load_gaze_model(calib_path, layout=layout, strip_pose_translation=True)
+            enable_vision = False
+
     pointer: PointerBackend = (
         DryRunPointerBackend(layout.total_width, layout.total_height)
         if dry_run
@@ -86,6 +81,7 @@ def run_combined_daemon(
             action_backend=config.action_backend,
         )
     )
+    gaze_move = False
     if enable_vision:
         # Eye motion goes to cua-driver's independent agent cursor. The same
         # sink delegates clicks/typing to the action pointer, so the router and
@@ -93,68 +89,33 @@ def run_combined_daemon(
         # system mouse.
         from keyless.platform.cua.agent_cursor import create_gaze_sink
 
-        pointer, gaze_overlay, _gaze_move = create_gaze_sink(config, pointer, dry_run)
+        pointer, gaze_overlay, gaze_move = create_gaze_sink(config, pointer, dry_run)
     else:
         gaze_overlay = None
     pointer_mode = None
     if gaze_overlay is not None and current_host() == "macos":
-        from keyless.platform.macos.mouse_events import MacOSPointerVisibility
+        from keyless.platform.macos.pointer_mode import MacOSPointerVisibility
 
         pointer_mode = MacOSPointerVisibility(gaze_overlay)
         pointer_mode.start()
-
-    online_learner: OnlineGazeLearner | None = None
-    click_harvester = None
-    if (
-        enable_vision
-        and not dry_run
-        and isinstance(model, StereoGazeModel)
-        and bool(getattr(config, "gaze_click_learning", True))
-    ):
-        online_learner = OnlineGazeLearner(
-            model=model,
-            config=config,
-            monitor=layout.primary,
-            layout=layout,
-            calib_path=calib_path or DEFAULT_CALIB_PATH,
-            allow_disk_overwrite=True,
-        )
-        if current_host() == "macos":
-            try:
-                from keyless.platform.macos.mouse_events import MacOSMouseClickHarvester
-
-                click_harvester = MacOSMouseClickHarvester(
-                    online_learner,
-                    log_path=current_paths().logs_dir / "gaze_clicks.jsonl",
-                )
-                click_harvester.start()
-                out.print(
-                    "[green]Learning gaze from stationary mouse clicks "
-                    "(~180 ms pre-click; quick drags ignored).[/green]"
-                )
-            except Exception as exc:
-                click_harvester = None
-                out.print(f"[yellow]Click learning unavailable: {exc}[/yellow]")
 
     latest_gaze_lock = threading.Lock()
     latest_gaze: tuple[float, float] | None = None
     latest_vlm_state: tuple[float, float, np.ndarray | None] | None = None
     latest_attention: tuple[bool, float] = (False, 0.0)
-    active_controller: GazeGimbalController | None = None
-    active_tracker: GeoGazeTracker | None = None
     firefox_bridge: FirefoxDOMBridge | None = None
 
-    def _on_vision_step(step: GimbalStepResult) -> None:
+    def _on_gaze_frame(frame: GazeFrame) -> None:
         nonlocal latest_gaze, latest_vlm_state, latest_attention
         with latest_gaze_lock:
-            latest_gaze = (step.cursor_x, step.cursor_y)
-            latest_vlm_state = (step.gaze_x, step.gaze_y, step.stereo_feat)
-            latest_attention = (bool(step.flags & FLAG_FACE_DETECTED), float(step.yaw_deg))
+            latest_gaze = (frame.x, frame.y)
+            latest_vlm_state = (frame.x, frame.y, frame.feat)
+            latest_attention = (bool(frame.flags & FLAG_FACE_DETECTED), 0.0)
         if firefox_bridge is not None and firefox_bridge.is_connected:
-            mon = monitor_at_point(layout, step.gaze_x, step.gaze_y)
+            mon = monitor_at_point(layout, frame.x, frame.y)
             firefox_bridge.broadcast_gaze(
-                step.gaze_x,
-                step.gaze_y,
+                frame.x,
+                frame.y,
                 mon_x=mon.x,
                 mon_y=mon.y,
                 mon_w=mon.width,
@@ -171,24 +132,10 @@ def run_combined_daemon(
 
     def _is_user_attending() -> bool:
         with latest_gaze_lock:
-            face_visible, yaw_deg = latest_attention
-        return face_visible and abs(yaw_deg) < config.attention_max_yaw_deg
+            face_visible, _ = latest_attention
+        return face_visible
 
-    def _on_controller_ready(ctrl: GazeGimbalController) -> None:
-        nonlocal active_controller
-        active_controller = ctrl
-
-    def _on_tracker_ready(tracker: GeoGazeTracker) -> None:
-        nonlocal active_tracker
-        active_tracker = tracker
-
-    def _on_before_click(tx: int, ty: int) -> None:
-        if active_controller is not None:
-            active_controller.warp_and_hold(float(tx), float(ty), hold_sec=0.25)
-        if active_tracker is not None:
-            active_tracker.record_click(float(tx), float(ty), time.monotonic())
-
-    gaze_reader: SharedGazeReader | None = None
+    gaze_reader = None
     audio_svc: UnifiedAudioService | None = None
     ptt_mon = None  # EvdevHotkeyMonitor on Linux; None on macOS (SwiftUI host owns PTT)
     active_listener: ActiveVoiceListener | None = None
@@ -210,8 +157,6 @@ def run_combined_daemon(
         return float(mon.x + mon.width * 0.5), float(mon.y + mon.height * 0.5)
 
     try:
-        # Automatic online learning and passive click harvesting are disabled by default so
-        # look-then-speak saccades never degrade calibration. Use "recenter gaze" for manual snap.
         if config.firefox_bridge_enabled:
             firefox_bridge = FirefoxDOMBridge(port=config.firefox_bridge_port)
             firefox_bridge.start()
@@ -223,12 +168,6 @@ def run_combined_daemon(
             gaze_provider: Callable[[], tuple[float, float] | None] | None = (
                 _inproc_gaze if enable_vision else None
             )
-            if not enable_vision:
-                try:
-                    gaze_reader = SharedGazeReader()
-                    out.print("[green]Attached to external gaze shared memory.[/green]")
-                except FileNotFoundError:
-                    out.print("[dim]Vision loop not active; gaze coordinates unavailable.[/dim]")
 
             vlm_provider = None
             detector = GazeUIDetector()
@@ -288,42 +227,6 @@ def run_combined_daemon(
                 backend="auto",
                 provider=text_role.provider,
             )
-            def _on_recenter_gaze() -> str:
-                if model is None:
-                    return "Vision loop not active."
-                st = _inproc_vlm_state()
-                if st is None or st[2] is None:
-                    return "No current face/eye observation to recenter."
-                active_model = online_learner.model if online_learner is not None else model
-                mon = monitor_at_point(layout, st[0], st[1])
-                cx = mon.x + mon.width * 0.5
-                cy = mon.y + mon.height * 0.5
-                dx, dy = active_model.recenter_to(cx, cy, st[2])
-                return f"Recentered gaze to monitor center ({cx:.0f}, {cy:.0f}) with offset=({dx:+.0f}, {dy:+.0f})px"
-
-            def _on_steer_to_mouse() -> str:
-                if model is None:
-                    return "Vision loop not active."
-                st = _inproc_vlm_state()
-                if st is None or st[2] is None:
-                    return "No current face/eye observation to steer."
-                mouse = pointer_position()
-                if mouse is None:
-                    return "Could not read the real pointer position on this host."
-                mx, my = mouse
-                active_model = online_learner.model if online_learner is not None else model
-                dx, dy = active_model.recenter_to(mx, my, st[2])
-                if active_controller is not None:
-                    active_controller.warp_and_hold(mx, my, hold_sec=0.35)
-                acknowledge = getattr(pointer, "acknowledge", None)
-                if callable(acknowledge):
-                    acknowledge(mx, my)
-                if pointer_mode is not None:
-                    pointer_mode.force_eye_mode()
-                return (
-                    f"Eye cursor snapped to the mouse at ({mx:.0f}, {my:.0f}); "
-                    f"offset=({dx:+.0f}, {dy:+.0f})px"
-                )
 
             router = VoiceCommandRouter(
                 pointer=pointer,
@@ -333,10 +236,8 @@ def run_combined_daemon(
                 dictate_unprefixed=dictate_unprefixed,
                 gaze_vlm_clicker=vlm_clicker,
                 gaze_state_provider=_inproc_vlm_state if enable_vision else None,
-                on_before_click=_on_before_click,
+                on_before_click=None,
                 firefox_bridge=firefox_bridge,
-                on_recenter_gaze=_on_recenter_gaze if enable_vision else None,
-                on_steer_to_mouse=_on_steer_to_mouse if enable_vision else None,
             )
 
             def _prewarm_gaze_vlm() -> None:
@@ -508,29 +409,25 @@ def run_combined_daemon(
                 audio_svc.start()
 
         if enable_vision:
-            assert model is not None
+            assert gaze_source is not None
             if getattr(pointer, "is_agent_cursor_sink", False):
                 gaze_mode = "eye cursor on cua-driver's independent overlay"
-            elif config.gaze_cursor_control and not _gaze_move:
+            elif config.gaze_cursor_control and not gaze_move:
                 gaze_mode = "internal gaze guide (agent cursor unavailable; mouse untouched)"
             elif config.gaze_cursor_control:
                 gaze_mode = "eye-mouse cursor control"
             else:
                 gaze_mode = "internal gaze guide (physical mouse untouched)"
             out.print(
-                f"Starting gaze loop ({gaze_mode}, dry_run={dry_run}, "
-                f"RMSE X={model.rmse_x:.1f}px Y={model.rmse_y:.1f}px). Press Ctrl+C to stop."
+                f"Attached to gaze frames ({gaze_mode}, dry_run={dry_run}). "
+                "Press Ctrl+C to stop."
             )
-            run_vision_loop(
-                config=config,
-                model=model,
-                dry_run=dry_run,
+            run_gaze_loop(
+                gaze_source,
+                pointer,
+                on_frame=_on_gaze_frame,
                 duration_sec=duration_sec,
-                pointer=pointer,
-                on_step=_on_vision_step,
-                on_controller_ready=_on_controller_ready,
-                on_tracker_ready=_on_tracker_ready,
-                predict_gaze=online_learner.predict if online_learner is not None else None,
+                move_enabled=gaze_move,
             )
         else:
             start_t = time.monotonic()
@@ -544,8 +441,6 @@ def run_combined_daemon(
         event_stop.set()
         if pointer_mode is not None:
             pointer_mode.stop()
-        if click_harvester is not None:
-            click_harvester.stop()
         if event_thread is not None and event_thread.is_alive():
             event_thread.join(timeout=1.0)
         if active_listener is not None:
@@ -561,19 +456,9 @@ def run_combined_daemon(
         if vlm_provider is not None:
             vlm_provider.close()
         if vlm_clicker is not None:
-            if config.harvest_calib and calib_path is not None:
-                harvested = vlm_clicker.pop_harvested_samples()
-                if harvested:
-                    added = append_harvested_calibration_samples(
-                        calib_path, harvested, config.cam1_by_id, config.cam2_by_id
-                    )
-                    if added > 0:
-                        out.print(
-                            f"[green]Saved {added} harvested voice-click calibration sample(s).[/green]"
-                        )
             vlm_clicker.shutdown()
         if firefox_bridge is not None:
             firefox_bridge.stop()
-        if gaze_reader is not None:
-            gaze_reader.close()
+        if gaze_source is not None:
+            gaze_source.close()
         pointer.close()

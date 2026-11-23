@@ -1,6 +1,6 @@
 """Per-OS application paths (D4) with a single environment override.
 
-Every config, data, cache, log, model, calibration, history, and download path in
+Every config, data, cache, log, model, gaze-dataset, history, and download path in
 the application is derived from :class:`AppPaths`.  ``KEYLESS_HOME``
 re-roots all four roots below one directory for tests and portable installs.
 """
@@ -56,21 +56,9 @@ class AppPaths:
         return self.config_dir / "onboarding.json"
 
     @property
-    def calibration_dir(self) -> Path:
-        return self.config_dir / "calibration"
-
-    @property
-    def calibration_path(self) -> Path:
-        """Default stereo calibration file.
-
-        D5 keys calibration by camera pair + monitor; the single legacy file name
-        stays until camera identity lands so existing calibration keeps working.
-        """
-        return self.calibration_dir / "stereo_calib.json"
-
-    @property
-    def calibration_dataset_path(self) -> Path:
-        return self.calibration_dir / "calib_dataset.npz"
+    def gaze_dir(self) -> Path:
+        """Replayable interaction data for the target-level gaze model."""
+        return self.data_dir / "gaze"
 
     # --- user data -----------------------------------------------------
     @property
@@ -128,21 +116,13 @@ class AppPaths:
     def legacy_settings_path(self) -> Path:
         return self.config_dir / "config.json"
 
-    @property
-    def legacy_calibration_path(self) -> Path:
-        return self.config_dir / "stereo_calib.json"
-
-    @property
-    def legacy_calibration_dataset_path(self) -> Path:
-        return self.config_dir / "calib_dataset.npz"
-
     def ensure_directories(self) -> None:
         for directory in (
             self.config_dir,
             self.data_dir,
             self.cache_dir,
             self.logs_dir,
-            self.calibration_dir,
+            self.gaze_dir,
             self.models_dir,
             self.history_dir,
             self.downloads_dir,

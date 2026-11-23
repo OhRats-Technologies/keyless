@@ -713,78 +713,35 @@ class CalibrationPage(StepPage):
     step = OnboardingStep.CALIBRATION
     next_label = "Continue"
 
-    def __init__(self, paths: AppPaths, runner: Callable[[], None] | None = None) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.paths = paths
-        self.runner = runner
-        self._proc: subprocess.Popen[bytes] | None = None
 
-        self.title.setText("Align the eye cursor")
+        self.title.setText("Gaze engine v2")
         self.subtitle.setText(
-            "No dots or full-screen overlay. Look at your mouse and say “steer to mouse” "
-            "whenever the eye cursor drifts."
+            "The legacy calibration stack is gone. The new target-level model is not "
+            "installed yet; voice control works without it."
         )
 
         card = Card()
-        self.status = QLabel("")
+        self.status = QLabel("Voice control is ready.")
         self.status.setObjectName("Heading")
         card.layout.addWidget(self.status)
-        self.hint = QLabel("The eye cursor snaps to your mouse and applies the correction.")
+        self.hint = QLabel(
+            "When the new model lands, it will learn from your own clicks and voice "
+            "corrections instead of a one-time calibration grid."
+        )
         self.hint.setObjectName("Muted")
         self.hint.setWordWrap(True)
         card.layout.addWidget(self.hint)
 
-        actions = QHBoxLayout()
-        self.run_button = QPushButton("Got it")
-        self.run_button.setObjectName("Primary")
-        self.run_button.clicked.connect(self.run_calibration)
-        actions.addWidget(self.run_button)
-        actions.addStretch(1)
-        card.layout.addLayout(actions)
-
         self.body.addWidget(card)
         self.body.addStretch(1)
 
-        self._poll = QTimer(self)
-        self._poll.setInterval(400)
-        self._poll.timeout.connect(self._check_proc)
-        self.refresh()
-
     def refresh(self) -> None:
-        exists = self.paths.calibration_path.exists()
-        if exists:
-            self.status.setText("Saved calibration loaded")
-            self.status.setObjectName("Success")
-            self.hint.setText(
-                "Look at your mouse and say “steer to mouse” to refine the eye cursor live."
-            )
-        else:
-            self.status.setText("Live mouse alignment")
-            self.status.setObjectName("Muted")
-            self.hint.setText(
-                "Look at your mouse and say “steer to mouse”. The correction applies immediately; "
-                "no full-screen calibration is needed."
-            )
-        for w in (self.status, self.run_button):
-            w.style().unpolish(w)
-            w.style().polish(w)
-
-    def run_calibration(self) -> None:
-        self.set_problem("")
-        self.hint.setText(
-            "Say “steer to mouse” (or “adjust”) while looking at your mouse. "
-            "The eye cursor snaps to it and applies the correction."
-        )
-
-    def _check_proc(self) -> None:
-        if self._proc is None or self._proc.poll() is not None:
-            self._poll.stop()
-            self._proc = None
-            self.run_button.setEnabled(True)
-            self.refresh()
+        pass
 
     def on_enter(self) -> None:
-        self.refresh()
+        pass
 
     def validate(self) -> tuple[bool, str]:
         return True, ""
@@ -835,7 +792,6 @@ class OnboardingWidget(QWidget):
         paths: AppPaths | None = None,
         report_provider: Callable[[], DoctorReport] | None = None,
         enable_previews: bool = True,
-        calibration_runner: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -886,7 +842,7 @@ class OnboardingWidget(QWidget):
                 report_provider=report_provider,
                 enable_previews=enable_previews,
             ),
-            OnboardingStep.CALIBRATION: CalibrationPage(self.paths, calibration_runner),
+            OnboardingStep.CALIBRATION: CalibrationPage(),
             OnboardingStep.READY: ReadyPage(),
         }
         for step in STEPS:
@@ -1052,7 +1008,6 @@ class OnboardingWindow(QDialog):
         paths: AppPaths | None = None,
         report_provider: Callable[[], DoctorReport] | None = None,
         enable_previews: bool = True,
-        calibration_runner: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         load_bundled_fonts()
@@ -1065,7 +1020,6 @@ class OnboardingWindow(QDialog):
             paths=paths,
             report_provider=report_provider,
             enable_previews=enable_previews,
-            calibration_runner=calibration_runner,
             parent=self,
         )
         self.flow = self.widget.flow

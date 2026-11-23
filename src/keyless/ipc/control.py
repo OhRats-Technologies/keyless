@@ -15,14 +15,13 @@ Endpoints (all JSON):
   GET  /v1/history?limit=N -> {actions: [...]}
   POST /v1/start        -> start daemon child
   POST /v1/pause        -> pause daemon child
-  GET  /v1/setup        -> canonical setup flow + calibration readiness
+  GET  /v1/setup        -> canonical setup flow + gaze model readiness
   POST /v1/setup        -> {action: reset|go_to|advance|back|complete, step?}
-  POST /v1/calibrate    -> voice-guided eye alignment guidance (no overlay)
+  POST /v1/calibrate    -> 410-style notice: the legacy calibration engine is gone
   GET  /v1/models       -> pinned speech model status + active download job
   POST /v1/models/download -> start verified background download (409 if busy)
   POST /v1/models/cancel   -> cooperative stop; partial files stay resumable
-  GET  /v1/runtime    -> python executable + args so the native host can launch
-                        calibration with the app's TCC responsibility
+  GET  /v1/runtime    -> python executable + args for native-host launches
 
 Setup is engine-owned: the step order and persisted step come from
 ``keyless.ui.onboarding.flow.OnboardingFlow`` — the same state machine the Qt
@@ -92,8 +91,6 @@ class ControlServer:
         self.history = HistoryStore(self.paths)
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
-        self._calibration_process: subprocess.Popen[bytes] | None = None
-        self._calibration_lock = threading.Lock()
         self._model_job: _ModelDownloadJob | None = None
         self._model_lock = threading.Lock()
 
@@ -183,20 +180,18 @@ class ControlServer:
     def setup_snapshot(self) -> dict[str, object]:
         """One engine-owned view of setup for every shell."""
         flow = OnboardingFlow(self.paths)
-        with self._calibration_lock:
-            process = self._calibration_process
-            if process is not None and process.poll() is not None:
-                self._calibration_process = None
-                process = None
         return {
             "schema_version": 1,
             "steps": [step.value for step in STEPS],
             "state": flow.state.as_dict(),
             "complete": flow.is_complete,
+            # The legacy calibration gate is retired. The target model will
+            # self-calibrate online; until it ships, voice control is ready.
             "calibration": {
-                "path": str(self.paths.calibration_path),
-                "ready": self.paths.calibration_path.exists(),
-                "running": process is not None,
+                "path": "",
+                "ready": True,
+                "running": False,
+                "legacy_removed": True,
             },
             "model": self.model_snapshot(),
         }
@@ -219,15 +214,15 @@ class ControlServer:
         return self.setup_snapshot()
 
     def launch_calibration(self) -> dict[str, object]:
-        """Calibration is voice-guided now; never open a full-screen overlay."""
+        """The legacy calibration engine is gone; the new model is not shipped yet."""
         return {
             "started": False,
             "running": False,
             "disabled": True,
             "message": (
-                "Look at your mouse and say 'steer to mouse' (or 'adjust'). "
-                "The eye cursor snaps to the mouse and corrects the gaze offset. "
-                "No full-screen calibration overlay is opened."
+                "The legacy calibration engine has been removed. "
+                "The target-level gaze model v2 is not installed yet; "
+                "voice control remains available."
             ),
         }
 
@@ -273,8 +268,7 @@ class ControlServer:
                     cfg = AppConfig.load(server.paths.settings_path)
                     allowed = {
                         "camera_mode", "camera_backend", "cam1_by_id", "cam2_by_id",
-                        "gaze_model", "gaze_cursor_control", "gaze_online_ekf",
-                        "gaze_cursor_overlay", "gaze_click_learning",
+                        "gaze_cursor_control", "gaze_cursor_overlay",
                         "always_on_voice", "require_command_prefix", "enable_pop_click",
                         "audio_device", "ptt_hotkey", "llm_provider", "llm_preset",
                         "llm_model", "acp_agent_id", "gaze_vlm_remote_consent",
@@ -345,7 +339,7 @@ class ControlServer:
 
                     _json(self, {
                         "python": sys.executable,
-                        "args": ["-m", "keyless.main", "calibrate"],
+                        "args": [],
                         "cwd": str(Path(__file__).resolve().parents[2]),
                     })
                 elif self.command == "GET" and path == "/v1/models":
