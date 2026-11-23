@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from pathlib import Path
@@ -749,6 +750,163 @@ def gaze_replay(
         value = values.get(key)
         table.add_row(label, "n/a" if value is None else f"{value:.3f}")
     console.print(table)
+
+
+@gaze_app.command("eval-candidates")
+def gaze_eval_candidates(
+    sessions_dir: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=False,
+        readable=True,
+        help="Directory of sessions written by keyless.gaze.collect.",
+    ),
+    regenerate: bool = typer.Option(
+        False,
+        "--regenerate",
+        help="Re-run OCR generation on stored screenshots to measure generator latency.",
+    ),
+) -> None:
+    """Measure candidate recall against real logged clicks (Phase 1 gate).
+
+    Recall is geometric: a click is covered when any logged candidate bbox
+    contains the click point.  The >95% gate is GREENFIELD.md §9: below it,
+    perception is the bottleneck and model work must wait.
+    """
+    from keyless.gaze.metrics import bbox_contains
+    from keyless.gaze.replay import SchemaError, iter_sessions, load_session
+
+    session_dirs = iter_sessions(sessions_dir)
+    if not session_dirs:
+        typer.echo(f"error: no sessions found under {sessions_dir}", err=True)
+        raise typer.Exit(1)
+
+    per_app: dict[str, dict[str, int]] = {}
+    clicks = hits = id_clicks = id_hits = skipped = 0
+    latencies: list[float] = []
+    generator = _candidate_generator_for_eval() if regenerate else None
+
+    for session_dir in session_dirs:
+        try:
+            session = load_session(session_dir)
+        except (SchemaError, FileNotFoundError) as exc:
+            typer.echo(f"warning: skipping {session_dir.name}: {exc}", err=True)
+            skipped += 1
+            continue
+        for event in session.events:
+            interaction = event.get("interaction") or {}
+            screen = event.get("screen") or {}
+            if interaction.get("kind") != "click":
+                continue
+            mouse = interaction.get("mouse")
+            candidates = screen.get("candidates") or []
+            if not mouse or not candidates:
+                continue
+            app = str(screen.get("app") or "unknown")
+            row = per_app.setdefault(app, {"clicks": 0, "hits": 0, "id_clicks": 0, "id_hits": 0})
+            row["clicks"] += 1
+            clicks += 1
+            covered = any(bbox_contains(c.get("bbox", (0, 0, 0, 0)), mouse[0], mouse[1]) for c in candidates)
+            if covered:
+                row["hits"] += 1
+                hits += 1
+            target = interaction.get("target")
+            if target:
+                row["id_clicks"] += 1
+                id_clicks += 1
+                if any(c.get("id") == target for c in candidates):
+                    row["id_hits"] += 1
+                    id_hits += 1
+            if generator is not None:
+                latency = _eval_regeneration_latency(generator, session_dir, screen, mouse)
+                if latency is not None:
+                    latencies.append(latency)
+
+    if clicks == 0:
+        typer.echo("error: no labeled clicks with candidates found in any session", err=True)
+        raise typer.Exit(1)
+
+    table = Table(title="Candidate recall vs real clicks", show_header=True)
+    table.add_column("App", style="bold")
+    table.add_column("Clicks", justify="right")
+    table.add_column("Hits", justify="right")
+    table.add_column("Recall", justify="right")
+    for app in sorted(per_app):
+        row = per_app[app]
+        table.add_row(app, str(row["clicks"]), str(row["hits"]), f"{row['hits'] / row['clicks']:.1%}")
+    overall = hits / clicks
+    table.add_row("OVERALL", str(clicks), str(hits), f"{overall:.1%}")
+    console.print(table)
+    if id_clicks:
+        console.print(f"Target-id recall: {id_hits}/{id_clicks} ({id_hits / id_clicks:.1%})")
+    if latencies:
+        ordered = sorted(latencies)
+        p50 = ordered[len(ordered) // 2]
+        p95 = ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]  # nearest-rank
+        console.print(f"Generator latency: p50 {p50:.2f} ms · p95 {p95:.2f} ms ({len(ordered)} samples)")
+    else:
+        console.print("Generator latency: n/a (run with --regenerate and stored screenshots)")
+    if skipped:
+        console.print(f"Skipped sessions: {skipped}")
+    if overall > 0.95:
+        console.print("[green]PHASE 1 GATE MET (>95% recall)[/green]")
+    else:
+        console.print(
+            "[yellow]PHASE 1 GATE NOT MET — fix perception before Phase 2 modeling "
+            "(GREENFIELD.md §9)[/yellow]"
+        )
+
+
+def _candidate_generator_for_eval():
+    """OCR-only generator for offline latency measurement; honest when absent."""
+    from keyless.gaze.candidate_generator import CandidateGenerator
+
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        return CandidateGenerator()
+
+    engine = RapidOCR()
+
+    def ocr_fn(image):
+        result, _elapsed = engine(image)
+        items = []
+        for box, text, score in result or []:
+            xs = [point[0] for point in box]
+            ys = [point[1] for point in box]
+            x1, y1 = int(min(xs)), int(min(ys))
+            items.append(((x1, y1, int(max(xs)) - x1, int(max(ys)) - y1), text, float(score)))
+        return items
+
+    return CandidateGenerator(ocr_fn=ocr_fn)
+
+
+def _eval_regeneration_latency(generator, session_dir: Path, screen: dict, mouse) -> float | None:
+    """Decode the stored screenshot and time one generation; None when impossible."""
+    digest = screen.get("screenshot")
+    if not digest:
+        return None
+    blob = session_dir / "blobs" / f"{digest}.png"
+    if not blob.exists():
+        return None
+    try:
+        import cv2
+        import numpy as np
+
+        image = cv2.imdecode(np.frombuffer(blob.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+    if image is None:
+        return None
+    result = generator.generate(
+        screen.get("display_id"),
+        screen.get("window_id"),
+        digest,
+        gaze=(float(mouse[0]), float(mouse[1])),
+        image=image,
+        include_null=False,
+    )
+    return result.latency_ms
 
 
 def _model_asset(which: str):
