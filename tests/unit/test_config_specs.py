@@ -77,6 +77,15 @@ def test_validate_patch_rejects_out_of_range_numbers() -> None:
     assert "firefox_bridge_port" in validate_patch({"firefox_bridge_port": 70000})
 
 
+def test_validate_patch_rejects_non_finite_floats() -> None:
+    # NaN compares false against every bound, so only an explicit finiteness
+    # check can stop it from being persisted.
+    assert "blink_threshold" in validate_patch({"blink_threshold": float("nan")})
+    assert "blink_threshold" in validate_patch({"blink_threshold": float("inf")})
+    assert "blink_threshold" in validate_patch({"blink_threshold": float("-inf")})
+    assert "pop_min_rms" in validate_patch({"pop_min_rms": float("nan")})
+
+
 def test_validate_patch_rejects_bad_options() -> None:
     assert "camera_mode" in validate_patch({"camera_mode": "triple"})
     assert "camera_backend" in validate_patch({"camera_backend": "gstreamer"})

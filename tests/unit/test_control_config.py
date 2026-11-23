@@ -97,6 +97,15 @@ def test_post_invalid_value_returns_400_and_leaves_disk_unchanged(server) -> Non
     assert AppConfig.load(paths.settings_path).fps == before == 24
 
 
+def test_post_nan_returns_400_and_leaves_disk_unchanged(server) -> None:
+    _, paths, base = server
+    # json.dumps emits a bare NaN token by default; the server must reject it.
+    status, body = _request("POST", f"{base}/v1/config", {"blink_threshold": float("nan")})
+    assert status == 400
+    assert "blink_threshold" in body["errors"]
+    assert not paths.settings_path.exists()
+
+
 def test_post_unknown_key_returns_400(server) -> None:
     _, paths, base = server
     status, body = _request("POST", f"{base}/v1/config", {"bogus_setting": 1})

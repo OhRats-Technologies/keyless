@@ -9,6 +9,7 @@ test instead of becoming silently unpatchable.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from keyless.config.schema import (
@@ -184,6 +185,10 @@ def _type_error(spec: SettingSpec, value: object) -> str | None:
     if spec.value_type == "float":
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return "expected a number"
+        # NaN compares false against every bound, so range checks cannot catch
+        # it; reject non-finite numbers here before they reach disk.
+        if not math.isfinite(value):
+            return "expected a finite number"
         return None
     if spec.value_type == "str":
         if not isinstance(value, str):
