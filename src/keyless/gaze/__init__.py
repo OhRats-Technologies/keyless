@@ -26,6 +26,16 @@ from keyless.gaze.metrics import (
     NearestCandidateToPixelBaseline,
     metric_table,
 )
+from keyless.gaze.candidates import (
+    NULL_CANDIDATE_ID,
+    SOURCE_PRIORITY,
+    Candidate,
+    deduplicate,
+    iou,
+    null_candidate,
+    with_null,
+)
+from keyless.gaze.candidate_generator import CandidateGenerator, GenerationResult
 
 __all__ = [
     "GazeFrame",
@@ -43,4 +53,13 @@ __all__ = [
     "split_sessions",
     "NearestCandidateToPixelBaseline",
     "metric_table",
+    "NULL_CANDIDATE_ID",
+    "SOURCE_PRIORITY",
+    "Candidate",
+    "deduplicate",
+    "iou",
+    "null_candidate",
+    "with_null",
+    "CandidateGenerator",
+    "GenerationResult",
 ]
