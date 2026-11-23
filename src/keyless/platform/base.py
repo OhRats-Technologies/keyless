@@ -98,6 +98,76 @@ class DisplayLayout:
 
 
 @dataclass(frozen=True)
+class DisplayTopology:
+    """One display in global top-left-origin pixels plus its OS-native geometry.
+
+    ``global_rect`` is what pointer and overlay math uses. ``native_rect`` keeps
+    the OS-native units (for example macOS points) so a shell can draw a window
+    on the right screen without re-deriving scale. ``work_area`` is the part of
+    the display not covered by menu bars or docks, clamped to ``global_rect``.
+    """
+
+    display_id: str
+    global_rect: tuple[int, int, int, int]
+    native_rect: tuple[int, int, int, int]
+    work_area: tuple[int, int, int, int]
+    scale: float
+    rotation: float = 0.0
+    primary: bool = False
+
+
+def normalize_display_topology(
+    monitor: MonitorInfo,
+    display_id: str | None = None,
+    work_area: tuple[int, int, int, int] | None = None,
+    rotation: float = 0.0,
+) -> DisplayTopology:
+    """Validate one monitor and derive its canonical pixel/native geometry."""
+    if monitor.scale <= 0:
+        raise ValueError(f"display {monitor.connector}: scale must be > 0")
+    if monitor.width <= 0 or monitor.height <= 0:
+        raise ValueError(f"display {monitor.connector}: width and height must be > 0")
+
+    global_rect = (monitor.x, monitor.y, monitor.width, monitor.height)
+    native_rect = (
+        round(monitor.x / monitor.scale),
+        round(monitor.y / monitor.scale),
+        round(monitor.width / monitor.scale),
+        round(monitor.height / monitor.scale),
+    )
+    clamped_area = _clamp_work_area(global_rect, work_area) if work_area is not None else global_rect
+    return DisplayTopology(
+        display_id=display_id or monitor.connector,
+        global_rect=global_rect,
+        native_rect=native_rect,
+        work_area=clamped_area,
+        scale=monitor.scale,
+        rotation=rotation,
+        primary=monitor.is_primary,
+    )
+
+
+def _clamp_work_area(
+    global_rect: tuple[int, int, int, int],
+    work_area: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    gx, gy, gw, gh = global_rect
+    ax, ay, aw, ah = work_area
+    left = max(gx, ax)
+    top = max(gy, ay)
+    right = min(gx + gw, ax + aw)
+    bottom = min(gy + gh, ay + ah)
+    if right <= left or bottom <= top:
+        raise ValueError("work area does not intersect the display")
+    return (left, top, right - left, bottom - top)
+
+
+def topologies_from_layout(layout: DisplayLayout) -> tuple[DisplayTopology, ...]:
+    """Map every monitor in a layout to its canonical topology."""
+    return tuple(normalize_display_topology(monitor) for monitor in layout.monitors)
+
+
+@dataclass(frozen=True)
 class CameraInfo:
     """Stable camera identity (D5); never an enumeration index or /dev/videoN."""
 

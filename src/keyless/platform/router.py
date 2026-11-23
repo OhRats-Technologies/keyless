@@ -1,8 +1,16 @@
-"""Per-OS dispatch: shared code imports from here, never from linux/macos directly."""
+"""Per-OS dispatch: shared code imports from here, never from linux/macos directly.
+
+A capability with no implementation on the current host raises
+``NotSupportedError`` instead of silently running another OS's code.
+"""
 
 from __future__ import annotations
 
 import sys
+
+from keyless.platform.base import NotSupportedError
+
+_SUPPORTED_HOSTS = ("linux", "macos")
 
 
 def current_host(platform_name: str | None = None) -> str:
@@ -16,8 +24,14 @@ def current_host(platform_name: str | None = None) -> str:
     return name
 
 
+def _require_host(host: str, capability: str) -> None:
+    if host not in _SUPPORTED_HOSTS:
+        raise NotSupportedError(f"{capability} is not implemented on {host}")
+
+
 def get_display_layout(platform_name: str | None = None):  # type: ignore[no-untyped-def]
     host = current_host(platform_name)
+    _require_host(host, "display layout")
     if host == "macos":
         from keyless.platform.macos.display import get_display_layout as get
     else:
@@ -27,6 +41,7 @@ def get_display_layout(platform_name: str | None = None):  # type: ignore[no-unt
 
 def list_cameras(platform_name: str | None = None):  # type: ignore[no-untyped-def]
     host = current_host(platform_name)
+    _require_host(host, "camera enumeration")
     if host == "macos":
         from keyless.platform.macos.cameras import list_cameras as list_c
     else:
@@ -34,8 +49,15 @@ def list_cameras(platform_name: str | None = None):  # type: ignore[no-untyped-d
     return list_c()
 
 
-def resolve_camera_config(requested_mode: str, cam1: str, cam2: str, **kwargs):  # type: ignore[no-untyped-def]
-    host = current_host()
+def resolve_camera_config(
+    requested_mode: str,
+    cam1: str,
+    cam2: str,
+    platform_name: str | None = None,
+    **kwargs,  # type: ignore[no-untyped-def]
+):
+    host = current_host(platform_name)
+    _require_host(host, "camera configuration")
     if host == "macos":
         from keyless.platform.macos.cameras import resolve_camera_config as resolve
     else:
@@ -43,8 +65,9 @@ def resolve_camera_config(requested_mode: str, cam1: str, cam2: str, **kwargs): 
     return resolve(requested_mode, cam1, cam2, **kwargs)
 
 
-def monitor_at_point(layout, x: float, y: float):  # type: ignore[no-untyped-def]
-    host = current_host()
+def monitor_at_point(layout, x: float, y: float, platform_name: str | None = None):  # type: ignore[no-untyped-def]
+    host = current_host(platform_name)
+    _require_host(host, "monitor hit testing")
     if host == "macos":
         from keyless.platform.macos.screen import monitor_at_point as at_point
     else:
@@ -65,8 +88,13 @@ def pointer_position() -> tuple[float, float] | None:
         return None
 
 
-def create_pointer_backend(layout_width: int, layout_height: int, action_backend: str = "native"):  # type: ignore[no-untyped-def]
-    host = current_host()
+def create_pointer_backend(
+    layout_width: int,
+    layout_height: int,
+    action_backend: str = "native",
+    platform_name: str | None = None,
+):  # type: ignore[no-untyped-def]
+    host = current_host(platform_name)
     if action_backend == "cua":
         from keyless.platform.cua.driver import CuaDriverManager
         from keyless.platform.cua.pointer import CuaDriverPointerBackend
@@ -93,6 +121,7 @@ def create_pointer_backend(layout_width: int, layout_height: int, action_backend
 
 
 def _native_pointer_backend(host: str, layout_width: int, layout_height: int):  # type: ignore[no-untyped-def]
+    _require_host(host, "pointer control")
     if host == "macos":
         from keyless.platform.macos.pointer import macOSPointerBackend
 
