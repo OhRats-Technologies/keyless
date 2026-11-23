@@ -36,6 +36,7 @@ from keyless.gaze.candidates import (
     with_null,
 )
 from keyless.gaze.candidate_generator import CandidateGenerator, GenerationResult
+from keyless.gaze.recorder import ScreenSnapshot, SessionRecorder
 
 __all__ = [
     "GazeFrame",
@@ -62,4 +63,6 @@ __all__ = [
     "with_null",
     "CandidateGenerator",
     "GenerationResult",
+    "ScreenSnapshot",
+    "SessionRecorder",
 ]

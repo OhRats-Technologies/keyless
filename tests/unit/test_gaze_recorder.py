@@ -1,0 +1,145 @@
+"""End-to-end tests for SessionRecorder -> SessionCollector -> replay -> eval-candidates."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import pytest
+from typer.testing import CliRunner
+
+from keyless.config.paths import HOME_ENV, AppPaths, default_paths
+from keyless.gaze.candidate_generator import CandidateGenerator
+from keyless.gaze.collect import REDACTED, SessionCollector
+from keyless.gaze.recorder import ScreenSnapshot, SessionRecorder
+from keyless.gaze.replay import load_session
+from keyless.main import app
+
+
+@dataclass
+class _FakeNode:
+    node_id: str
+    role: str
+    name: str
+    cx: int
+    cy: int
+    w: int
+    h: int
+
+
+class _FakeAXBridge:
+    def __init__(self, nodes: list[_FakeNode], *, is_available: bool = True) -> None:
+        self._nodes = nodes
+        self._available = is_available
+
+    def available(self) -> bool:
+        return self._available
+
+    def scan_active_window(self) -> list[_FakeNode]:
+        return list(self._nodes)
+
+
+@pytest.fixture
+def paths(tmp_path: Path) -> AppPaths:
+    resolved = default_paths(env={HOME_ENV: str(tmp_path)}, platform_name="linux")
+    resolved.ensure_directories()
+    return resolved
+
+
+def test_recorder_roundtrip_replay_and_eval_candidates_gate_met(paths: AppPaths) -> None:
+    nodes = [
+        _FakeNode("btn-save", "button", "Save", 100, 100, 80, 40),
+        _FakeNode("btn-cancel", "button", "Cancel", 240, 100, 80, 40),
+    ]
+    gen = CandidateGenerator(ax_bridge=_FakeAXBridge(nodes))
+    collector = SessionCollector(paths, session_id="rec-pass")
+    snap = ScreenSnapshot(display_id=1, app="Firefox", window_id=42, screenshot_hash="a" * 64)
+    recorder = SessionRecorder(collector, gen, screen_provider=lambda: snap)
+
+    # 20 clicks inside known candidates -> 100% recall (>95% Phase 1 gate)
+    for i in range(20):
+        x, y = (100.0, 100.0) if i % 2 == 0 else (240.0, 100.0)
+        assert recorder.record_click(x, y, gaze_pixel=(x + 3.0, y - 2.0))
+    assert recorder.record_voice("click save", target="btn-save", accepted=True)
+    recorder.close()
+
+    session = load_session(collector.session_dir)
+    assert len(session.events) == 21
+    first_click = session.events[0]
+    assert first_click["interaction"]["target"] == "btn-save"
+    assert first_click["screen"]["app"] == "Firefox"
+    assert len(first_click["screen"]["candidates"]) == 2
+    assert recorder.stats()["sources"]["ax"] is True
+
+    runner = CliRunner()
+    res_replay = runner.invoke(app, ["gaze", "replay", str(collector.session_dir)])
+    assert res_replay.exit_code == 0, res_replay.output
+    assert "baseline_top1" in res_replay.output
+
+    res_eval = runner.invoke(app, ["gaze", "eval-candidates", str(paths.data_dir / "sessions")])
+    assert res_eval.exit_code == 0, res_eval.output
+    assert "PHASE 1 GATE MET" in res_eval.output
+    assert "100.0%" in res_eval.output
+
+
+def test_recorder_eval_candidates_gate_fails_on_uncovered_clicks(paths: AppPaths) -> None:
+    nodes = [_FakeNode("btn-save", "button", "Save", 100, 100, 40, 20)]
+    gen = CandidateGenerator(ax_bridge=_FakeAXBridge(nodes))
+    collector = SessionCollector(paths, session_id="rec-fail")
+    snap = ScreenSnapshot(display_id=1, app="Code", window_id=9, screenshot_hash="b" * 64)
+    recorder = SessionRecorder(collector, gen, screen_provider=lambda: snap)
+
+    # 1 hit, 1 miss -> 50% recall (<95%)
+    recorder.record_click(100.0, 100.0)
+    recorder.record_click(800.0, 600.0)
+    recorder.close()
+
+    session = load_session(collector.session_dir)
+    assert session.events[0]["interaction"]["target"] == "btn-save"
+    assert session.events[1]["interaction"]["target"] is None
+
+    runner = CliRunner()
+    res_eval = runner.invoke(app, ["gaze", "eval-candidates", str(paths.data_dir / "sessions")])
+    assert res_eval.exit_code == 0, res_eval.output
+    assert "PHASE 1 GATE NOT MET" in res_eval.output
+
+
+def test_recorder_respects_explicit_redaction_and_screenshot_blobs(paths: AppPaths) -> None:
+    nodes = [_FakeNode("btn-secret", "button", "Secret Password", 50, 50, 100, 40)]
+    gen = CandidateGenerator(ax_bridge=_FakeAXBridge(nodes))
+    collector = SessionCollector(paths, session_id="rec-redact", redact_text=True)
+    img = np.zeros((32, 32, 3), dtype=np.uint8)
+    snap = ScreenSnapshot(display_id=0, app="Terminal", window_id=3, image_bgr=img)
+    recorder = SessionRecorder(
+        collector, gen, screen_provider=lambda: snap, save_screenshots=True
+    )
+
+    assert recorder.record_click(50.0, 50.0)
+    assert recorder.record_voice("secret transcript")
+    recorder.close()
+
+    session = load_session(collector.session_dir)
+    assert session.meta["redact_text"] is True
+    click_ev = session.events[0]
+    assert click_ev["screen"]["candidates"][0]["text"] == REDACTED
+    digest = click_ev["screen"]["screenshot"]
+    assert digest and (collector.session_dir / "blobs" / f"{digest}.png").exists()
+    assert session.events[1]["interaction"]["voice"] == REDACTED
+
+
+def test_recorder_degrades_honestly_when_ax_and_screen_unavailable(paths: AppPaths) -> None:
+    gen = CandidateGenerator(ax_bridge=_FakeAXBridge([], is_available=False))
+    collector = SessionCollector(paths, session_id="rec-honest")
+    recorder = SessionRecorder(collector, gen, screen_provider=lambda: None)
+
+    assert recorder.record_click(300.0, 200.0)
+    assert recorder.record_gaze_frame(305.0, 202.0, confidence=0.8, features=[0.1, 0.2])
+    recorder.close()
+
+    stats = recorder.stats()
+    assert stats["clicks"] == 1
+    assert stats["frames"] == 1
+    assert stats["sources"]["ax"] is False
+    session = load_session(collector.session_dir)
+    assert len(session.events) == 2

@@ -145,6 +145,8 @@ def run_combined_daemon(
     event_thread: threading.Thread | None = None
     vlm_clicker: GazeVLMClicker | None = None
     vlm_provider = None
+    session_recorder = None
+    click_observer = None
 
     def _current_gaze_xy_fallback() -> tuple[float, float]:
         st = _inproc_vlm_state()
@@ -163,6 +165,40 @@ def run_combined_daemon(
             out.print(
                 f"[green]Firefox DOM bridge listening on ws://127.0.0.1:{firefox_bridge.bound_port}[/green]"
             )
+
+        if config.gaze_collect_enabled:
+            from keyless.gaze.collect import SessionCollector
+            from keyless.gaze.recorder import (
+                LinuxClickObserver,
+                SessionRecorder,
+                build_live_generator,
+                build_live_screen_provider,
+            )
+
+            collector = SessionCollector(
+                current_paths(),
+                redact_text=config.gaze_collect_redact_text,
+            )
+            session_recorder = SessionRecorder(
+                collector,
+                build_live_generator(dom_bridge=firefox_bridge, use_ocr=False),
+                screen_provider=build_live_screen_provider(capture_pixels=False),
+            )
+            out.print(
+                f"[cyan]Gaze v2 session recording enabled -> {session_recorder.session_dir}[/cyan]"
+            )
+            if current_host() == "linux":
+                click_observer = LinuxClickObserver(
+                    lambda x, y: session_recorder.record_click(
+                        x, y, gaze_pixel=_inproc_gaze()
+                    )
+                )
+                if not click_observer.start():
+                    out.print(
+                        f"[yellow]Click observer unavailable ({click_observer.unavailable_reason}); "
+                        "recording voice/gaze events only.[/yellow]"
+                    )
+                    click_observer = None
 
         if enable_audio:
             gaze_provider: Callable[[], tuple[float, float] | None] | None = (
@@ -334,6 +370,8 @@ def run_combined_daemon(
                             try:
                                 res = router.dispatch(ev.transcript)
                                 out.print(f"  -> [bold]{res.route}[/bold]: {res.detail}")
+                                if session_recorder is not None:
+                                    session_recorder.record_voice(ev.transcript, accepted=True)
                                 _speak_result(res)
                             except Exception as exc:
                                 out.print(f"  -> [red]Dispatch error: {exc}[/red]")
@@ -464,6 +502,10 @@ def run_combined_daemon(
             vlm_provider.close()
         if vlm_clicker is not None:
             vlm_clicker.shutdown()
+        if click_observer is not None:
+            click_observer.stop()
+        if session_recorder is not None:
+            session_recorder.close()
         if firefox_bridge is not None:
             firefox_bridge.stop()
         if gaze_source is not None:

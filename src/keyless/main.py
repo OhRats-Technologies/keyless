@@ -721,6 +721,92 @@ _GAZE_METRIC_ROWS = (
 )
 
 
+@gaze_app.command("record")
+def gaze_record(
+    duration: float = typer.Option(
+        0.0,
+        "--duration",
+        min=0.0,
+        help="Stop automatically after N seconds (0 runs until Ctrl+C).",
+    ),
+    redact_text: bool = typer.Option(
+        False,
+        "--redact-text",
+        help="Replace candidate text and transcripts with [redacted] in this session.",
+    ),
+    save_screenshots: bool = typer.Option(
+        False,
+        "--save-screenshots",
+        help="Store content-addressed PNG screenshots in blobs/ for --regenerate eval.",
+    ),
+    ocr: bool = typer.Option(
+        True,
+        "--ocr/--no-ocr",
+        help="Include OCR candidate generation when screenshots are captured.",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session-id",
+        help="Optional explicit session id.",
+    ),
+) -> None:
+    """Record live desktop clicks and screen candidates for Phase 1 recall eval."""
+    from keyless.gaze.collect import SessionCollector
+    from keyless.gaze.recorder import (
+        LinuxClickObserver,
+        SessionRecorder,
+        build_live_generator,
+        build_live_screen_provider,
+    )
+    from keyless.platform.router import current_host
+
+    collector = SessionCollector(
+        current_paths(),
+        session_id=session_id,
+        redact_text=redact_text,
+    )
+    recorder = SessionRecorder(
+        collector,
+        build_live_generator(use_ocr=ocr),
+        screen_provider=build_live_screen_provider(capture_pixels=(save_screenshots or ocr)),
+        save_screenshots=save_screenshots,
+    )
+    observer = None
+    if current_host() == "linux":
+        observer = LinuxClickObserver(recorder.record_click)
+        if not observer.start():
+            console.print(
+                f"[yellow]Live click observer unavailable: {observer.unavailable_reason}[/yellow]"
+            )
+            observer = None
+    else:
+        console.print(
+            f"[yellow]Live global click hook is not yet wired on {current_host()}; "
+            "waiting for duration/interrupt.[/yellow]"
+        )
+
+    console.print(f"[green]Recording session[/green] {recorder.session_id} -> {recorder.session_dir}")
+    console.print("Press Ctrl+C to finish and flush.")
+    started = time.monotonic()
+    try:
+        while True:
+            if duration > 0 and (time.monotonic() - started) >= duration:
+                break
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if observer is not None:
+            observer.stop()
+        recorder.close()
+
+    stats = recorder.stats()
+    console.print(
+        f"Saved {stats['written']} event(s) ({stats['clicks']} click(s), "
+        f"{stats['dropped_events']} dropped) -> {recorder.session_dir}"
+    )
+
+
 @gaze_app.command("replay")
 def gaze_replay(
     session_dir: Path = typer.Argument(
