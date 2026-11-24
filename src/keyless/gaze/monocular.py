@@ -1,17 +1,21 @@
-"""Unified monocular (1-cam, 10D) and binocular (2-cam, 20D) webcam gaze publisher.
+"""Unified monocular (1-cam, 10D) and binocular (2-cam, 20D) multi-display gaze publisher.
 
-Implements the Gaze v2 cold-start path (GREENFIELD.md §6.3):
-- Frame 1: projects head yaw/pitch and iris offsets through a bounded geometric
-  prior onto the active DisplayTopology so live display-only preview works
-  immediately with zero calibration clicks.
-- Passive adaptation: natural desktop clicks pair the freshest 10D (monocular)
-  or 20D (binocular/stereo) feature vector with the click coordinate in a
-  bounded ring buffer. Once ``min_clicks`` (default 5) are collected, a
-  regularized ridge regression fits ``(feat, 1) -> (x, y)`` and blends smoothly
-  from the prior. Every update is reversible via ``undo_last()`` or ``reset()``.
+Implements the Gaze v2 cold-start path (GREENFIELD.md §6.3) with full 3D
+multi-display geometry (swapped monitors, bezel gaps, angled/tilted screens,
+different physical dimensions):
+- Frame 1: projects head yaw/pitch and iris offsets into 3D gaze angles
+  ``(az, el)`` and intersects all 3D ``DisplayPlane``s in ``DisplayRig``.
+- Passive adaptation: natural desktop clicks on any monitor are projected onto
+  that monitor's 3D physical plane to obtain ground-truth ``(az, el)`` ray
+  angles. A regularized global 3D angular ridge regression fits
+  ``(feat, 1) -> (az, el)`` across all monitors, so clicks on Monitor 1 improve
+  estimates on Monitor 2/3 even across gaps and angles. Once a specific display
+  accumulates ``>= 4`` local clicks, a per-display residual ridge layer refines
+  local ``(du, dv)`` coordinates on that monitor. Every update is reversible via
+  ``undo_last()`` or ``reset()``.
 - Seam: publishes plain ``(x, y, flags, timestamp_ns)`` on ``SharedGazeWriter``
-  (``keyless_gaze_v1``) so the daemon, Firefox bridge, and UI consume it without
-  knowing anything about the model.
+  (``keyless_gaze_v1``) so the daemon, Firefox bridge, Linux Wayland overlay,
+  and web UI consume it without knowing anything about the model.
 """
 
 from __future__ import annotations
@@ -26,7 +30,9 @@ from typing import Any
 
 import numpy as np
 
+from keyless.config.paths import AppPaths, current_paths
 from keyless.config.schema import AppConfig
+from keyless.gaze.displays import DisplayRig
 from keyless.ipc.state import (
     FLAG_BLINKING,
     FLAG_FACE_DETECTED,
@@ -71,7 +77,7 @@ def observation_to_frame_section(
 
 @dataclass(frozen=True)
 class MonocularPrediction:
-    """One smoothed screen-space gaze prediction (monocular or binocular)."""
+    """One smoothed screen-space gaze prediction (monocular or binocular, multi-display)."""
 
     x: float
     y: float
@@ -87,10 +93,12 @@ class MonocularPrediction:
     roll: float = 0.0
     mode: str = "monocular"
     skew_ms: float = 0.0
+    display: str = ""
+    in_gap: bool = False
 
 
 class MonocularGazeEstimator:
-    """Geometric cold-start prior + reversible online ridge adaptation (10D mono or 20D stereo)."""
+    """3D ray-plane cold-start prior + global 3D angular ridge + per-display residual ridge."""
 
     def __init__(
         self,
@@ -99,6 +107,7 @@ class MonocularGazeEstimator:
         *,
         origin_x: int = 0,
         origin_y: int = 0,
+        rig: DisplayRig | None = None,
         feature_dim: int = FEATURE_DIM,
         min_clicks: int = 5,
         blend_clicks: int = 10,
@@ -117,16 +126,25 @@ class MonocularGazeEstimator:
         self.height = int(height)
         self.origin_x = int(origin_x)
         self.origin_y = int(origin_y)
+        self.rig = rig or DisplayRig.from_single_rect(
+            self.width, self.height, origin_x=self.origin_x, origin_y=self.origin_y
+        )
         self.feature_dim = int(feature_dim)
         self.min_clicks = int(min_clicks)
         self.blend_clicks = max(1, int(blend_clicks))
         self.ridge_alpha = float(ridge_alpha)
+        # Each sample: (feat, click_x, click_y)
         self._samples: deque[tuple[np.ndarray, float, float]] = deque(
             maxlen=max(min_clicks, int(max_samples))
         )
-        self._weights: np.ndarray | None = None
+        # Global 3D ray angle weights: (feature_dim + 1, 2) -> (az_rad, el_rad)
+        self._angle_weights: np.ndarray | None = None
+        # Per-display local (du, dv) residual weights: connector -> (feature_dim + 1, 2)
+        self._local_weights: dict[str, np.ndarray] = {}
         self._filter = OneEuroFilter2D() if smooth else None
         self._lock = threading.Lock()
+        self._last_display: str = self.rig.planes[0].connector
+        self._last_in_gap: bool = False
 
     @property
     def sample_count(self) -> int:
@@ -136,20 +154,31 @@ class MonocularGazeEstimator:
     @property
     def is_adapted(self) -> bool:
         with self._lock:
-            return self._weights is not None
+            return self._angle_weights is not None
+
+    @property
+    def last_display(self) -> str:
+        with self._lock:
+            return self._last_display
+
+    @property
+    def last_in_gap(self) -> bool:
+        with self._lock:
+            return self._last_in_gap
+
+    def set_rig(self, rig: DisplayRig) -> None:
+        """Update physical 3D display geometry and refit existing clicks on the new rig."""
+        with self._lock:
+            self.rig = rig
+            self._refit_locked()
 
     def sample_points(self) -> list[list[float]]:
         """Return ``[[x, y], ...]`` of passive click coordinates currently in the buffer."""
         with self._lock:
             return [[round(sx, 1), round(sy, 1)] for _, sx, sy in self._samples]
 
-    def _clamp(self, x: float, y: float) -> tuple[float, float]:
-        cx = max(float(self.origin_x), min(float(self.origin_x + self.width - 1), float(x)))
-        cy = max(float(self.origin_y), min(float(self.origin_y + self.height - 1), float(y)))
-        return cx, cy
-
-    def _prior_xy(self, feat: np.ndarray) -> tuple[float, float]:
-        """Zero-click geometric prior mapping iris offsets + head yaw/pitch to screen pixels."""
+    def _prior_angles(self, feat: np.ndarray) -> tuple[float, float]:
+        """Zero-click geometric prior mapping iris offsets + head yaw/pitch to 3D ray angles."""
         if feat.shape[0] == BINOCULAR_FEATURE_DIM:
             iris_dx = 0.25 * (float(feat[0]) + float(feat[2]) + float(feat[10]) + float(feat[12]))
             iris_dy = 0.25 * (float(feat[1]) + float(feat[3]) + float(feat[11]) + float(feat[13]))
@@ -164,38 +193,71 @@ class MonocularGazeEstimator:
         nx = max(-1.0, min(1.0, 2.2 * iris_dx + 1.4 * yaw))
         ny = max(-1.0, min(1.0, 2.6 * iris_dy + 1.4 * pitch))
 
-        px = self.origin_x + (0.5 + 0.45 * nx) * self.width
-        py = self.origin_y + (0.5 + 0.45 * ny) * self.height
-        return self._clamp(px, py)
+        min_az, max_az, min_el, max_el = self.rig.angular_bounds()
+        az_mid = 0.5 * (min_az + max_az)
+        az_half = max(0.15, 0.5 * (max_az - min_az))
+        el_mid = 0.5 * (min_el + max_el)
+        el_half = max(0.10, 0.5 * (max_el - min_el))
+        return az_mid + 0.9 * nx * az_half, el_mid + 0.9 * ny * el_half
+
+    def _solve_ridge(self, X: np.ndarray, Y: np.ndarray, alpha: float) -> np.ndarray:
+        d = X.shape[1] - 1
+        reg = np.eye(d + 1, dtype=np.float64) * alpha
+        reg[d, d] = 1e-8
+        try:
+            return np.linalg.solve(X.T @ X + reg, X.T @ Y)
+        except np.linalg.LinAlgError:
+            return np.linalg.lstsq(X, Y, rcond=None)[0]
 
     def _refit_locked(self) -> None:
         n = len(self._samples)
         if n < self.min_clicks:
-            self._weights = None
+            self._angle_weights = None
+            self._local_weights = {}
             return
+
         d = self.feature_dim
         X = np.ones((n, d + 1), dtype=np.float64)
-        Y = np.empty((n, 2), dtype=np.float64)
-        for i, (feat, sx, sy) in enumerate(self._samples):
-            X[i, :d] = feat
-            Y[i, 0] = sx
-            Y[i, 1] = sy
+        Y_ang = np.empty((n, 2), dtype=np.float64)
+        per_disp: dict[str, list[tuple[np.ndarray, float, float]]] = {}
 
-        reg = np.eye(d + 1, dtype=np.float64) * self.ridge_alpha
-        reg[d, d] = 1e-8
-        try:
-            self._weights = np.linalg.solve(X.T @ X + reg, X.T @ Y)
-        except np.linalg.LinAlgError:
-            self._weights = np.linalg.lstsq(X, Y, rcond=None)[0]
+        for i, (feat, sx, sy) in enumerate(self._samples):
+            az, el, conn, u, v = self.rig.pixel_to_ray_angles(sx, sy)
+            X[i, :d] = feat
+            Y_ang[i, 0] = az
+            Y_ang[i, 1] = el
+            per_disp.setdefault(conn, []).append((feat, u, v))
+
+        self._angle_weights = self._solve_ridge(X, Y_ang, self.ridge_alpha)
+
+        # Fit per-display local residual (du, dv) when a display has >= 4 clicks
+        local_w: dict[str, np.ndarray] = {}
+        for conn, rows in per_disp.items():
+            if len(rows) < 4:
+                continue
+            m = len(rows)
+            Xm = np.ones((m, d + 1), dtype=np.float64)
+            Ym = np.empty((m, 2), dtype=np.float64)
+            for j, (feat, true_u, true_v) in enumerate(rows):
+                Xm[j, :d] = feat
+                ang = Xm[j] @ self._angle_weights
+                hit = self.rig.ray_angles_to_pixel(float(ang[0]), float(ang[1]))
+                if hit.connector == conn:
+                    Ym[j, 0] = max(-0.25, min(0.25, true_u - hit.u))
+                    Ym[j, 1] = max(-0.25, min(0.25, true_v - hit.v))
+                else:
+                    Ym[j, 0] = 0.0
+                    Ym[j, 1] = 0.0
+            local_w[conn] = self._solve_ridge(Xm, Ym, max(0.05, self.ridge_alpha * 5.0))
+        self._local_weights = local_w
 
     def add_click(self, feat: np.ndarray, x: float, y: float) -> int:
-        """Record one natural (feature, click_xy) pair and refit if ready."""
+        """Record one natural (feature, click_xy) pair and refit 3D rig model."""
         arr = np.asarray(feat, dtype=np.float64).reshape(-1)
         if arr.shape[0] != self.feature_dim or not np.all(np.isfinite(arr)):
             raise ValueError(f"feature vector must be finite length {self.feature_dim}")
-        cx, cy = self._clamp(x, y)
         with self._lock:
-            self._samples.append((arr.copy(), cx, cy))
+            self._samples.append((arr.copy(), float(x), float(y)))
             self._refit_locked()
             return len(self._samples)
 
@@ -211,7 +273,8 @@ class MonocularGazeEstimator:
         """Discard all adapted samples and return cleanly to the cold-start prior."""
         with self._lock:
             self._samples.clear()
-            self._weights = None
+            self._angle_weights = None
+            self._local_weights = {}
             if self._filter is not None:
                 self._filter.reset()
 
@@ -221,35 +284,53 @@ class MonocularGazeEstimator:
         *,
         t_sec: float | None = None,
     ) -> tuple[float, float, float, float, bool]:
-        """Return ``(smooth_x, smooth_y, raw_x, raw_y, using_ridge)``."""
+        """Return ``(smooth_x, smooth_y, raw_x, raw_y, using_ridge)`` via 3D ray-plane intersection."""
         arr = np.asarray(feat, dtype=np.float64).reshape(-1)
         if arr.shape[0] != self.feature_dim:
             raise ValueError(f"feature vector must have length {self.feature_dim}")
 
-        prior_x, prior_y = self._prior_xy(arr)
         with self._lock:
-            weights = self._weights
+            rig = self.rig
+            weights = self._angle_weights
+            local_weights = dict(self._local_weights)
             n = len(self._samples)
+
+        prior_az, prior_el = self._prior_angles(arr)
+        local_offsets: dict[str, tuple[float, float]] = {}
 
         if weights is not None:
             d = self.feature_dim
             x_aug = np.empty(d + 1, dtype=np.float64)
             x_aug[:d] = arr
             x_aug[d] = 1.0
-            pred = x_aug @ weights
-            rx, ry = self._clamp(float(pred[0]), float(pred[1]))
+            pred_ang = x_aug @ weights
             blend = min(1.0, (n - self.min_clicks + 1) / float(self.blend_clicks))
-            raw_x = (1.0 - blend) * prior_x + blend * rx
-            raw_y = (1.0 - blend) * prior_y + blend * ry
+            az = (1.0 - blend) * prior_az + blend * float(pred_ang[0])
+            el = (1.0 - blend) * prior_el + blend * float(pred_ang[1])
             using_ridge = True
+            for conn, lw in local_weights.items():
+                duv = x_aug @ lw
+                local_offsets[conn] = (
+                    max(-0.2, min(0.2, float(duv[0]) * blend)),
+                    max(-0.2, min(0.2, float(duv[1]) * blend)),
+                )
         else:
-            raw_x, raw_y = prior_x, prior_y
+            az, el = prior_az, prior_el
             using_ridge = False
+
+        hit = rig.ray_angles_to_pixel(az, el, local_offsets=local_offsets or None)
+        raw_x, raw_y = hit.x, hit.y
+
+        with self._lock:
+            self._last_display = hit.connector
+            self._last_in_gap = hit.in_gap
 
         if self._filter is not None:
             now = time.monotonic() if t_sec is None else float(t_sec)
             sx, sy = self._filter(raw_x, raw_y, now)
-            sx, sy = self._clamp(sx, sy)
+            plane = rig.plane_for_connector(hit.connector) or rig.planes[0]
+            sx = max(float(plane.x), min(float(plane.x + plane.width - 1), sx))
+            sy = max(float(plane.y), min(float(plane.y + plane.height - 1), sy))
         else:
             sx, sy = raw_x, raw_y
 
@@ -257,12 +338,13 @@ class MonocularGazeEstimator:
 
 
 class MonocularGazePublisher:
-    """Unified gaze publisher supporting monocular (1 cam, 10D) and binocular (2 cams, 20D)."""
+    """Unified gaze publisher supporting monocular (10D) + binocular (20D) across N 3D displays."""
 
     def __init__(
         self,
         config: AppConfig | None = None,
         *,
+        paths: AppPaths | None = None,
         camera_id: str | None = None,
         camera_mode: str | None = None,
         shm_name: str = SHM_NAME,
@@ -270,12 +352,15 @@ class MonocularGazePublisher:
         ridge_alpha: float = 1e-2,
         enable_click_adaptation: bool = True,
         publish_shm: bool = True,
+        enable_overlay: bool | None = None,
         on_prediction: Callable[[MonocularPrediction], None] | None = None,
     ) -> None:
         from keyless.platform.router import get_display_layout
 
-        self.config = config or AppConfig.load()
+        self.paths = paths or current_paths()
+        self.config = config or AppConfig.load(self.paths.settings_path)
         self.layout = get_display_layout()
+        self.rig = DisplayRig.load(self.paths.config_dir / "display_rig.json", self.layout)
         self.camera_id = camera_id
         self.requested_mode = (camera_mode or self.config.camera_mode or "auto").lower()
         self.shm_name = shm_name
@@ -283,12 +368,18 @@ class MonocularGazePublisher:
         self.ridge_alpha = float(ridge_alpha)
         self.enable_click_adaptation = bool(enable_click_adaptation)
         self.publish_shm = bool(publish_shm)
+        self.enable_overlay = (
+            bool(self.config.gaze_cursor_overlay)
+            if enable_overlay is None
+            else bool(enable_overlay)
+        )
         self._on_prediction = on_prediction
 
         self.active_mode: str = "monocular"
         self.estimator = MonocularGazeEstimator(
             self.layout.total_width,
             self.layout.total_height,
+            rig=self.rig,
             feature_dim=FEATURE_DIM,
             min_clicks=self.min_clicks,
             ridge_alpha=self.ridge_alpha,
@@ -301,6 +392,7 @@ class MonocularGazePublisher:
         self._resolved_cams: list[str] = []
         self._writer: SharedGazeWriter | None = None
         self._click_observer: Any = None
+        self._overlay: Any = None
 
         self._latest_feat: np.ndarray | None = None
         self._latest_frame_dict: dict[str, Any] | None = None
@@ -311,6 +403,10 @@ class MonocularGazePublisher:
         self._faces_detected: int = 0
         self._clicks_adapted: int = 0
         self._measured_fps: float = 0.0
+
+    def set_display_rig(self, rig: DisplayRig) -> None:
+        self.rig = rig
+        self.estimator.set_rig(rig)
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -338,6 +434,7 @@ class MonocularGazePublisher:
         self.estimator = MonocularGazeEstimator(
             self.layout.total_width,
             self.layout.total_height,
+            rig=self.rig,
             feature_dim=feat_dim,
             min_clicks=self.min_clicks,
             ridge_alpha=self.ridge_alpha,
@@ -368,6 +465,18 @@ class MonocularGazePublisher:
         if self.publish_shm:
             self._writer = SharedGazeWriter(shm_name=self.shm_name)
 
+        if self.enable_overlay and self.publish_shm and current_host() == "linux":
+            try:
+                from keyless.platform.linux.gaze_overlay import LinuxGazeOverlay
+
+                ov = LinuxGazeOverlay(self.paths, shm_name=self.shm_name)
+                if ov.start():
+                    self._overlay = ov
+                else:
+                    logger.info("Linux gaze overlay unavailable: %s", ov.error)
+            except Exception as exc:
+                logger.info("Linux gaze overlay skipped: %s", exc)
+
         if self.enable_click_adaptation and current_host() == "linux":
             from keyless.gaze.recorder import LinuxClickObserver
 
@@ -384,6 +493,10 @@ class MonocularGazePublisher:
             target=self._loop, name="keyless-gaze-pub", daemon=True
         )
         self._thread.start()
+
+    @property
+    def overlay_active(self) -> bool:
+        return bool(self._overlay is not None and self._overlay.running)
 
     def on_click(self, x: float, y: float, *, max_age_sec: float = 0.25) -> bool:
         """Pair a physical click with the freshest face feature vector if recent."""
@@ -432,6 +545,7 @@ class MonocularGazePublisher:
                 "using_ridge": self.estimator.is_adapted,
                 "measured_fps": round(self._measured_fps, 1),
                 "sample_points": self.estimator.sample_points(),
+                "overlay_active": self.overlay_active,
             }
 
     def _loop(self) -> None:
@@ -496,6 +610,8 @@ class MonocularGazePublisher:
                 roll=roll,
                 mode=self.active_mode,
                 skew_ms=skew_ms,
+                display=self.estimator.last_display,
+                in_gap=self.estimator.last_in_gap,
             )
             with self._lock:
                 self._latest_feat = feat
@@ -526,6 +642,8 @@ class MonocularGazePublisher:
             timestamp_ns=ts_ns,
             mode=self.active_mode,
             skew_ms=skew_ms,
+            display=self.estimator.last_display,
+            in_gap=False,
         )
         with self._lock:
             self._latest_pred = pred
@@ -549,6 +667,12 @@ class MonocularGazePublisher:
 
     def stop(self) -> None:
         self._stop.set()
+        if self._overlay is not None:
+            try:
+                self._overlay.stop()
+            except Exception:
+                pass
+            self._overlay = None
         if self._click_observer is not None:
             try:
                 self._click_observer.stop()

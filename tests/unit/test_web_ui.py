@@ -151,3 +151,38 @@ def test_keyless_ui_cli_starts_and_stops_cleanly(monkeypatch) -> None:
     res = runner.invoke(app, ["ui", "--port", "0", "--no-open"])
     assert res.exit_code == 0, res.output
     assert "Keyless web UI listening at" in res.output
+
+
+def test_displays_rig_presets_schema_host_and_overlay_toggle(web_server) -> None:
+    _srv, base, _paths = web_server
+
+    # Schema exposes active host platform for OS-filtered Settings
+    st, _, raw = _req(base, "GET", "/v1/config/schema")
+    assert st == 200
+    schema = json.loads(raw)
+    assert schema["host"] in ("linux", "macos", "windows")
+    ov_spec = next(s for s in schema["settings"] if s["key"] == "gaze_cursor_overlay")
+    assert "linux" in ov_spec["platforms"] and "macos" in ov_spec["platforms"]
+    assert "macOS" not in ov_spec["label"]
+
+    # 3D Display Rig GET / preset / POST persistence
+    st, _, raw = _req(base, "GET", "/v1/displays/rig")
+    assert st == 200
+    rig = json.loads(raw)
+    assert len(rig["displays"]) >= 1
+
+    st, _, raw = _req(base, "POST", "/v1/displays/rig/preset", {"preset": "curved"})
+    assert st == 200
+    curved = json.loads(raw)
+    assert len(curved["displays"]) == len(rig["displays"])
+
+    curved["displays"][0]["yaw_deg"] = -22.5
+    st, _, raw = _req(base, "POST", "/v1/displays/rig", curved)
+    assert st == 200
+    saved = json.loads(raw)
+    assert saved["displays"][0]["yaw_deg"] == pytest.approx(-22.5)
+
+    # Overlay toggle persists config cleanly
+    st, _, raw = _req(base, "POST", "/v1/gaze/overlay", {"enabled": False})
+    assert st == 200
+    assert json.loads(raw)["overlay_active"] is False

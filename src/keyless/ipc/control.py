@@ -544,10 +544,13 @@ class ControlServer:
 
                     _json(self, asdict(AppConfig.load(server.paths.settings_path)))
                 elif self.command == "GET" and path == "/v1/config/schema":
+                    from keyless.platform.router import current_host
+
                     _json(
                         self,
                         {
                             "schema_version": 1,
+                            "host": current_host(),
                             "settings": [spec.as_dict() for spec in SETTING_SPECS],
                         },
                     )
@@ -744,6 +747,33 @@ class ControlServer:
                 elif self.command == "POST" and path == "/v1/gaze/undo":
                     server._read_json_body(self)
                     _json(self, server.gaze_manager.undo_last_click())
+                elif self.command == "POST" and path == "/v1/gaze/overlay":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    _json(self, server.gaze_manager.set_overlay_enabled(bool(payload.get("enabled", True))))
+                elif self.command == "GET" and path == "/v1/displays/rig":
+                    _json(self, server.gaze_manager.get_display_rig())
+                elif self.command == "POST" and path == "/v1/displays/rig":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    try:
+                        _json(self, server.gaze_manager.save_display_rig(payload))
+                    except Exception as exc:
+                        _json(self, {"error": str(exc)}, status=400)
+                elif self.command == "POST" and path == "/v1/displays/rig/preset":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    _json(
+                        self,
+                        server.gaze_manager.apply_rig_preset(
+                            str(payload.get("preset", "flat")),
+                            gap_mm=float(payload.get("gap_mm", 25.0)),
+                            distance_mm=float(payload.get("distance_mm", 600.0)),
+                        ),
+                    )
                 elif self.command == "GET" and path == "/v1/gaze/stream":
                     with server._event_lock:
                         if len(server._event_streams) >= server._MAX_EVENT_STREAMS:

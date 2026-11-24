@@ -742,3 +742,140 @@ th {
     border-bottom: 1px solid var(--or-border-soft);
   }
 }
+
+/* Two-Pane Settings Layout (Progressive Disclosure, Minimal Scroll) */
+.settings-shell {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 10px;
+  background: var(--or-surface);
+  border-right: 1px solid var(--or-border-soft);
+  overflow-y: auto;
+}
+
+.settings-back {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--or-radius);
+  background: transparent;
+  color: var(--or-text-muted);
+  font-family: var(--or-font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.settings-back:hover {
+  background: var(--or-surface-hover);
+  color: var(--or-text);
+}
+
+.settings-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 26px 28px;
+  gap: 16px;
+}
+
+.settings-card {
+  border: 1px solid var(--or-border-soft);
+  background: var(--or-surface);
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 3D Display Rig Top-Down Blueprint */
+.rig-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.rig-canvas-wrap {
+  position: relative;
+  width: 100%;
+  height: 290px;
+  border: 1px solid var(--or-border-soft);
+  background-color: var(--or-bg);
+  background-image: radial-gradient(var(--or-grid-dot) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+.rig-canvas-wrap canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.rig-num-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.rig-num-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rig-num-field label {
+  font-family: var(--or-font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--or-text-muted);
+}
+
+.rig-num-field input {
+  width: 100%;
+}
+
+/* Home Compact Command Tabs (Zero-Scroll Viewport) */
+.cmd-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.cmd-grid-compact {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 24px;
+  margin-top: 8px;
+}
+
+@media (max-width: 1020px) {
+  .settings-shell, .rig-grid, .cmd-grid-compact {
+    grid-template-columns: 1fr;
+  }
+  .settings-nav {
+    border-right: 0;
+    border-bottom: 1px solid var(--or-border-soft);
+  }
+}

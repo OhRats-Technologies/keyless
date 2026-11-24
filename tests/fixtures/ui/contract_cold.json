@@ -399,6 +399,11 @@
             {
               "detail": "On (applies immediately)",
               "kind": "text",
+              "title": "Eye cursor overlay"
+            },
+            {
+              "detail": "On (applies immediately)",
+              "kind": "text",
               "title": "Visual grounding"
             },
             {

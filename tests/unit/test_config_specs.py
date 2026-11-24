@@ -106,7 +106,7 @@ def test_live_and_restart_classification() -> None:
     assert spec_for("camera_mode").apply == "restart"
     assert spec_for("camera_backend").apply == "restart"
     assert spec_for("stt_provider").apply == "restart"
-    assert spec_for("gaze_cursor_overlay").platforms == ("macos",)
+    assert spec_for("gaze_cursor_overlay").platforms == ("linux", "macos")
     assert spec_for("camera_backend").platforms == ("linux",)
 
 

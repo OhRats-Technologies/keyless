@@ -131,7 +131,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     _bool("gaze_cursor_control", False, "Gaze cursor control", "Let gaze move the pointer toward the attended target.", "Gaze & cursor"),
     _bool("gaze_collect_enabled", False, "Record gaze sessions", "Log local session-keyed clicks, candidates, and observations for Gaze v2 replay.", "Gaze & cursor", apply="restart"),
     _bool("gaze_collect_redact_text", False, "Redact recorded text", "Replace candidate text and spoken transcripts with [redacted] in recorded sessions.", "Gaze & cursor", apply="restart"),
-    _bool("gaze_cursor_overlay", True, "macOS eye overlay", "Draw gaze motion on cua-driver's click-through overlay instead of moving the real pointer.", "Gaze & cursor", platforms=("macos",)),
+    _bool("gaze_cursor_overlay", True, "Eye cursor overlay", "Draw a click-through eye reticle overlay on Linux (Wayland) and macOS instead of moving the real pointer.", "Gaze & cursor", platforms=("linux", "macos")),
     _bool("gaze_vlm_enabled", True, "Visual grounding", "Use a vision model to ground spoken references on screen.", "Gaze & cursor"),
     _select("gaze_vlm_provider", "auto", "Visual provider", "Provider used for visual grounding.", "Gaze & cursor", _GAZE_VLM_PROVIDERS),
     _select("gaze_vlm_preset", "openai", "Visual API preset", "OpenAI-compatible endpoint preset for visual grounding.", "Gaze & cursor", _LLM_PRESETS),

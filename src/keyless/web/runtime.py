@@ -112,6 +112,8 @@ class WebGazeManager:
             },
             "prediction": asdict(pred) if pred is not None else None,
             "stats": stats,
+            "rig": self.get_display_rig(),
+            "overlay_active": bool(pub is not None and getattr(pub, "overlay_active", False)),
             "environment": asdict(env),
             "manual_input_command": MANUAL_INPUT_CMD,
             "last_error": last_err,
@@ -371,6 +373,131 @@ class WebGazeManager:
             "manual_command": MANUAL_INPUT_CMD,
             "environment": asdict(probe_lab_environment()),
         }
+
+
+    # --- 3D Multi-Display Rig & Overlay ---------------------------------
+
+    @property
+    def rig_path(self) -> Path:
+        return self.paths.config_dir / "display_rig.json"
+
+    def get_display_rig(self) -> dict[str, Any]:
+        from keyless.gaze.displays import DisplayRig
+        from keyless.platform.router import get_display_layout
+
+        layout = get_display_layout()
+        rig = DisplayRig.load(self.rig_path, layout)
+        return rig.as_dict()
+
+    def save_display_rig(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from keyless.gaze.displays import DisplayPlane, DisplayRig
+        from keyless.platform.router import get_display_layout
+
+        layout = get_display_layout()
+        current = DisplayRig.load(self.rig_path, layout)
+        by_conn = {p.connector: p for p in current.planes}
+
+        items = payload.get("displays")
+        if not isinstance(items, list) or not items:
+            raise ValueError("displays must be a non-empty list")
+
+        new_planes: list[DisplayPlane] = []
+        for item in items:
+            if not isinstance(item, dict) or not item.get("connector"):
+                continue
+            conn = str(item["connector"])
+            base = by_conn.get(conn)
+            if base is None:
+                continue
+            new_planes.append(
+                DisplayPlane(
+                    connector=base.connector,
+                    x=base.x,
+                    y=base.y,
+                    width=base.width,
+                    height=base.height,
+                    scale=base.scale,
+                    is_primary=base.is_primary,
+                    width_mm=max(80.0, float(item.get("width_mm", base.width_mm))),
+                    height_mm=max(50.0, float(item.get("height_mm", base.height_mm))),
+                    cx_mm=float(item.get("cx_mm", base.cx_mm)),
+                    cy_mm=float(item.get("cy_mm", base.cy_mm)),
+                    cz_mm=max(200.0, float(item.get("cz_mm", base.cz_mm))),
+                    yaw_deg=max(-75.0, min(75.0, float(item.get("yaw_deg", base.yaw_deg)))),
+                    pitch_deg=max(-60.0, min(60.0, float(item.get("pitch_deg", base.pitch_deg)))),
+                    roll_deg=max(-90.0, min(90.0, float(item.get("roll_deg", base.roll_deg)))),
+                )
+            )
+        if not new_planes:
+            raise ValueError("no matching display connectors found")
+
+        rig = DisplayRig(new_planes)
+        rig.save(self.rig_path)
+        with self._lock:
+            pub = self._publisher
+        if pub is not None:
+            pub.set_display_rig(rig)
+        return rig.as_dict()
+
+    def apply_rig_preset(self, preset: str = "flat", *, gap_mm: float = 25.0, distance_mm: float = 600.0) -> dict[str, Any]:
+        from keyless.gaze.displays import DisplayPlane, DisplayRig
+        from keyless.platform.router import get_display_layout
+
+        layout = get_display_layout()
+        if preset == "swap":
+            cur = DisplayRig.load(self.rig_path, layout)
+            planes = list(cur.planes)
+            if len(planes) >= 2:
+                # Swap physical (cx_mm, cy_mm, cz_mm, yaw_deg, pitch_deg, roll_deg) of first two
+                a, b = planes[0], planes[1]
+                planes[0] = DisplayPlane(
+                    **{**a.as_dict(), "cx_mm": b.cx_mm, "cy_mm": b.cy_mm, "cz_mm": b.cz_mm, "yaw_deg": b.yaw_deg, "pitch_deg": b.pitch_deg, "roll_deg": b.roll_deg}
+                )
+                planes[1] = DisplayPlane(
+                    **{**b.as_dict(), "cx_mm": a.cx_mm, "cy_mm": a.cy_mm, "cz_mm": a.cz_mm, "yaw_deg": a.yaw_deg, "pitch_deg": a.pitch_deg, "roll_deg": a.roll_deg}
+                )
+            rig = DisplayRig(planes)
+        else:
+            rig = DisplayRig.from_layout(layout, gap_mm=gap_mm, distance_mm=distance_mm)
+            if preset == "curved" and len(rig.planes) >= 2:
+                n = len(rig.planes)
+                curved: list[DisplayPlane] = []
+                for idx, p in enumerate(rig.planes):
+                    frac = (idx / max(1, n - 1)) * 2.0 - 1.0  # -1..+1
+                    yaw = round(frac * 18.0, 1)
+                    # Pull outer monitors slightly closer along Z to form a clean cockpit arc
+                    dz = -abs(frac) * 55.0
+                    curved.append(DisplayPlane(**{**p.as_dict(), "yaw_deg": yaw, "cz_mm": round(p.cz_mm + dz, 1)}))
+                rig = DisplayRig(curved)
+
+        rig.save(self.rig_path)
+        with self._lock:
+            pub = self._publisher
+        if pub is not None:
+            pub.set_display_rig(rig)
+        return rig.as_dict()
+
+    def set_overlay_enabled(self, enabled: bool) -> dict[str, Any]:
+        cfg = AppConfig.load(self.paths.settings_path)
+        cfg.gaze_cursor_overlay = bool(enabled)
+        cfg.save(self.paths.settings_path)
+        with self._lock:
+            pub = self._publisher
+        if pub is not None:
+            pub.enable_overlay = bool(enabled)
+            if enabled and not pub.overlay_active:
+                from keyless.platform.router import current_host
+
+                if current_host() == "linux":
+                    from keyless.platform.linux.gaze_overlay import LinuxGazeOverlay
+
+                    ov = LinuxGazeOverlay(self.paths, shm_name=pub.shm_name)
+                    if ov.start():
+                        pub._overlay = ov
+            elif not enabled and pub._overlay is not None:
+                pub._overlay.stop()
+                pub._overlay = None
+        return self.gaze_status()
 
     def shutdown(self) -> None:
         self.stop_recording()
