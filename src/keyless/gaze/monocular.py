@@ -32,9 +32,10 @@ import numpy as np
 
 from keyless.config.paths import AppPaths, current_paths
 from keyless.config.schema import AppConfig
-from keyless.gaze.displays import DisplayRig
+from keyless.gaze.displays import DisplayRig, infer_rig_from_clicks
 from keyless.ipc.state import (
     FLAG_BLINKING,
+    FLAG_DEV_MONITOR_BORDER,
     FLAG_FACE_DETECTED,
     SHM_NAME,
     SharedGazeWriter,
@@ -111,6 +112,7 @@ class MonocularGazeEstimator:
         origin_x: int = 0,
         origin_y: int = 0,
         rig: DisplayRig | None = None,
+        auto_rig: bool = True,
         feature_dim: int = FEATURE_DIM,
         min_clicks: int = 5,
         blend_clicks: int = 10,
@@ -132,6 +134,9 @@ class MonocularGazeEstimator:
         self.rig = rig or DisplayRig.from_single_rect(
             self.width, self.height, origin_x=self.origin_x, origin_y=self.origin_y
         )
+        self._base_rig = self.rig
+        self.auto_rig = bool(auto_rig)
+        self._rig_meta: dict[str, Any] = {"inferred": False, "clicks_per_display": {}, "swapped": False}
         self.feature_dim = int(feature_dim)
         self.min_clicks = int(min_clicks)
         self.blend_clicks = max(1, int(blend_clicks))
@@ -183,10 +188,18 @@ class MonocularGazeEstimator:
     def outliers_suppressed(self) -> int:
         return self._state_est.outliers_suppressed if self._state_est is not None else 0
 
-    def set_rig(self, rig: DisplayRig) -> None:
+    @property
+    def rig_meta(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._rig_meta)
+
+    def set_rig(self, rig: DisplayRig, *, auto_rig: bool | None = None) -> None:
         """Update physical 3D display geometry and refit existing clicks on the new rig."""
         with self._lock:
             self.rig = rig
+            self._base_rig = rig
+            if auto_rig is not None:
+                self.auto_rig = bool(auto_rig)
             self._refit_locked()
 
     def sample_points(self) -> list[list[float]]:
@@ -228,6 +241,10 @@ class MonocularGazeEstimator:
 
     def _refit_locked(self) -> None:
         n = len(self._samples)
+        if self.auto_rig and n >= 2 and len(self._base_rig.planes) >= 1:
+            inferred_rig, meta = infer_rig_from_clicks(self._base_rig, list(self._samples))
+            self.rig = inferred_rig
+            self._rig_meta = meta
         if n < self.min_clicks:
             self._angle_weights = None
             self._local_weights = {}
@@ -402,6 +419,8 @@ class MonocularGazePublisher:
             if enable_overlay is None
             else bool(enable_overlay)
         )
+        self.dev_monitor_border = bool(self.config.dev_active_monitor_border)
+        self.auto_rig = True
         self._on_prediction = on_prediction
 
         self.active_mode: str = "monocular"
@@ -433,9 +452,13 @@ class MonocularGazePublisher:
         self._clicks_adapted: int = 0
         self._measured_fps: float = 0.0
 
-    def set_display_rig(self, rig: DisplayRig) -> None:
+    def set_display_rig(self, rig: DisplayRig, *, auto_rig: bool = False) -> None:
         self.rig = rig
-        self.estimator.set_rig(rig)
+        self.auto_rig = bool(auto_rig)
+        self.estimator.set_rig(rig, auto_rig=self.auto_rig)
+
+    def set_dev_monitor_border(self, enabled: bool) -> None:
+        self.dev_monitor_border = bool(enabled)
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -464,6 +487,7 @@ class MonocularGazePublisher:
             self.layout.total_width,
             self.layout.total_height,
             rig=self.rig,
+            auto_rig=self.auto_rig,
             feature_dim=feat_dim,
             min_clicks=self.min_clicks,
             ridge_alpha=self.ridge_alpha,
@@ -535,7 +559,14 @@ class MonocularGazePublisher:
             blinking = self._latest_blinking
         if feat is None or age > max_age_sec or blinking:
             return False
-        self.estimator.add_click(feat, x, y)
+        count = self.estimator.add_click(feat, x, y)
+        if self.auto_rig:
+            self.rig = self.estimator.rig
+            if count in (2, 4, 6, 10) or count % 10 == 0:
+                try:
+                    self.rig.save(self.paths.config_dir / "display_rig.json")
+                except Exception:
+                    pass
         with self._lock:
             self._clicks_adapted += 1
         return True
@@ -632,7 +663,7 @@ class MonocularGazePublisher:
             )
             kin = self.estimator.last_kinematics
             blinking = blink_level >= 0.24 or kin in ("blink_hold", "recovery")
-            flags = FLAG_FACE_DETECTED | (FLAG_BLINKING if blinking else 0)
+            flags = FLAG_FACE_DETECTED | (FLAG_BLINKING if blinking else 0) | (FLAG_DEV_MONITOR_BORDER if self.dev_monitor_border else 0)
             pred = MonocularPrediction(
                 x=sx,
                 y=sy,

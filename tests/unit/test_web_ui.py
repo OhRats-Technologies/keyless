@@ -186,3 +186,24 @@ def test_displays_rig_presets_schema_host_and_overlay_toggle(web_server) -> None
     st, _, raw = _req(base, "POST", "/v1/gaze/overlay", {"enabled": False})
     assert st == 200
     assert json.loads(raw)["overlay_active"] is False
+
+
+def test_developer_active_monitor_border_toggle_and_auto_rig_preset(web_server) -> None:
+    _srv, base, _paths = web_server
+
+    st, _, raw = _req(base, "GET", "/v1/config/schema")
+    assert st == 200
+    schema = json.loads(raw)
+    dev_spec = next(s for s in schema["settings"] if s["key"] == "dev_active_monitor_border")
+    assert dev_spec["group"] == "Developer"
+
+    st, _, raw = _req(base, "POST", "/v1/gaze/dev-border", {"enabled": True})
+    assert st == 200
+
+    st, _, raw = _req(base, "GET", "/v1/config")
+    assert st == 200
+    assert json.loads(raw)["dev_active_monitor_border"] is True
+
+    st, _, raw = _req(base, "POST", "/v1/displays/rig/preset", {"preset": "auto"})
+    assert st == 200
+    assert json.loads(raw)["auto_rig"] is True

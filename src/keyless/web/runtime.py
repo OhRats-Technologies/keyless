@@ -385,9 +385,20 @@ class WebGazeManager:
         from keyless.gaze.displays import DisplayRig
         from keyless.platform.router import get_display_layout
 
+        with self._lock:
+            pub = self._publisher
+        if pub is not None:
+            data = pub.rig.as_dict()
+            data["auto_rig"] = bool(getattr(pub, "auto_rig", True))
+            data["rig_meta"] = pub.estimator.rig_meta
+            return data
+
         layout = get_display_layout()
         rig = DisplayRig.load(self.rig_path, layout)
-        return rig.as_dict()
+        data = rig.as_dict()
+        data["auto_rig"] = True
+        data["rig_meta"] = {"inferred": False, "clicks_per_display": {}, "swapped": False}
+        return data
 
     def save_display_rig(self, payload: dict[str, Any]) -> dict[str, Any]:
         from keyless.gaze.displays import DisplayPlane, DisplayRig
@@ -436,14 +447,25 @@ class WebGazeManager:
         with self._lock:
             pub = self._publisher
         if pub is not None:
-            pub.set_display_rig(rig)
-        return rig.as_dict()
+            pub.set_display_rig(rig, auto_rig=False)
+        return self.get_display_rig()
 
     def apply_rig_preset(self, preset: str = "flat", *, gap_mm: float = 25.0, distance_mm: float = 600.0) -> dict[str, Any]:
         from keyless.gaze.displays import DisplayPlane, DisplayRig
         from keyless.platform.router import get_display_layout
 
         layout = get_display_layout()
+        if preset == "auto":
+            rig = DisplayRig.from_layout(layout, gap_mm=gap_mm, distance_mm=distance_mm)
+            try:
+                self.rig_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            with self._lock:
+                pub = self._publisher
+            if pub is not None:
+                pub.set_display_rig(rig, auto_rig=True)
+            return self.get_display_rig()
         if preset == "swap":
             cur = DisplayRig.load(self.rig_path, layout)
             planes = list(cur.planes)
@@ -497,6 +519,16 @@ class WebGazeManager:
             elif not enabled and pub._overlay is not None:
                 pub._overlay.stop()
                 pub._overlay = None
+        return self.gaze_status()
+
+    def set_dev_monitor_border(self, enabled: bool) -> dict[str, Any]:
+        cfg = AppConfig.load(self.paths.settings_path)
+        cfg.dev_active_monitor_border = bool(enabled)
+        cfg.save(self.paths.settings_path)
+        with self._lock:
+            pub = self._publisher
+        if pub is not None:
+            pub.set_dev_monitor_border(bool(enabled))
         return self.gaze_status()
 
     def shutdown(self) -> None:

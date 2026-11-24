@@ -526,6 +526,16 @@
             {
               "detail": "Off (applies immediately)",
               "kind": "text",
+              "title": "Active monitor border"
+            }
+          ],
+          "title": "Developer"
+        },
+        {
+          "rows": [
+            {
+              "detail": "Off (applies immediately)",
+              "kind": "text",
               "title": "Transcript overlay"
             },
             {

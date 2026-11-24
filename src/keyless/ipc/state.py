@@ -19,6 +19,7 @@ FLAG_FACE_DETECTED = 1 << 0
 FLAG_BLINKING = 1 << 1
 FLAG_SACCADE_JUMP = 1 << 2
 FLAG_PTT_ACTIVE = 1 << 3
+FLAG_DEV_MONITOR_BORDER = 1 << 4
 
 
 @dataclass(frozen=True)

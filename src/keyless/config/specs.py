@@ -141,6 +141,8 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     _bool("auto_update_checks", True, "Check for updates", "Look for new releases in the background.", "Privacy & updates"),
     _select("update_channel", "stable", "Update channel", "Stable builds only, or include prereleases.", "Privacy & updates", _UPDATE_CHANNELS),
     _text("skipped_update_version", "", "Skipped version", "Version the user asked not to be reminded about.", "Privacy & updates"),
+    # --- Developer -----------------------------------------------------
+    _bool("dev_active_monitor_border", False, "Active monitor border", "Draw a green border around the monitor you are actively looking at (Wayland overlay).", "Developer", platforms=("linux",)),
     # --- Advanced ------------------------------------------------------
     _bool("transcript_overlay", False, "Transcript overlay", "Show a floating transcript while listening.", "Advanced"),
     _select("action_backend", "native", "Input backend", "Native input injection or the pinned cua-driver binary.", "Advanced", _ACTION_BACKENDS, apply="restart"),

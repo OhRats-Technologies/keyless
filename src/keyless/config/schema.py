@@ -81,6 +81,7 @@ class AppConfig:
     # (click-through overlay) instead of warping the real mouse pointer.
     # Unavailable platforms keep their existing pointer behavior.
     gaze_cursor_overlay: bool = True
+    dev_active_monitor_border: bool = False
     gaze_vlm_enabled: bool = True
     gaze_vlm_provider: str = "auto"
     gaze_vlm_preset: str = "openai"

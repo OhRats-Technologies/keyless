@@ -171,3 +171,39 @@ def test_display_rig_persistence_roundtrip(tmp_path: Path) -> None:
     assert loaded.plane_for_connector("DP-2").yaw_deg == pytest.approx(-18.0)
     assert loaded.plane_for_connector("DP-2").cx_mm == pytest.approx(300.0)
     assert loaded.plane_for_connector("HDMI-A-1").cx_mm == pytest.approx(-300.0)
+
+
+def test_auto_infer_rig_detects_swapped_monitors_and_gap_from_passive_clicks() -> None:
+    """Zero manual setup: clicks with anatomical head yaw immediately detect physically swapped displays."""
+    from keyless.gaze.displays import infer_rig_from_clicks
+
+    # OS thinks DP-2 is left (x=0..1919) and HDMI-A-1 is right (x=1920..3839)
+    os_rig = DisplayRig(
+        [
+            DisplayPlane("DP-2", 0, 0, 1920, 1080, width_mm=521.0, height_mm=293.0, cx_mm=-280.0, cz_mm=600.0),
+            DisplayPlane("HDMI-A-1", 1920, 0, 1920, 1080, width_mm=598.0, height_mm=336.0, cx_mm=280.0, cz_mm=600.0),
+        ]
+    )
+
+    # Physically, user looks RIGHT (+yaw) to click DP-2 and LEFT (-yaw) to click HDMI-A-1
+    samples = []
+    for u in (0.2, 0.5, 0.8):
+        # Click on DP-2 (OS left), user looks right (+0.45 rad center)
+        f_dp = np.zeros(FEATURE_DIM, dtype=np.float64)
+        f_dp[4] = (0.45 + (u - 0.5) * 0.55) / 0.85
+        samples.append((f_dp, u * 1920.0, 540.0))
+
+        # Click on HDMI-A-1 (OS right), user looks left (-0.50 rad center)
+        f_hd = np.zeros(FEATURE_DIM, dtype=np.float64)
+        f_hd[4] = (-0.50 + (u - 0.5) * 0.60) / 0.85
+        samples.append((f_hd, 1920.0 + u * 1920.0, 540.0))
+
+    inferred, meta = infer_rig_from_clicks(os_rig, samples)
+    assert meta["inferred"] is True
+    assert meta["swapped"] is True
+    dp = inferred.plane_for_connector("DP-2")
+    hd = inferred.plane_for_connector("HDMI-A-1")
+    assert dp is not None and hd is not None
+    # DP-2 is inferred physically on the right (+X, +yaw), HDMI-A-1 on the left (-X, -yaw)
+    assert dp.cx_mm > 150.0 and dp.yaw_deg > 5.0
+    assert hd.cx_mm < -150.0 and hd.yaw_deg < -5.0

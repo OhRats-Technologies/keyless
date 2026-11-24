@@ -429,7 +429,144 @@ class DisplayRig:
         }
 
 
+
+
+def anatomical_ray_angles(feat: np.ndarray) -> tuple[float, float]:
+    """Estimate rough 3D gaze ray (az_rad, el_rad) directly from anatomical head+iris features.
+
+    Works for both 10D monocular and 20D binocular feature vectors and is
+    independent of OS display pixel coordinates, allowing automatic inference
+    of swapped monitors, physical bezel gaps, distances, and angles.
+    """
+    arr = np.asarray(feat, dtype=np.float64).reshape(-1)
+    if arr.shape[0] >= 20:
+        iris_dx = 0.25 * (float(arr[0]) + float(arr[2]) + float(arr[10]) + float(arr[12]))
+        iris_dy = 0.25 * (float(arr[1]) + float(arr[3]) + float(arr[11]) + float(arr[13]))
+        yaw = 0.5 * (float(arr[4]) + float(arr[14]))
+        pitch = 0.5 * (float(arr[5]) + float(arr[15]))
+    else:
+        iris_dx = 0.5 * (float(arr[0]) + float(arr[2]))
+        iris_dy = 0.5 * (float(arr[1]) + float(arr[3]))
+        yaw = float(arr[4])
+        pitch = float(arr[5])
+    az = max(-1.25, min(1.25, 0.85 * yaw + 0.55 * iris_dx))
+    el = max(-0.85, min(0.85, 0.85 * pitch + 0.45 * iris_dy))
+    return az, el
+
+
+def infer_rig_from_clicks(
+    base_rig: DisplayRig,
+    samples: list[tuple[np.ndarray, float, float]],
+) -> tuple[DisplayRig, dict[str, Any]]:
+    """Automatically infer 3D physical monitor positions and angles from passive clicks.
+
+    Each sample is ``(feature_vector, click_x_px, click_y_px)``. Uses anatomical
+    head+iris ray directions paired with each monitor's EDID physical size to
+    detect swapped monitors, physical gaps, vertical offsets, viewing distance,
+    and inward yaw angle with zero manual configuration.
+    """
+    if not samples:
+        return base_rig, {"inferred": False, "clicks_per_display": {}, "swapped": False}
+
+    per_disp: dict[str, list[tuple[float, float, float, float]]] = {}
+    for feat, cx, cy in samples:
+        plane = base_rig.plane_for_pixel(cx, cy)
+        u, v = plane.pixel_to_uv(cx, cy)
+        az, el = anatomical_ray_angles(feat)
+        per_disp.setdefault(plane.connector, []).append((u, v, az, el))
+
+    new_planes: list[DisplayPlane] = []
+    clicks_per_display: dict[str, int] = {}
+
+    for plane in base_rig.planes:
+        rows = per_disp.get(plane.connector, [])
+        n = len(rows)
+        clicks_per_display[plane.connector] = n
+        if n == 0:
+            new_planes.append(plane)
+            continue
+
+        us = np.array([r[0] - 0.5 for r in rows], dtype=np.float64)
+        vs = np.array([r[1] - 0.5 for r in rows], dtype=np.float64)
+        azs = np.array([r[2] for r in rows], dtype=np.float64)
+        els = np.array([r[3] for r in rows], dtype=np.float64)
+
+        nom_dist = max(350.0, float(plane.cz_mm))
+        nom_az_span = 2.0 * math.atan2(0.5 * plane.width_mm, nom_dist)
+        nom_el_span = 2.0 * math.atan2(0.5 * plane.height_mm, nom_dist)
+
+        # Estimate center azimuth & horizontal angular span
+        if n >= 3 and float(np.std(us)) > 0.08:
+            A = np.column_stack([np.ones(n), us])
+            reg = np.diag([1e-6, 0.02])
+            coef = np.linalg.solve(A.T @ A + reg, A.T @ azs)
+            az_center = float(coef[0])
+            az_span = max(0.25, min(1.35, float(coef[1])))
+            # Infer physical viewing distance from EDID width_mm and angular span
+            raw_dist = (0.5 * plane.width_mm) / max(0.08, math.tan(0.5 * az_span))
+            raw_dist = max(350.0, min(1100.0, raw_dist))
+            blend = min(1.0, n / 10.0)
+            dist_mm = (1.0 - blend) * nom_dist + blend * raw_dist
+        else:
+            az_center = float(np.mean(azs - us * nom_az_span))
+            dist_mm = nom_dist
+
+        # Estimate center elevation
+        if n >= 3 and float(np.std(vs)) > 0.08:
+            B = np.column_stack([np.ones(n), vs])
+            reg = np.diag([1e-6, 0.02])
+            el_coef = np.linalg.solve(B.T @ B + reg, B.T @ els)
+            el_center = float(el_coef[0])
+        else:
+            el_center = float(np.mean(els - vs * nom_el_span))
+
+        az_center = max(-1.15, min(1.15, az_center))
+        el_center = max(-0.65, min(0.65, el_center))
+
+        cx_mm = dist_mm * math.sin(az_center)
+        cz_mm = max(250.0, dist_mm * math.cos(az_center))
+        cy_mm = dist_mm * math.sin(el_center)
+        # Natural ergonomic toe-in toward user eye origin when off-center
+        yaw_deg = max(-45.0, min(45.0, math.degrees(az_center) * 0.65))
+        pitch_deg = max(-25.0, min(25.0, -math.degrees(el_center) * 0.35))
+
+        new_planes.append(
+            DisplayPlane(
+                connector=plane.connector,
+                x=plane.x,
+                y=plane.y,
+                width=plane.width,
+                height=plane.height,
+                scale=plane.scale,
+                is_primary=plane.is_primary,
+                width_mm=plane.width_mm,
+                height_mm=plane.height_mm,
+                cx_mm=cx_mm,
+                cy_mm=cy_mm,
+                cz_mm=cz_mm,
+                yaw_deg=yaw_deg,
+                pitch_deg=pitch_deg,
+                roll_deg=plane.roll_deg,
+            )
+        )
+
+    # Detect if physical X ordering differs from OS logical X ordering (swapped displays)
+    swapped = False
+    if len(new_planes) >= 2:
+        os_order = [p.connector for p in sorted(new_planes, key=lambda p: (p.x, p.y))]
+        phys_order = [p.connector for p in sorted(new_planes, key=lambda p: p.cx_mm)]
+        swapped = os_order != phys_order
+
+    return DisplayRig(new_planes), {
+        "inferred": True,
+        "clicks_per_display": clicks_per_display,
+        "swapped": swapped,
+    }
+
+
 __all__ = [
+    "anatomical_ray_angles",
+    "infer_rig_from_clicks",
     "DEFAULT_DISTANCE_MM",
     "DEFAULT_GAP_MM",
     "DisplayPlane",

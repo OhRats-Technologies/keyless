@@ -44,6 +44,7 @@ const SETTINGS_TABS = [
   { id: 'voice', label: 'Voice & Audio', group: 'Voice & audio', section: 'Intelligence' },
   { id: 'llm', label: 'Language Model', group: 'Language model', section: 'Intelligence' },
   { id: 'system', label: 'Permissions & Models', section: 'System' },
+  { id: 'developer', label: 'Developer', group: 'Developer', section: 'System' },
   { id: 'privacy', label: 'Privacy & Updates', group: 'Privacy & updates', section: 'System' },
   { id: 'advanced', label: 'Advanced', group: 'Advanced', section: 'System' },
 ];
@@ -1108,6 +1109,8 @@ function renderSettings(root) {
         if (res.result && res.result.config) state.config = res.result.config;
         if (key === 'gaze_cursor_overlay') {
           state.gaze = await api('/v1/gaze/overlay', { method: 'POST', body: JSON.stringify({ enabled: Boolean(val) }) });
+        } else if (key === 'dev_active_monitor_border') {
+          state.gaze = await api('/v1/gaze/dev-border', { method: 'POST', body: JSON.stringify({ enabled: Boolean(val) }) });
         }
       } catch (err) { showError(`Invalid value for ${key}`, err.message); }
     });
@@ -1116,6 +1119,9 @@ function renderSettings(root) {
 
 function renderDisplaysRigPane() {
   const displays = (state.rig && state.rig.displays) || [];
+  const autoRig = state.rig ? state.rig.auto_rig !== false : true;
+  const meta = (state.rig && state.rig.rig_meta) || {};
+  const clicksByDisp = meta.clicks_per_display || {};
   if (state.selectedRigIdx >= displays.length) state.selectedRigIdx = 0;
   const active = displays[state.selectedRigIdx] || null;
 
@@ -1123,30 +1129,46 @@ function renderDisplaysRigPane() {
     <div class="settings-card" style="gap:14px;">
       <div class="row-between">
         <div>
-          <span class="eyebrow">3D Multi-Display Physical Geometry</span>
-          <div class="telemetry">Origin (0,0,0) = your eyes/camera. Supports swapped monitors, gaps, and yaw/pitch/roll angles.</div>
+          <span class="eyebrow">Automatic 3D Multi-Display Detection</span>
+          <div class="telemetry">
+            Keyless infers monitor order (including swapped screens), bezel gaps, distance, and yaw angles passively from your clicks. No manual setup required.
+          </div>
         </div>
         <div class="row-gap">
-          <button class="btn btn-sm" data-rig-preset="flat" type="button">Flat</button>
-          <button class="btn btn-sm" data-rig-preset="curved" type="button">Curved arc</button>
-          <button class="btn btn-sm" data-rig-preset="swap" type="button" ${displays.length < 2 ? 'disabled' : ''}>Swap L/R</button>
+          <span class="badge ${autoRig ? 'ok' : 'warn'}">${autoRig ? (meta.inferred ? 'Auto-learned' : 'Auto-detecting') : 'Manual override'}</span>
+          ${meta.swapped ? '<span class="badge ok">Swap detected</span>' : ''}
+          <button class="btn btn-sm" data-rig-preset="auto" type="button">Reset to auto</button>
         </div>
       </div>
 
-      <div class="rig-grid">
-        <div class="rig-canvas-wrap">
-          <canvas id="rig-canvas"></canvas>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:12px;">
-          <div class="seg-group">
-            ${displays.map((d, i) => `
-              <button class="seg-btn ${i === state.selectedRigIdx ? 'active' : ''}" data-rig-sel="${i}" type="button">
-                ${esc(d.connector)}
-              </button>
-            `).join('')}
+      <div class="rig-canvas-wrap">
+        <canvas id="rig-canvas"></canvas>
+      </div>
+
+      <div class="row-gap">
+        ${displays.map((d) => `
+          <span class="badge">${esc(d.connector)}: ${clicksByDisp[d.connector] || 0} clicks (${Math.round(d.cx_mm)}mm, ${d.yaw_deg} deg)</span>
+        `).join('')}
+      </div>
+
+      <details style="border-top:1px solid var(--or-border-soft);padding-top:10px;">
+        <summary class="eyebrow" style="cursor:pointer;user-select:none;">Manual geometry override (optional)</summary>
+        <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px;">
+          <div class="row-between">
+            <div class="seg-group">
+              ${displays.map((d, i) => `
+                <button class="seg-btn ${i === state.selectedRigIdx ? 'active' : ''}" data-rig-sel="${i}" type="button">
+                  ${esc(d.connector)}
+                </button>
+              `).join('')}
+            </div>
+            <div class="row-gap">
+              <button class="btn btn-sm" data-rig-preset="flat" type="button">Flat</button>
+              <button class="btn btn-sm" data-rig-preset="curved" type="button">Curved arc</button>
+              <button class="btn btn-sm" data-rig-preset="swap" type="button" ${displays.length < 2 ? 'disabled' : ''}>Swap L/R</button>
+            </div>
           </div>
           ${active ? `
-            <div class="telemetry">OS logical: ${active.x}, ${active.y} (${active.width}x${active.height} px)</div>
             <div class="rig-num-grid">
               <div class="rig-num-field"><label>Center X (mm)</label><input type="number" step="10" data-rig-field="cx_mm" value="${active.cx_mm}"></div>
               <div class="rig-num-field"><label>Center Y (mm)</label><input type="number" step="10" data-rig-field="cy_mm" value="${active.cy_mm}"></div>
@@ -1157,12 +1179,12 @@ function renderDisplaysRigPane() {
               <div class="rig-num-field"><label>Width (mm)</label><input type="number" step="5" min="80" data-rig-field="width_mm" value="${active.width_mm}"></div>
               <div class="rig-num-field"><label>Height (mm)</label><input type="number" step="5" min="50" data-rig-field="height_mm" value="${active.height_mm}"></div>
               <div class="rig-num-field" style="justify-content:flex-end;">
-                <button id="rig-save-btn" class="btn btn-primary btn-sm" type="button">Apply 3D Rig</button>
+                <button id="rig-save-btn" class="btn btn-primary btn-sm" type="button">Apply override</button>
               </div>
             </div>
-          ` : '<span class="muted">No displays detected.</span>'}
+          ` : ''}
         </div>
-      </div>
+      </details>
     </div>
   `;
 }

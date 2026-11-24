@@ -29,7 +29,8 @@
 
 #define MAX_OUTPUTS 8
 #define FLAG_FACE_DETECTED (1u << 0)
-#define FLAG_BLINKING      (1u << 1)
+#define FLAG_BLINKING           (1u << 1)
+#define FLAG_DEV_MONITOR_BORDER (1u << 4)
 
 /* Packed 32-byte seqlock layout matching keyless/ipc/state.py ("=QddIIQ") */
 struct __attribute__((packed)) gaze_shm_layout {
@@ -134,6 +135,7 @@ struct output_overlay {
     int32_t buf_w, buf_h;
     bool configured;
     bool has_drawn;
+    bool has_border;
     int32_t prev_x, prev_y, prev_r;
 };
 
@@ -285,6 +287,44 @@ static void clear_rect(struct output_overlay *ov, int32_t cx, int32_t cy, int32_
     wl_surface_damage_buffer(ov->surface, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
 }
 
+
+/* Developer debug: 4px OhRats positive green (#43b777) perimeter border on active monitor */
+static void paint_border_edges(struct output_overlay *ov, uint32_t color) {
+    const int32_t t = 4;
+    if (ov->buf_w < t * 2 || ov->buf_h < t * 2) return;
+    /* Top and bottom strips */
+    for (int32_t y = 0; y < t; ++y) {
+        uint32_t *row_top = &ov->pixels[y * ov->buf_w];
+        uint32_t *row_bot = &ov->pixels[(ov->buf_h - 1 - y) * ov->buf_w];
+        for (int32_t x = 0; x < ov->buf_w; ++x) {
+            row_top[x] = color;
+            row_bot[x] = color;
+        }
+    }
+    /* Left and right strips */
+    for (int32_t y = t; y < ov->buf_h - t; ++y) {
+        uint32_t *row = &ov->pixels[y * ov->buf_w];
+        for (int32_t x = 0; x < t; ++x) {
+            row[x] = color;
+            row[ov->buf_w - 1 - x] = color;
+        }
+    }
+    wl_surface_damage_buffer(ov->surface, 0, 0, ov->buf_w, t);
+    wl_surface_damage_buffer(ov->surface, 0, ov->buf_h - t, ov->buf_w, t);
+    wl_surface_damage_buffer(ov->surface, 0, t, t, ov->buf_h - 2 * t);
+    wl_surface_damage_buffer(ov->surface, ov->buf_w - t, t, t, ov->buf_h - 2 * t);
+}
+
+static void draw_active_border(struct output_overlay *ov) {
+    /* Premultiplied ARGB8888 for #43b777 at ~86% alpha (a=220, r=58, g=158, b=103) */
+    const uint32_t green = (220u << 24) | (58u << 16) | (158u << 8) | 103u;
+    paint_border_edges(ov, green);
+}
+
+static void clear_active_border(struct output_overlay *ov) {
+    paint_border_edges(ov, 0u);
+}
+
 static void draw_reticle(struct output_overlay *ov, int32_t cx, int32_t cy, bool blinking) {
     /*
      * Calm visionOS-inspired rounded focus ring (OhRats terracotta-amber #e27a3b + ivory pip).
@@ -433,6 +473,7 @@ int main(int argc, char **argv) {
         uint32_t flags = 0;
         bool valid = shm && read_gaze_shm(shm, &gx, &gy, &flags) && (flags & FLAG_FACE_DETECTED);
         bool blinking = (flags & FLAG_BLINKING) != 0;
+        bool want_border_global = (flags & FLAG_DEV_MONITOR_BORDER) != 0;
 
         for (int i = 0; i < g_output_count; ++i) {
             struct output_overlay *ov = &g_outputs[i];
@@ -441,11 +482,17 @@ int main(int argc, char **argv) {
             bool on_this = valid &&
                 gx >= (double)ov->log_x && gx < (double)(ov->log_x + ov->log_w) &&
                 gy >= (double)ov->log_y && gy < (double)(ov->log_y + ov->log_h);
+            bool want_border = on_this && want_border_global;
 
             bool dirty = false;
             if (ov->has_drawn) {
                 clear_rect(ov, ov->prev_x, ov->prev_y, ov->prev_r);
                 ov->has_drawn = false;
+                dirty = true;
+            }
+            if (ov->has_border && !want_border) {
+                clear_active_border(ov);
+                ov->has_border = false;
                 dirty = true;
             }
             if (on_this) {
@@ -458,6 +505,11 @@ int main(int argc, char **argv) {
                 ov->prev_y = ly;
                 ov->prev_r = 36;
                 ov->has_drawn = true;
+                dirty = true;
+            }
+            if (want_border) {
+                draw_active_border(ov);
+                ov->has_border = true;
                 dirty = true;
             }
             if (dirty) {

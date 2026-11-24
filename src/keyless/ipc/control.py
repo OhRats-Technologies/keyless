@@ -752,6 +752,11 @@ class ControlServer:
                     if payload is None:
                         return
                     _json(self, server.gaze_manager.set_overlay_enabled(bool(payload.get("enabled", True))))
+                elif self.command == "POST" and path == "/v1/gaze/dev-border":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    _json(self, server.gaze_manager.set_dev_monitor_border(bool(payload.get("enabled", False))))
                 elif self.command == "GET" and path == "/v1/displays/rig":
                     _json(self, server.gaze_manager.get_display_rig())
                 elif self.command == "POST" and path == "/v1/displays/rig":
