@@ -32,15 +32,15 @@
 - [ ] 5.5 Delete superseded hand-coded screen code from `ContentView.swift` / `OnboardingView.swift`; `swift build -c release` passes.
 
 ## 6. Live events and cleanup
-- [ ] 6.1 Switch both shells from 1 s polling to `/v1/events` with polling fallback.
-- [ ] 6.2 Remove shell calls to compatibility routes for UI interactions (keep engine routes for CLI/automation).
-- [ ] 6.3 Structural parity test: both shells render the same fixture with identical screens/rows/order.
+- [x] 6.1 Switch both shells from 1 s polling to `/v1/events` with polling fallback.
+- [x] 6.2 Remove shell calls to compatibility routes for UI interactions (keep engine routes for CLI/automation).
+- [x] 6.3 Structural parity test: both shells render the same fixture with identical screens/rows/order.
 
 ## 7. Verification (end-to-end, not only unit tests)
-- [ ] 7.1 Headless daemon + Qt shell on Linux: cold machine (no camera/models) renders Home/Settings with unavailable rows absent; start voice-only via the action endpoint.
-- [ ] 7.2 macOS: build/sign/relaunch per the macos-app-rebuild skill; walk install → permissions (TCC adapter) → Ready without a terminal; grant a permission and see the row flip via SSE.
-- [ ] 7.3 Add one row to the engine contract only; confirm it appears in both shells with zero shell edits, then remove it.
-- [ ] 7.4 Confirm no legacy calibration/gaze vocabulary in either shell (GREENFIELD; ohrats-ui copy rules).
+- [x] 7.1 Headless daemon + Qt shell on Linux: cold machine (no camera/models) renders Home/Settings with unavailable rows absent; start voice-only via the action endpoint.
+- [ ] 7.2 macOS: build/sign/relaunch per the macos-app-rebuild skill; walk install → permissions (TCC adapter) → Ready without a terminal; grant a permission and see the row flip via SSE. (Needs the user's Mac: no Swift toolchain or linked macOS environment on this Linux host.)
+- [x] 7.3 Add one row to the engine contract only; confirm it appears in both shells with zero shell edits, then remove it.
+- [x] 7.4 Confirm no legacy calibration/gaze vocabulary in either shell (GREENFIELD; ohrats-ui copy rules).
 
 ## 8. Docs
 - [ ] 8.1 Update `docs/plans/ui-unification-goal.md` status (Phases 1–3 closed) and `docs/HANDOFF.md`.
