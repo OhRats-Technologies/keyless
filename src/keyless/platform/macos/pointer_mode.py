@@ -55,6 +55,7 @@ class MacOSPointerVisibility:
         self._last_activity = time.monotonic()
         self._eye_visible = False
         self._system_visible = True
+        self._eye_allowed = True
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -87,11 +88,27 @@ class MacOSPointerVisibility:
         with self._lock:
             self._set_eye(False)
 
+    def set_eye_allowed(self, allowed: bool) -> None:
+        """Gate the eye cursor (calibration stage up, face lost).
+
+        Disallowing performs the same synchronous handoff as a click: the eye
+        cursor is confirmed off, then the hardware pointer returns, so there is
+        always exactly one cursor and never zero. Allowing lets the normal idle
+        rule bring the eye cursor back.
+        """
+        with self._lock:
+            if self._eye_allowed == bool(allowed):
+                return
+            self._eye_allowed = bool(allowed)
+            if not allowed:
+                self._set_eye(False)
+
     def force_eye_mode(self) -> None:
         """A voice command just finished with the mouse: switch to the eye now."""
         with self._lock:
             self._last_activity = time.monotonic()
-            self._set_eye(True)
+            if self._eye_allowed:
+                self._set_eye(True)
 
     def poll_once(self, now: float) -> None:
         x, y = self._read_position()
@@ -113,7 +130,7 @@ class MacOSPointerVisibility:
                 self._set_eye(True)
 
     def _eye_ready(self) -> bool:
-        return bool(getattr(self._eye, "ready", True))
+        return self._eye_allowed and bool(getattr(self._eye, "ready", True))
 
     def _loop(self) -> None:
         while not self._stop.is_set():

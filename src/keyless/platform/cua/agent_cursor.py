@@ -71,6 +71,7 @@ class AgentCursorOverlay:
         self._closed = False
         self._ready = False
         self._error = ""
+        self.ownership: object | None = None
         self._thread = threading.Thread(
             target=self._run,
             name="keyless-agent-cursor",
@@ -468,6 +469,10 @@ class AgentCursorOverlay:
             self._condition.notify_all()
         if self._thread.is_alive():
             self._thread.join(timeout=5.0)
+        ownership, self.ownership = self.ownership, None
+        closer = getattr(ownership, "close", None)
+        if callable(closer):
+            closer()
 
 
 class AgentCursorSink:
@@ -589,7 +594,16 @@ def create_gaze_sink(
     if not available:
         logger.warning("Eye cursor stays internal: %s", reason)
         return action_pointer, None, False
+    from keyless.config.paths import current_paths
+    from keyless.platform.macos.gaze_cursor import claim_eye_cursor
+
+    # Exactly one eye cursor (AGENTS rule 4): the gaze publisher usually owns it.
+    ownership = claim_eye_cursor(current_paths().cache_dir)
+    if ownership is None:
+        logger.info("Eye cursor is drawn by the gaze publisher; the daemon stays internal.")
+        return action_pointer, None, False
     overlay = AgentCursorOverlay()
+    overlay.ownership = ownership  # held for the overlay's lifetime; the OS frees it on exit
     return AgentCursorSink(overlay, action_pointer), overlay, True
 
 

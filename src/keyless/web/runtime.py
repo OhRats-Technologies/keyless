@@ -677,17 +677,9 @@ class WebGazeManager:
         if pub is not None:
             pub.enable_overlay = bool(enabled)
             if enabled and not pub.overlay_active:
-                from keyless.platform.router import current_host
-
-                if current_host() == "linux":
-                    from keyless.platform.linux.gaze_overlay import LinuxGazeOverlay
-
-                    ov = LinuxGazeOverlay(self.paths, shm_name=pub.shm_name)
-                    if ov.start():
-                        pub._overlay = ov
-            elif not enabled and pub._overlay is not None:
-                pub._overlay.stop()
-                pub._overlay = None
+                pub.start_overlay()
+            elif not enabled:
+                pub.stop_overlay()
         return self.gaze_status()
 
     def set_dev_monitor_border(self, enabled: bool) -> dict[str, Any]:

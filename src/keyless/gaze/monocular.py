@@ -545,17 +545,8 @@ class MonocularGazePublisher:
         if self.publish_shm:
             self._writer = SharedGazeWriter(shm_name=self.shm_name)
 
-        if self.enable_overlay and self.publish_shm and current_host() == "linux":
-            try:
-                from keyless.platform.linux.gaze_overlay import LinuxGazeOverlay
-
-                ov = LinuxGazeOverlay(self.paths, shm_name=self.shm_name)
-                if ov.start():
-                    self._overlay = ov
-                else:
-                    logger.info("Linux gaze overlay unavailable: %s", ov.error)
-            except Exception as exc:
-                logger.info("Linux gaze overlay skipped: %s", exc)
+        if self.enable_overlay and self.publish_shm:
+            self.start_overlay()
 
         if self.enable_click_adaptation:
             self.start_click_capture()
@@ -564,6 +555,37 @@ class MonocularGazePublisher:
             target=self._loop, name="keyless-gaze-pub", daemon=True
         )
         self._thread.start()
+
+    def start_overlay(self) -> None:
+        """Eye cursor fed from the shm channel: Wayland reticle or the macOS cua cursor."""
+        from keyless.platform.router import current_host
+
+        if self._overlay is not None or self._writer is None:
+            return
+        host = current_host()
+        try:
+            if host == "linux":
+                from keyless.platform.linux.gaze_overlay import LinuxGazeOverlay
+
+                ov: Any = LinuxGazeOverlay(self.paths, shm_name=self.shm_name)
+            elif host == "macos":
+                from keyless.platform.macos.gaze_cursor import MacGazeCursor
+
+                ov = MacGazeCursor(self.paths.cache_dir, shm_name=self.shm_name,
+                                   hold=lambda: self.calibrating)
+            else:
+                return
+            if ov.start():
+                self._overlay = ov
+            else:
+                logger.info("Eye cursor unavailable: %s", ov.error)
+        except Exception as exc:
+            logger.info("Eye cursor skipped: %s", exc)
+
+    def stop_overlay(self) -> None:
+        overlay, self._overlay = self._overlay, None
+        if overlay is not None:
+            overlay.stop()
 
     def start_click_capture(self) -> bool:
         """(Re)start the passive click listener; safe to call after a permission grant."""
@@ -890,12 +912,10 @@ class MonocularGazePublisher:
 
     def stop(self) -> None:
         self._stop.set()
-        if self._overlay is not None:
-            try:
-                self._overlay.stop()
-            except Exception:
-                pass
-            self._overlay = None
+        try:
+            self.stop_overlay()
+        except Exception:
+            logger.warning("Eye cursor did not stop cleanly", exc_info=True)
         if self._click_observer is not None:
             try:
                 self._click_observer.stop()

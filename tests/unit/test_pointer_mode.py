@@ -131,3 +131,22 @@ def test_seeded_pointer_position_does_not_count_as_movement() -> None:
     harness.mode.poll_once(60.0)
     assert harness.eye.visible is True
     assert harness.shows == 0
+
+
+def test_disallowing_the_eye_hands_back_to_the_pointer_and_blocks_idle_return() -> None:
+    # Calibration (or a lost face) must leave exactly the hardware pointer on screen.
+    harness = _Harness()
+    harness.mode.poll_once(30.0)
+    assert harness.eye.visible is True
+
+    harness.mode.set_eye_allowed(False)
+    assert harness.eye.visible is False
+    assert (harness.hides, harness.shows) == (1, 1)
+    for now in (31.0, 35.0, 60.0):
+        harness.mode.poll_once(now)
+    assert harness.eye.visible is False and harness.shows == 1
+
+    harness.mode.set_eye_allowed(True)
+    harness.mode.poll_once(61.0)
+    assert harness.eye.visible is True
+    assert (harness.hides, harness.shows) == (2, 1)
