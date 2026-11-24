@@ -940,6 +940,16 @@ class ControlServer:
                         )
                     except Exception as exc:
                         _json(self, {"error": str(exc)}, status=400)
+                elif self.command == "GET" and path == "/v1/permissions/setup":
+                    _json(self, server.gaze_manager.permission_setup())
+                elif self.command == "POST" and path == "/v1/permissions/setup/request":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    try:
+                        _json(self, server.gaze_manager.request_setup_permission(str(payload.get("id", ""))))
+                    except ValueError as exc:
+                        _json(self, {"error": str(exc)}, status=400)
                 elif self.command == "POST" and path == "/v1/permissions/input":
                     server._read_json_body(self)
                     _json(self, server.gaze_manager.grant_input_permission())

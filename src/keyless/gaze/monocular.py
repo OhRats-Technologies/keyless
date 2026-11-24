@@ -459,6 +459,7 @@ class MonocularGazePublisher:
         self._resolved_cams: list[str] = []
         self._writer: SharedGazeWriter | None = None
         self._click_observer: Any = None
+        self.click_capture_reason = ""
         self._overlay: Any = None
 
         self._latest_feat: np.ndarray | None = None
@@ -469,6 +470,7 @@ class MonocularGazePublisher:
         self._frames_read: int = 0
         self._faces_detected: int = 0
         self._clicks_adapted: int = 0
+        self._clicks_captured: int = 0  # raw OS clicks, before fixation pairing
         self._measured_fps: float = 0.0
         # Recent frames for fixation-aware click pairing: (t_mono, feat, blinking)
         self._recent: deque[tuple[float, np.ndarray, bool]] = deque(maxlen=120)
@@ -555,22 +557,39 @@ class MonocularGazePublisher:
             except Exception as exc:
                 logger.info("Linux gaze overlay skipped: %s", exc)
 
-        if self.enable_click_adaptation and current_host() == "linux":
-            from keyless.gaze.recorder import LinuxClickObserver
-
-            obs = LinuxClickObserver(self.on_click)
-            if obs.start():
-                self._click_observer = obs
-            else:
-                logger.info(
-                    "Passive click adaptation unavailable (%s); running prior-only.",
-                    obs.unavailable_reason,
-                )
+        if self.enable_click_adaptation:
+            self.start_click_capture()
 
         self._thread = threading.Thread(
             target=self._loop, name="keyless-gaze-pub", daemon=True
         )
         self._thread.start()
+
+    def start_click_capture(self) -> bool:
+        """(Re)start the passive click listener; safe to call after a permission grant."""
+        from keyless.platform.router import current_host
+
+        if self._click_observer is not None:
+            return True
+        host = current_host()
+        if host == "linux":
+            from keyless.gaze.recorder import LinuxClickObserver
+
+            obs: Any = LinuxClickObserver(self.on_click)
+        elif host == "macos":
+            from keyless.platform.macos.clicks import MacClickObserver
+
+            obs = MacClickObserver(self.on_click)
+        else:
+            self.click_capture_reason = f"no click listener for {host}"
+            return False
+        if obs.start():
+            self._click_observer = obs
+            self.click_capture_reason = ""
+            return True
+        self.click_capture_reason = obs.unavailable_reason
+        logger.info("Passive click adaptation unavailable (%s); running prior-only.", obs.unavailable_reason)
+        return False
 
     @property
     def overlay_active(self) -> bool:
@@ -582,6 +601,8 @@ class MonocularGazePublisher:
         Pairing runs ~150 ms later so frames on both sides of the click are
         available. Returns False when the click is ignored outright.
         """
+        with self._lock:
+            self._clicks_captured += 1
         if self.calibrating:
             return False
         t_c = time.monotonic() if t_click is None else float(t_click)
@@ -704,6 +725,9 @@ class MonocularGazePublisher:
                 "blinks_suppressed": self.estimator.blinks_suppressed,
                 "outliers_suppressed": self.estimator.outliers_suppressed,
                 "clicks_seen": self.estimator.clicks_seen,
+                "click_capture": self._click_observer is not None,
+                "clicks_captured": self._clicks_captured,
+                "click_capture_reason": self.click_capture_reason,
                 "clicks_ignored": self.estimator.clicks_ignored,
                 "latency_ms": round(self.estimator.latency_ms),
                 "profile": self.estimator.profile.public() if self.estimator.profile else None,

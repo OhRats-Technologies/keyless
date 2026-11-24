@@ -500,6 +500,37 @@ class WebGazeManager:
         manifest = export_curated_split(self.sessions_dir, target, seed=seed)
         return {"out_dir": str(target), "manifest": manifest}
 
+    def permission_setup(self) -> dict[str, Any]:
+        """OS grants eye tracking needs, for the onboarding permission screens."""
+        from keyless.platform.router import current_host
+
+        host = current_host()
+        if host != "macos":
+            return {"host": host, "steps": []}
+        from keyless.platform.macos.permissions import eye_setup_status
+
+        steps = eye_setup_status()
+        with self._lock:
+            pub = self._publisher
+        granted = {s["id"] for s in steps if s["state"] == "granted"}
+        if pub is not None and "input_monitoring" in granted:
+            pub.start_click_capture()  # picks up a grant made in System Settings
+        return {"host": host, "steps": steps}
+
+    def request_setup_permission(self, step: str) -> dict[str, Any]:
+        from keyless.platform.router import current_host
+
+        if current_host() != "macos":
+            raise ValueError("permission setup steps exist only on macOS")
+        from keyless.platform.macos.permissions import request_eye_permission
+
+        outcome = request_eye_permission(step)
+        with self._lock:
+            pub = self._publisher
+        if step == "input_monitoring" and pub is not None:
+            pub.start_click_capture()
+        return {"step": step, "outcome": outcome, **self.permission_setup()}
+
     def grant_input_permission(self) -> dict[str, Any]:
         ok, message = grant_linux_input_access()
         return {

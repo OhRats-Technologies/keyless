@@ -267,3 +267,52 @@ class macOSPermissionService:
 
     def check(self, need: str) -> PermissionInfo:
         return check_permission(need).as_info()
+
+
+# --- Eye-tracking setup steps (onboarding) -----------------------------------
+#
+# One grant per onboarding screen, in this order. Accessibility is not needed
+# for eye tracking itself (listen-only taps use Input Monitoring) but voice
+# actions click through it, so it is offered last.
+EYE_SETUP_STEPS = ("camera", "input_monitoring", "accessibility")
+
+
+def eye_setup_status() -> list[dict[str, str]]:
+    """Fresh state per setup step: granted | denied | unknown (not asked yet)."""
+    return [
+        {"id": step, "state": check_permission(step).state.value, "pane_url": PANE_URLS[step]}
+        for step in EYE_SETUP_STEPS
+    ]
+
+
+def _open_pane(step: str) -> None:
+    subprocess.run(["/usr/bin/open", PANE_URLS[step]], check=False, timeout=5.0)
+
+
+def request_eye_permission(step: str) -> str:
+    """Show the OS prompt for ``step``; if macOS will not prompt again, open its pane.
+
+    Returns ``prompted`` or ``opened_settings``. Called only from an explicit
+    user action (a button press in onboarding), never at startup.
+    """
+    if step not in EYE_SETUP_STEPS:
+        raise ValueError(f"unknown setup step {step!r}")
+    state = check_permission(step).state
+    if state == PermissionState.GRANTED:
+        return "granted"
+    if state == PermissionState.UNKNOWN:
+        if step == "camera":
+            from AVFoundation import AVCaptureDevice, AVMediaTypeVideo  # type: ignore[import-not-found]
+
+            AVCaptureDevice.requestAccessForMediaType_completionHandler_(AVMediaTypeVideo, lambda _ok: None)
+            return "prompted"
+        if step == "input_monitoring":
+            from keyless.platform.macos.clicks import request_access
+
+            if request_access():
+                return "granted"
+            # CGRequestListenEventAccess only prompts once; the list is the way after that.
+        elif step == "accessibility" and prompt_accessibility_trust() is not None:
+            return "prompted"
+    _open_pane(step)
+    return "opened_settings"

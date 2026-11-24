@@ -18,8 +18,15 @@
 
 ## Immediate Next Steps (In Order)
 
-0. [ ] **macOS parity** - see `docs/HANDOFF.md` section 00 (click capture, eye cursor, native stage).
-1. [ ] **Run onboarding on real hardware** (`keyless ui`, restart server first); record grade, latency, accuracy in HANDOFF.
+0. [ ] **macOS parity** - see `docs/HANDOFF.md` section 00. Session log (MacBook Air M5, 13.6in, macOS 26):
+   - [x] Setup: suite needed an evdev-free router; now 403 pass + 2 skip (2nd skip is an evdev-only test).
+   - [x] Camera/display: OpenCV index = uniqueID-sorted AVFoundation order (OBS was taken as the built-in);
+         auto = mono built-in; panel mm via CGDisplayScreenSize; layout in CG global coords.
+   - [x] Step 1 onboarding, browser fallback, 1 display: grade great, 1.85 deg / 81 px, precision 0.36 deg,
+         latency 320 ms = search-window edge (conf 0.53) -> window widened to 600 ms, edge => conf 0.
+   - [ ] Step 2 click capture (CGEventTap listen-only, Input Monitoring) - code in, waiting on real clicks.
+   - [ ] Step 3 eye cursor via cua agent_cursor.  - [ ] Step 4 native stage.  - [ ] Step 5 permissions step.
+1. [x] **Run onboarding on real hardware** - done on macOS, see above.
 
 1. [ ] **Record 2 to 3 real desktop sessions** using `keyless ui` (**Record session**) or `keyless gaze record --save-screenshots` while clicking normally across Firefox, terminal, and IDE.
 2. [ ] **Verify Phase 1 recall gate (>95%):** inspect in **Sessions** or run `keyless gaze eval-candidates --regenerate`. If < 95%, inspect missed clicks and fix perception (AX/OCR/DOM/visual) before modeling.
