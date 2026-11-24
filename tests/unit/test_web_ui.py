@@ -148,7 +148,7 @@ def test_keyless_ui_cli_starts_and_stops_cleanly(monkeypatch) -> None:
 
     monkeypatch.setattr("keyless.main.time.sleep", _interrupt_immediately)
     runner = CliRunner()
-    res = runner.invoke(app, ["ui", "--port", "0", "--no-open"])
+    res = runner.invoke(app, ["ui", "--port", "0", "--no-open", "--no-tray"])
     assert res.exit_code == 0, res.output
     assert "Keyless web UI listening at" in res.output
 
