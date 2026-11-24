@@ -747,10 +747,15 @@ _GAZE_METRIC_ROWS = (
 
 @gaze_app.command("run")
 def gaze_run(
+    mode: str = typer.Option(
+        "auto",
+        "--mode",
+        help="Camera mode: auto | mono (monocular 1-cam) | stereo (binocular 2-cam).",
+    ),
     camera: str | None = typer.Option(
         None,
         "--camera",
-        help="Optional camera path or index override (defaults to AppConfig / auto-detected mono).",
+        help="Optional single camera path or index override.",
     ),
     duration: float = typer.Option(
         0.0,
@@ -783,6 +788,7 @@ def gaze_run(
     pub = MonocularGazePublisher(
         cfg,
         camera_id=camera,
+        camera_mode=mode,
         min_clicks=min_clicks,
         ridge_alpha=ridge_alpha,
         enable_click_adaptation=adapt_clicks,

@@ -73,14 +73,42 @@ class WebGazeManager:
             except Exception:
                 layout = None
 
+        monitors = []
+        if layout is not None:
+            monitors = [
+                {
+                    "connector": m.connector,
+                    "x": m.x,
+                    "y": m.y,
+                    "width": m.width,
+                    "height": m.height,
+                    "scale": m.scale,
+                    "is_primary": m.is_primary,
+                }
+                for m in layout.monitors
+            ]
+        cameras = []
+        try:
+            from keyless.platform.router import list_cameras
+
+            cameras = [
+                {"id": c.id, "name": c.name, "path": c.path}
+                for c in list_cameras()
+            ]
+        except Exception:
+            pass
+
         return {
             "running": running,
+            "mode": pub.active_mode if pub is not None else ("binocular" if len(cameras) >= 2 else "monocular"),
+            "available_cameras": cameras,
             "recording": rec is not None,
             "recording_session_id": rec.session_id if rec is not None else None,
             "recording_stats": rec.stats() if rec is not None else None,
             "display": {
                 "width": layout.total_width if layout is not None else 1920,
                 "height": layout.total_height if layout is not None else 1080,
+                "monitors": monitors,
             },
             "prediction": asdict(pred) if pred is not None else None,
             "stats": stats,
@@ -92,6 +120,7 @@ class WebGazeManager:
     def start_gaze(
         self,
         *,
+        camera_mode: str = "auto",
         min_clicks: int = 5,
         ridge_alpha: float = 0.01,
         adapt_clicks: bool = True,
@@ -105,6 +134,7 @@ class WebGazeManager:
         cfg = AppConfig.load(self.paths.settings_path)
         pub = MonocularGazePublisher(
             cfg,
+            camera_mode=camera_mode,
             min_clicks=max(2, int(min_clicks)),
             ridge_alpha=max(1e-6, float(ridge_alpha)),
             enable_click_adaptation=bool(adapt_clicks),

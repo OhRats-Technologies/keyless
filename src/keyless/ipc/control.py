@@ -727,6 +727,7 @@ class ControlServer:
                         _json(
                             self,
                             server.gaze_manager.start_gaze(
+                                camera_mode=str(payload.get("camera_mode", "auto")),
                                 min_clicks=int(payload.get("min_clicks", 5)),
                                 ridge_alpha=float(payload.get("ridge_alpha", 0.01)),
                                 adapt_clicks=bool(payload.get("adapt_clicks", True)),

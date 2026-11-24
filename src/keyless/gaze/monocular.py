@@ -1,14 +1,14 @@
-"""Monocular webcam gaze publisher with zero-grid passive click adaptation.
+"""Unified monocular (1-cam, 10D) and binocular (2-cam, 20D) webcam gaze publisher.
 
 Implements the Gaze v2 cold-start path (GREENFIELD.md §6.3):
 - Frame 1: projects head yaw/pitch and iris offsets through a bounded geometric
   prior onto the active DisplayTopology so live display-only preview works
   immediately with zero calibration clicks.
-- Passive adaptation: natural desktop clicks pair the freshest 10D
-  ``CameraObservation`` feature vector with the click coordinate in a bounded
-  ring buffer. Once ``min_clicks`` (default 5) are collected, a regularized
-  ridge regression fits ``(feat, 1) -> (x, y)`` and blends smoothly from the
-  prior. Every update is reversible via ``undo_last()`` or ``reset()``.
+- Passive adaptation: natural desktop clicks pair the freshest 10D (monocular)
+  or 20D (binocular/stereo) feature vector with the click coordinate in a
+  bounded ring buffer. Once ``min_clicks`` (default 5) are collected, a
+  regularized ridge regression fits ``(feat, 1) -> (x, y)`` and blends smoothly
+  from the prior. Every update is reversible via ``undo_last()`` or ``reset()``.
 - Seam: publishes plain ``(x, y, flags, timestamp_ns)`` on ``SharedGazeWriter``
   (``keyless_gaze_v1``) so the daemon, Firefox bridge, and UI consume it without
   knowing anything about the model.
@@ -33,33 +33,45 @@ from keyless.ipc.state import (
     SHM_NAME,
     SharedGazeWriter,
 )
-from keyless.vision.landmarks import CameraObservation, FaceFeatureExtractor
+from keyless.vision.landmarks import CameraObservation, STEREO_FEATURE_DIM
 from keyless.vision.one_euro import OneEuroFilter2D
+from keyless.vision.stereo_capture import StereoCapture
 
 logger = logging.getLogger(__name__)
 
 FEATURE_DIM = 10
+BINOCULAR_FEATURE_DIM = STEREO_FEATURE_DIM  # 20
 
 
 def observation_to_frame_section(
     obs: CameraObservation,
     cam_id: str = "mono",
+    obs2: CameraObservation | None = None,
+    cam2_id: str | None = None,
 ) -> dict[str, Any]:
-    """Convert a ``CameraObservation`` into a schema-v0 ``frame`` section."""
+    """Convert one (monocular) or two (binocular) observations into a schema-v0 ``frame`` section."""
+    if obs2 is not None:
+        cams = [str(cam_id), str(cam2_id or "cam2")]
+        feats = np.concatenate([obs.to_feature_vector(), obs2.to_feature_vector()])
+        yaw = 0.5 * (float(obs.yaw) + float(obs2.yaw))
+        pitch = 0.5 * (float(obs.pitch) + float(obs2.pitch))
+        roll = 0.5 * (float(obs.roll) + float(obs2.roll))
+    else:
+        cams = [str(cam_id)]
+        feats = obs.to_feature_vector()
+        yaw = float(obs.yaw)
+        pitch = float(obs.pitch)
+        roll = float(obs.roll)
     return {
-        "cams": [str(cam_id)],
-        "head_pose": {
-            "yaw": float(obs.yaw),
-            "pitch": float(obs.pitch),
-            "roll": float(obs.roll),
-        },
-        "features": [float(v) for v in obs.to_feature_vector().tolist()],
+        "cams": cams,
+        "head_pose": {"yaw": yaw, "pitch": pitch, "roll": roll},
+        "features": [float(v) for v in feats.tolist()],
     }
 
 
 @dataclass(frozen=True)
 class MonocularPrediction:
-    """One smoothed monocular screen-space gaze prediction."""
+    """One smoothed screen-space gaze prediction (monocular or binocular)."""
 
     x: float
     y: float
@@ -70,10 +82,15 @@ class MonocularPrediction:
     samples: int
     using_ridge: bool
     timestamp_ns: int
+    yaw: float = 0.0
+    pitch: float = 0.0
+    roll: float = 0.0
+    mode: str = "monocular"
+    skew_ms: float = 0.0
 
 
 class MonocularGazeEstimator:
-    """Geometric cold-start prior + reversible online ridge adaptation."""
+    """Geometric cold-start prior + reversible online ridge adaptation (10D mono or 20D stereo)."""
 
     def __init__(
         self,
@@ -82,6 +99,7 @@ class MonocularGazeEstimator:
         *,
         origin_x: int = 0,
         origin_y: int = 0,
+        feature_dim: int = FEATURE_DIM,
         min_clicks: int = 5,
         blend_clicks: int = 10,
         ridge_alpha: float = 1e-2,
@@ -92,16 +110,21 @@ class MonocularGazeEstimator:
             raise ValueError("width and height must be positive")
         if min_clicks < 2:
             raise ValueError("min_clicks must be >= 2")
+        if feature_dim not in (FEATURE_DIM, BINOCULAR_FEATURE_DIM):
+            raise ValueError(f"feature_dim must be {FEATURE_DIM} or {BINOCULAR_FEATURE_DIM}")
 
         self.width = int(width)
         self.height = int(height)
         self.origin_x = int(origin_x)
         self.origin_y = int(origin_y)
+        self.feature_dim = int(feature_dim)
         self.min_clicks = int(min_clicks)
         self.blend_clicks = max(1, int(blend_clicks))
         self.ridge_alpha = float(ridge_alpha)
-        self._samples: deque[tuple[np.ndarray, float, float]] = deque(maxlen=max(min_clicks, int(max_samples)))
-        self._weights: np.ndarray | None = None  # shape (FEATURE_DIM + 1, 2)
+        self._samples: deque[tuple[np.ndarray, float, float]] = deque(
+            maxlen=max(min_clicks, int(max_samples))
+        )
+        self._weights: np.ndarray | None = None
         self._filter = OneEuroFilter2D() if smooth else None
         self._lock = threading.Lock()
 
@@ -115,6 +138,11 @@ class MonocularGazeEstimator:
         with self._lock:
             return self._weights is not None
 
+    def sample_points(self) -> list[list[float]]:
+        """Return ``[[x, y], ...]`` of passive click coordinates currently in the buffer."""
+        with self._lock:
+            return [[round(sx, 1), round(sy, 1)] for _, sx, sy in self._samples]
+
     def _clamp(self, x: float, y: float) -> tuple[float, float]:
         cx = max(float(self.origin_x), min(float(self.origin_x + self.width - 1), float(x)))
         cy = max(float(self.origin_y), min(float(self.origin_y + self.height - 1), float(y)))
@@ -122,12 +150,17 @@ class MonocularGazeEstimator:
 
     def _prior_xy(self, feat: np.ndarray) -> tuple[float, float]:
         """Zero-click geometric prior mapping iris offsets + head yaw/pitch to screen pixels."""
-        iris_dx = 0.5 * (float(feat[0]) + float(feat[2]))
-        iris_dy = 0.5 * (float(feat[1]) + float(feat[3]))
-        yaw = float(feat[4])
-        pitch = float(feat[5])
+        if feat.shape[0] == BINOCULAR_FEATURE_DIM:
+            iris_dx = 0.25 * (float(feat[0]) + float(feat[2]) + float(feat[10]) + float(feat[12]))
+            iris_dy = 0.25 * (float(feat[1]) + float(feat[3]) + float(feat[11]) + float(feat[13]))
+            yaw = 0.5 * (float(feat[4]) + float(feat[14]))
+            pitch = 0.5 * (float(feat[5]) + float(feat[15]))
+        else:
+            iris_dx = 0.5 * (float(feat[0]) + float(feat[2]))
+            iris_dy = 0.5 * (float(feat[1]) + float(feat[3]))
+            yaw = float(feat[4])
+            pitch = float(feat[5])
 
-        # Normalize to [-1, 1] around display center; conservative gains prevent edge slamming.
         nx = max(-1.0, min(1.0, 2.2 * iris_dx + 1.4 * yaw))
         ny = max(-1.0, min(1.0, 2.6 * iris_dy + 1.4 * pitch))
 
@@ -140,16 +173,16 @@ class MonocularGazeEstimator:
         if n < self.min_clicks:
             self._weights = None
             return
-        X = np.ones((n, FEATURE_DIM + 1), dtype=np.float64)
+        d = self.feature_dim
+        X = np.ones((n, d + 1), dtype=np.float64)
         Y = np.empty((n, 2), dtype=np.float64)
         for i, (feat, sx, sy) in enumerate(self._samples):
-            X[i, :FEATURE_DIM] = feat
+            X[i, :d] = feat
             Y[i, 0] = sx
             Y[i, 1] = sy
 
-        # Regularize feature weights but leave the bias term unpenalized.
-        reg = np.eye(FEATURE_DIM + 1, dtype=np.float64) * self.ridge_alpha
-        reg[FEATURE_DIM, FEATURE_DIM] = 1e-8
+        reg = np.eye(d + 1, dtype=np.float64) * self.ridge_alpha
+        reg[d, d] = 1e-8
         try:
             self._weights = np.linalg.solve(X.T @ X + reg, X.T @ Y)
         except np.linalg.LinAlgError:
@@ -158,8 +191,8 @@ class MonocularGazeEstimator:
     def add_click(self, feat: np.ndarray, x: float, y: float) -> int:
         """Record one natural (feature, click_xy) pair and refit if ready."""
         arr = np.asarray(feat, dtype=np.float64).reshape(-1)
-        if arr.shape[0] != FEATURE_DIM or not np.all(np.isfinite(arr)):
-            raise ValueError(f"feature vector must be finite length {FEATURE_DIM}")
+        if arr.shape[0] != self.feature_dim or not np.all(np.isfinite(arr)):
+            raise ValueError(f"feature vector must be finite length {self.feature_dim}")
         cx, cy = self._clamp(x, y)
         with self._lock:
             self._samples.append((arr.copy(), cx, cy))
@@ -190,8 +223,8 @@ class MonocularGazeEstimator:
     ) -> tuple[float, float, float, float, bool]:
         """Return ``(smooth_x, smooth_y, raw_x, raw_y, using_ridge)``."""
         arr = np.asarray(feat, dtype=np.float64).reshape(-1)
-        if arr.shape[0] != FEATURE_DIM:
-            raise ValueError(f"feature vector must have length {FEATURE_DIM}")
+        if arr.shape[0] != self.feature_dim:
+            raise ValueError(f"feature vector must have length {self.feature_dim}")
 
         prior_x, prior_y = self._prior_xy(arr)
         with self._lock:
@@ -199,9 +232,10 @@ class MonocularGazeEstimator:
             n = len(self._samples)
 
         if weights is not None:
-            x_aug = np.empty(FEATURE_DIM + 1, dtype=np.float64)
-            x_aug[:FEATURE_DIM] = arr
-            x_aug[FEATURE_DIM] = 1.0
+            d = self.feature_dim
+            x_aug = np.empty(d + 1, dtype=np.float64)
+            x_aug[:d] = arr
+            x_aug[d] = 1.0
             pred = x_aug @ weights
             rx, ry = self._clamp(float(pred[0]), float(pred[1]))
             blend = min(1.0, (n - self.min_clicks + 1) / float(self.blend_clicks))
@@ -222,63 +256,15 @@ class MonocularGazeEstimator:
         return sx, sy, raw_x, raw_y, using_ridge
 
 
-def _open_monocular_capture(
-    config: AppConfig,
-    camera_override: str | None = None,
-) -> tuple[Any, str]:
-    """Open one webcam cross-platform using existing platform adapters."""
-    from keyless.platform.router import current_host, resolve_camera_config
-
-    host = current_host()
-    if camera_override:
-        cam_id = camera_override
-    else:
-        _mode, cam1, _cam2 = resolve_camera_config(
-            "mono", config.cam1_by_id, config.cam2_by_id
-        )
-        cam_id = cam1 or config.cam1_by_id
-
-    if host == "linux":
-        from keyless.platform.linux.v4l2 import open_locked_capture
-
-        cap, _report = open_locked_capture(
-            by_id_path=cam_id,
-            width=config.frame_width,
-            height=config.frame_height,
-            fps=config.fps,
-            exposure_absolute=config.cam1_exposure,
-            gain=config.cam1_gain,
-            manual_exposure=not config.cam_auto_exposure,
-        )
-        return cap, cam_id
-
-    if host == "macos":
-        from keyless.platform.macos.capture import open_opencv_capture
-
-        cap, _report = open_opencv_capture(
-            cam_id,
-            width=config.frame_width,
-            height=config.frame_height,
-            fps=config.fps,
-        )
-        return cap, cam_id
-
-    import cv2
-
-    cap = cv2.VideoCapture(int(cam_id) if str(cam_id).isdigit() else cam_id)
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open camera {cam_id!r}")
-    return cap, str(cam_id)
-
-
 class MonocularGazePublisher:
-    """Reads one webcam, extracts MediaPipe landmarks, and publishes to shared memory."""
+    """Unified gaze publisher supporting monocular (1 cam, 10D) and binocular (2 cams, 20D)."""
 
     def __init__(
         self,
         config: AppConfig | None = None,
         *,
         camera_id: str | None = None,
+        camera_mode: str | None = None,
         shm_name: str = SHM_NAME,
         min_clicks: int = 5,
         ridge_alpha: float = 1e-2,
@@ -291,75 +277,123 @@ class MonocularGazePublisher:
         self.config = config or AppConfig.load()
         self.layout = get_display_layout()
         self.camera_id = camera_id
+        self.requested_mode = (camera_mode or self.config.camera_mode or "auto").lower()
         self.shm_name = shm_name
+        self.min_clicks = int(min_clicks)
+        self.ridge_alpha = float(ridge_alpha)
         self.enable_click_adaptation = bool(enable_click_adaptation)
         self.publish_shm = bool(publish_shm)
         self._on_prediction = on_prediction
 
+        self.active_mode: str = "monocular"
         self.estimator = MonocularGazeEstimator(
             self.layout.total_width,
             self.layout.total_height,
-            min_clicks=min_clicks,
-            ridge_alpha=ridge_alpha,
+            feature_dim=FEATURE_DIM,
+            min_clicks=self.min_clicks,
+            ridge_alpha=self.ridge_alpha,
         )
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._cap: Any = None
-        self._resolved_cam_id: str = camera_id or "mono"
-        self._extractor: FaceFeatureExtractor | None = None
+        self._capture: StereoCapture | None = None
+        self._resolved_cams: list[str] = []
         self._writer: SharedGazeWriter | None = None
         self._click_observer: Any = None
 
-        self._latest_obs: CameraObservation | None = None
+        self._latest_feat: np.ndarray | None = None
+        self._latest_frame_dict: dict[str, Any] | None = None
         self._latest_obs_mono: float = 0.0
+        self._latest_blinking: bool = False
         self._latest_pred: MonocularPrediction | None = None
         self._frames_read: int = 0
         self._faces_detected: int = 0
         self._clicks_adapted: int = 0
+        self._measured_fps: float = 0.0
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
+        from keyless.platform.router import current_host, resolve_camera_config
+
         self._stop.clear()
-        self._cap, self._resolved_cam_id = _open_monocular_capture(
-            self.config, self.camera_id
+        if self.camera_id:
+            resolved_mode, cam1, cam2 = "mono", self.camera_id, ""
+        else:
+            resolved_mode, cam1, cam2 = resolve_camera_config(
+                self.requested_mode, self.config.cam1_by_id, self.config.cam2_by_id
+            )
+            if not cam1:
+                raise RuntimeError("No webcam detected. Connect a camera and try again.")
+            if self.requested_mode == "stereo" and not cam2:
+                raise RuntimeError(
+                    "Binocular (stereo) mode requested, but only one camera is connected."
+                )
+
+        is_binocular = resolved_mode == "stereo" and bool(cam2)
+        self.active_mode = "binocular" if is_binocular else "monocular"
+        self._resolved_cams = [cam1, cam2] if is_binocular else [cam1]
+        feat_dim = BINOCULAR_FEATURE_DIM if is_binocular else FEATURE_DIM
+        self.estimator = MonocularGazeEstimator(
+            self.layout.total_width,
+            self.layout.total_height,
+            feature_dim=feat_dim,
+            min_clicks=self.min_clicks,
+            ridge_alpha=self.ridge_alpha,
         )
-        self._extractor = FaceFeatureExtractor(use_gpu=self.config.use_gpu)
+
+        backend = "opencv" if current_host() == "macos" else (
+            "pipewire" if (not is_binocular and self.config.camera_backend == "pipewire") else "v4l2"
+        )
+        self._capture = StereoCapture(
+            cam1_by_id=cam1,
+            cam2_by_id=cam2 if is_binocular else None,
+            mono=not is_binocular,
+            width=self.config.frame_width,
+            height=self.config.frame_height,
+            fps=self.config.fps,
+            cam1_exposure=self.config.cam1_exposure,
+            cam1_gain=self.config.cam1_gain,
+            cam2_exposure=self.config.cam2_exposure,
+            cam2_gain=self.config.cam2_gain,
+            extract_landmarks=True,
+            use_gpu=self.config.use_gpu,
+            keep_images=False,
+            auto_exposure=self.config.cam_auto_exposure,
+            capture_backend=backend,
+        )
+        self._capture.start()
+
         if self.publish_shm:
             self._writer = SharedGazeWriter(shm_name=self.shm_name)
 
-        if self.enable_click_adaptation:
-            from keyless.platform.router import current_host
+        if self.enable_click_adaptation and current_host() == "linux":
+            from keyless.gaze.recorder import LinuxClickObserver
 
-            if current_host() == "linux":
-                from keyless.gaze.recorder import LinuxClickObserver
-
-                obs = LinuxClickObserver(self.on_click)
-                if obs.start():
-                    self._click_observer = obs
-                else:
-                    logger.info(
-                        "Passive click adaptation unavailable (%s); running prior-only.",
-                        obs.unavailable_reason,
-                    )
+            obs = LinuxClickObserver(self.on_click)
+            if obs.start():
+                self._click_observer = obs
+            else:
+                logger.info(
+                    "Passive click adaptation unavailable (%s); running prior-only.",
+                    obs.unavailable_reason,
+                )
 
         self._thread = threading.Thread(
-            target=self._loop, name="monocular-gaze-pub", daemon=True
+            target=self._loop, name="keyless-gaze-pub", daemon=True
         )
         self._thread.start()
 
     def on_click(self, x: float, y: float, *, max_age_sec: float = 0.25) -> bool:
-        """Pair a physical click with the freshest face observation if recent."""
+        """Pair a physical click with the freshest face feature vector if recent."""
         with self._lock:
-            obs = self._latest_obs
+            feat = self._latest_feat
             age = time.monotonic() - self._latest_obs_mono
-        if obs is None or age > max_age_sec:
+            blinking = self._latest_blinking
+        if feat is None or age > max_age_sec or blinking:
             return False
-        if obs.max_blink >= self.config.blink_threshold:
-            return False
-        self.estimator.add_click(obs.to_feature_vector(), x, y)
+        self.estimator.add_click(feat, x, y)
         with self._lock:
             self._clicks_adapted += 1
         return True
@@ -367,12 +401,11 @@ class MonocularGazePublisher:
     def latest_frame_section(self, *, max_age_sec: float = 0.5) -> dict[str, Any] | None:
         """Return the latest schema-v0 ``frame`` dict for ``SessionRecorder``."""
         with self._lock:
-            obs = self._latest_obs
+            frame_dict = self._latest_frame_dict
             age = time.monotonic() - self._latest_obs_mono
-            cam_id = self._resolved_cam_id
-        if obs is None or age > max_age_sec:
+        if frame_dict is None or age > max_age_sec:
             return None
-        return observation_to_frame_section(obs, cam_id=cam_id)
+        return dict(frame_dict)
 
     def latest_prediction(self) -> MonocularPrediction | None:
         with self._lock:
@@ -387,47 +420,65 @@ class MonocularGazePublisher:
     def stats(self) -> dict[str, Any]:
         with self._lock:
             return {
-                "camera": self._resolved_cam_id,
+                "mode": self.active_mode,
+                "feature_dim": self.estimator.feature_dim,
+                "cameras": list(self._resolved_cams),
+                "camera": self._resolved_cams[0] if self._resolved_cams else "mono",
                 "frames_read": self._frames_read,
                 "faces_detected": self._faces_detected,
                 "clicks_adapted": self._clicks_adapted,
                 "samples": self.estimator.sample_count,
+                "min_clicks": self.estimator.min_clicks,
                 "using_ridge": self.estimator.is_adapted,
+                "measured_fps": round(self._measured_fps, 1),
+                "sample_points": self.estimator.sample_points(),
             }
 
     def _loop(self) -> None:
-        assert self._cap is not None and self._extractor is not None
+        assert self._capture is not None
+        last_seq = -1
         while not self._stop.is_set():
-            ok, frame = self._cap.read()
-            if not ok or frame is None:
-                time.sleep(0.01)
+            pair = self._capture.read_pair(timeout_s=0.15)
+            if pair is None:
                 continue
-            ts_ns = time.monotonic_ns()
+            if pair.cam1.seq == last_seq:
+                time.sleep(0.004)
+                continue
+            last_seq = pair.cam1.seq
+
+            ts_ns = pair.cam1.timestamp_ns or time.monotonic_ns()
             t_sec = ts_ns / 1e9
-            obs = self._extractor.process(frame, ts_ns)
+            obs1 = pair.cam1.observation
+            obs2 = None if self._capture.mono else pair.cam2.observation
+            skew_ms = 0.0 if self._capture.mono else float(pair.skew_ms)
+
             with self._lock:
                 self._frames_read += 1
+                self._measured_fps = float(pair.cam1.measured_fps)
 
-            if obs is None:
-                pred = MonocularPrediction(
-                    x=self.layout.total_width * 0.5,
-                    y=self.layout.total_height * 0.5,
-                    raw_x=self.layout.total_width * 0.5,
-                    raw_y=self.layout.total_height * 0.5,
-                    face_detected=False,
-                    blinking=False,
-                    samples=self.estimator.sample_count,
-                    using_ridge=self.estimator.is_adapted,
-                    timestamp_ns=ts_ns,
+            if self.active_mode == "binocular":
+                if obs1 is None or obs2 is None:
+                    self._publish_no_face(ts_ns, skew_ms)
+                    continue
+                feat = np.concatenate([obs1.to_feature_vector(), obs2.to_feature_vector()])
+                blinking = max(obs1.max_blink, obs2.max_blink) >= self.config.blink_threshold
+                yaw = 0.5 * (float(obs1.yaw) + float(obs2.yaw))
+                pitch = 0.5 * (float(obs1.pitch) + float(obs2.pitch))
+                roll = 0.5 * (float(obs1.roll) + float(obs2.roll))
+                frame_dict = observation_to_frame_section(
+                    obs1, self._resolved_cams[0], obs2, self._resolved_cams[1]
                 )
-                with self._lock:
-                    self._latest_pred = pred
-                if self._writer is not None:
-                    self._writer.write(pred.x, pred.y, 0, timestamp_ns=ts_ns)
-                continue
+            else:
+                if obs1 is None:
+                    self._publish_no_face(ts_ns, 0.0)
+                    continue
+                feat = obs1.to_feature_vector()
+                blinking = obs1.max_blink >= self.config.blink_threshold
+                yaw = float(obs1.yaw)
+                pitch = float(obs1.pitch)
+                roll = float(obs1.roll)
+                frame_dict = observation_to_frame_section(obs1, self._resolved_cams[0])
 
-            blinking = obs.max_blink >= self.config.blink_threshold
-            feat = obs.to_feature_vector()
             sx, sy, rx, ry, using_ridge = self.estimator.predict(feat, t_sec=t_sec)
             flags = FLAG_FACE_DETECTED | (FLAG_BLINKING if blinking else 0)
             pred = MonocularPrediction(
@@ -440,10 +491,17 @@ class MonocularGazePublisher:
                 samples=self.estimator.sample_count,
                 using_ridge=using_ridge,
                 timestamp_ns=ts_ns,
+                yaw=yaw,
+                pitch=pitch,
+                roll=roll,
+                mode=self.active_mode,
+                skew_ms=skew_ms,
             )
             with self._lock:
-                self._latest_obs = obs
+                self._latest_feat = feat
+                self._latest_frame_dict = frame_dict
                 self._latest_obs_mono = time.monotonic()
+                self._latest_blinking = blinking
                 self._latest_pred = pred
                 self._faces_detected += 1
 
@@ -454,6 +512,25 @@ class MonocularGazePublisher:
                     self._on_prediction(pred)
                 except Exception:
                     logger.debug("on_prediction callback failed", exc_info=True)
+
+    def _publish_no_face(self, ts_ns: int, skew_ms: float) -> None:
+        pred = MonocularPrediction(
+            x=self.layout.total_width * 0.5,
+            y=self.layout.total_height * 0.5,
+            raw_x=self.layout.total_width * 0.5,
+            raw_y=self.layout.total_height * 0.5,
+            face_detected=False,
+            blinking=False,
+            samples=self.estimator.sample_count,
+            using_ridge=self.estimator.is_adapted,
+            timestamp_ns=ts_ns,
+            mode=self.active_mode,
+            skew_ms=skew_ms,
+        )
+        with self._lock:
+            self._latest_pred = pred
+        if self._writer is not None:
+            self._writer.write(pred.x, pred.y, 0, timestamp_ns=ts_ns)
 
     def run(self, duration_sec: float | None = None) -> dict[str, Any]:
         """Start the publisher and block until ``duration_sec`` elapses or Ctrl+C."""
@@ -481,18 +558,12 @@ class MonocularGazePublisher:
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         self._thread = None
-        if self._cap is not None:
+        if self._capture is not None:
             try:
-                self._cap.release()
+                self._capture.close()
             except Exception:
                 pass
-            self._cap = None
-        if self._extractor is not None:
-            try:
-                self._extractor.close()
-            except Exception:
-                pass
-            self._extractor = None
+            self._capture = None
         if self._writer is not None:
             try:
                 self._writer.close()
@@ -502,6 +573,7 @@ class MonocularGazePublisher:
 
 
 __all__ = [
+    "BINOCULAR_FEATURE_DIM",
     "FEATURE_DIM",
     "MonocularGazeEstimator",
     "MonocularGazePublisher",

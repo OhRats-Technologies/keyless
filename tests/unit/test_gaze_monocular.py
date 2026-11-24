@@ -156,3 +156,55 @@ def test_shared_memory_writer_and_source_roundtrip() -> None:
             reader.close()
     finally:
         writer.close()
+
+
+def test_binocular_20d_cold_start_and_ridge_adaptation() -> None:
+    from keyless.gaze.monocular import BINOCULAR_FEATURE_DIM
+
+    rng = np.random.default_rng(7)
+    est = MonocularGazeEstimator(
+        3840,
+        1080,
+        feature_dim=BINOCULAR_FEATURE_DIM,
+        min_clicks=5,
+        blend_clicks=5,
+        ridge_alpha=1e-4,
+        smooth=False,
+    )
+    cx, cy, _, _, using_ridge = est.predict(np.zeros(BINOCULAR_FEATURE_DIM))
+    assert using_ridge is False
+    assert cx == pytest.approx(1920.0)
+    assert cy == pytest.approx(540.0)
+
+    true_w = np.zeros((BINOCULAR_FEATURE_DIM, 2), dtype=np.float64)
+    true_w[0, 0] = 1600.0
+    true_w[10, 0] = 1600.0
+    true_w[1, 1] = 800.0
+    true_w[11, 1] = 800.0
+    bias = np.array([1920.0, 540.0], dtype=np.float64)
+
+    for _ in range(30):
+        f = rng.uniform(-0.2, 0.2, size=BINOCULAR_FEATURE_DIM)
+        xy = f @ true_w + bias
+        est.add_click(f, float(xy[0]), float(xy[1]))
+
+    assert est.is_adapted is True
+    assert len(est.sample_points()) == 30
+    test_f = np.zeros(BINOCULAR_FEATURE_DIM)
+    test_f[0] = 0.1
+    test_f[10] = 0.1
+    test_f[1] = -0.05
+    test_f[11] = -0.05
+    expected = test_f @ true_w + bias
+    px, py, _, _, using_ridge = est.predict(test_f)
+    assert using_ridge is True
+    assert abs(px - expected[0]) < 20.0
+    assert abs(py - expected[1]) < 20.0
+
+    # Verify binocular observation_to_frame_section produces 20D features + 2 cams
+    obs1 = _dummy_observation(yaw=0.1, pitch=-0.05)
+    obs2 = _dummy_observation(yaw=0.2, pitch=0.05)
+    frame = observation_to_frame_section(obs1, "cam1", obs2, "cam2")
+    assert frame["cams"] == ["cam1", "cam2"]
+    assert len(frame["features"]) == BINOCULAR_FEATURE_DIM
+    assert frame["head_pose"]["yaw"] == pytest.approx(0.15)
