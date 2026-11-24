@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -547,6 +548,7 @@ def ui(
     port: int = typer.Option(8766, help="Loopback port for the unified Keyless web UI"),
     host: str = typer.Option("127.0.0.1", help="Bind address (loopback only)"),
     no_open: bool = typer.Option(False, "--no-open", help="Start the server without launching a browser"),
+    no_tray: bool = typer.Option(False, "--no-tray", help="macOS: do not show the menu-bar item"),
 ) -> None:
     """Start the local Keyless HTTP server and open the unified web UI in your browser."""
     from keyless.daemon import create_control_server
@@ -567,6 +569,9 @@ def ui(
     console.print(f"[green]Keyless web UI listening at {url}[/green] (Ctrl+C to stop)")
     if not no_open:
         open_browser_url(url)
+    if sys.platform == "darwin" and not no_tray:
+        _run_macos_tray(server, url)
+        return
     try:
         while True:
             time.sleep(3600.0)
@@ -574,6 +579,38 @@ def ui(
         pass
     finally:
         server.stop()
+
+
+def _run_macos_tray(server, url: str) -> None:  # type: ignore[no-untyped-def]
+    """Menu-bar item on the main thread; returns after Quit (or Ctrl+C) with the server stopped."""
+    from keyless.platform.macos.tray import macOSTray
+    from keyless.web import open_browser_url
+
+    gaze = server.gaze_manager
+    stopped = False
+
+    def shutdown() -> None:
+        nonlocal stopped
+        if not stopped:
+            stopped = True
+            server.stop()  # stops gaze (pointer handed back, eye cursor closed) and the voice daemon
+
+    def set_gaze(on: bool) -> None:
+        if on:
+            gaze.start_gaze(camera_mode="auto")
+        else:
+            gaze.stop_gaze()
+
+    tray = macOSTray(
+        open_ui=lambda: open_browser_url(url),
+        gaze_running=lambda: bool(gaze.gaze_status().get("running")),
+        set_gaze=set_gaze,
+        on_quit=shutdown,
+    )
+    try:
+        tray.run()
+    finally:
+        shutdown()
 
 
 @app.command("serve")

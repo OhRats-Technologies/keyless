@@ -30,6 +30,11 @@ Tests: 407 pass + 2 skip (both evdev-only) excluding packaging/release/instance-
 - Step 4, native stage: synthetic sweep drew dim + stimulus on the display (screenshots),
   start 0.37 s / stop 0.02 s.
 
+- Menu-bar item (`keyless ui` on macOS; `--no-tray` to skip): Open Keyless, Eye tracking on/off,
+  Quit Keyless. Icon follows gaze state (eye / eye.slash, refreshed every 1 s). Quit, Ctrl+C and
+  SIGTERM all stop gaze, the eye cursor, cua-driver and the server (verified: no process, port free).
+  Menu clicks themselves were not exercised by the agent (that would drive the real pointer).
+
 **Not tested yet (needs a person at the Mac)**
 - A full warm-up through the **native stage** (grade/latency vs the browser run above).
 - Live eye-cursor quality. While typing (looking at the keyboard) predictions pinned to
