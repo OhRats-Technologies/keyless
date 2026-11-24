@@ -412,9 +412,9 @@ function renderGaze(root) {
             <span class="telemetry">Click-through Wayland reticle</span>
           </div>
           <div class="telemetry-cell">
-            <span class="eyebrow">Stereo skew</span>
-            <span class="big-readout" id="gaze-skew">${pred && g.mode === 'binocular' ? `${pred.skew_ms.toFixed(1)}ms` : 'N/A'}</span>
-            <span class="telemetry">${cams.length} camera(s) detected</span>
+            <span class="eyebrow">State Estimator</span>
+            <span class="big-readout" id="gaze-kin">${pred ? esc((pred.kinematics || 'fixation').toUpperCase().replace('_', ' ')) : 'IDLE'}</span>
+            <span class="telemetry" id="gaze-suppressed">${stats.blinks_suppressed || 0} blinks / ${stats.outliers_suppressed || 0} REM gated</span>
           </div>
         </div>
       </div>
@@ -637,20 +637,21 @@ function drawGazeCanvas() {
   ctx.globalAlpha = 1.0;
 
   const gx = ox + pred.x * scale, gy = oy + pred.y * scale;
-  const radius = pred.blinking ? 24 : 17;
+  const isHold = pred.blinking || pred.kinematics === 'blink_hold' || pred.kinematics === 'recovery';
+  const radius = 15;
+  const alphaScale = isHold ? 0.38 : 1.0;
   ctx.fillStyle = sigColor;
-  ctx.globalAlpha = 0.14;
-  ctx.beginPath(); ctx.arc(gx, gy, radius + 6, 0, Math.PI * 2); ctx.fill();
-  ctx.globalAlpha = 1.0;
+  ctx.globalAlpha = 0.12 * alphaScale;
+  ctx.beginPath(); ctx.arc(gx, gy, radius, 0, Math.PI * 2); ctx.fill();
 
+  ctx.globalAlpha = 0.9 * alphaScale;
   ctx.strokeStyle = sigColor;
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.arc(gx, gy, radius, 0, Math.PI * 2); ctx.stroke();
-  for (const [dx1, dy1, dx2, dy2] of [[-radius - 6, 0, -radius + 3, 0], [radius - 3, 0, radius + 6, 0], [0, -radius - 6, 0, -radius + 3], [0, radius - 3, 0, radius + 6]]) {
-    ctx.beginPath(); ctx.moveTo(gx + dx1, gy + dy1); ctx.lineTo(gx + dx2, gy + dy2); ctx.stroke();
-  }
+
   ctx.fillStyle = text;
-  ctx.beginPath(); ctx.arc(gx, gy, 3, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(gx, gy, 2.8, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1.0;
 
   const tag = `${Math.round(pred.x)}, ${Math.round(pred.y)}`;
   ctx.font = '700 10px "MesloLGS Nerd Font Mono", monospace';
@@ -1375,7 +1376,8 @@ function connectStreams() {
           setTxt('gaze-adapt-state', st.using_ridge ? 'RIDGE' : 'PRIOR');
           setTxt('gaze-adapt-count', `${st.samples || 0} / ${st.min_clicks || 5} clicks`);
           setTxt('gaze-overlay-readout', state.gaze.overlay_active ? 'ACTIVE' : 'OFF');
-          setTxt('gaze-skew', pred && state.gaze.mode === 'binocular' ? `${pred.skew_ms.toFixed(1)}ms` : 'N/A');
+          setTxt('gaze-kin', pred ? String(pred.kinematics || 'fixation').toUpperCase().replace('_', ' ') : 'IDLE');
+          setTxt('gaze-suppressed', `${st.blinks_suppressed || 0} blinks / ${st.outliers_suppressed || 0} REM gated`);
           setTxt('gaze-disp-badge', pred && pred.display ? `${pred.display}${pred.in_gap ? ' (GAP)' : ''}` : '3D RIG');
           setTxt('att-yaw', `YAW   ${pred ? `${(pred.yaw * 57.3).toFixed(1)} deg` : '--'}`);
           setTxt('att-pitch', `PITCH ${pred ? `${(pred.pitch * 57.3).toFixed(1)} deg` : '--'}`);

@@ -286,9 +286,14 @@ static void clear_rect(struct output_overlay *ov, int32_t cx, int32_t cy, int32_
 }
 
 static void draw_reticle(struct output_overlay *ov, int32_t cx, int32_t cy, bool blinking) {
-    /* OhRats terracotta-amber (#e27a3b) + ivory center pip (#f4f3df) */
-    const float radius = blinking ? 22.0f : 16.0f;
-    const int32_t pad = 34;
+    /*
+     * Calm visionOS-inspired rounded focus ring (OhRats terracotta-amber #e27a3b + ivory pip).
+     * Avoids sharp crosshair edges and never expands during blinks (dims softly instead)
+     * so peripheral motion never triggers involuntary cursor-chasing saccades.
+     */
+    const float radius = 14.0f;
+    const float dim = blinking ? 0.34f : 1.0f;
+    const int32_t pad = 26;
     int32_t x0 = cx - pad; if (x0 < 0) x0 = 0;
     int32_t y0 = cy - pad; if (y0 < 0) y0 = 0;
     int32_t x1 = cx + pad; if (x1 >= ov->buf_w) x1 = ov->buf_w - 1;
@@ -301,25 +306,20 @@ static void draw_reticle(struct output_overlay *ov, int32_t cx, int32_t cy, bool
             float dist = sqrtf(dx * dx + dy * dy);
             uint32_t *px = &ov->pixels[y * ov->buf_w + x];
 
-            /* Subtle halo */
-            if (dist < radius + 5.0f && dist > radius - 4.0f) {
-                float d = fabsf(dist - radius);
-                float ring_a = d < 1.3f ? 0.92f : (d < 2.6f ? 0.92f * (1.0f - (d - 1.3f) / 1.3f) : 0.0f);
-                if (ring_a > 0.0f) {
-                    blend_px(px, 226, 122, 59, ring_a);
-                } else {
-                    blend_px(px, 226, 122, 59, 0.12f);
-                }
+            /* Soft translucent inner fill */
+            if (dist < radius - 1.2f) {
+                blend_px(px, 226, 122, 59, 0.08f * dim);
             }
-            /* Cardinal ticks */
-            if ((fabsf(dy) <= 1.1f && fabsf(dx) >= radius - 3.0f && fabsf(dx) <= radius + 6.0f) ||
-                (fabsf(dx) <= 1.1f && fabsf(dy) >= radius - 3.0f && fabsf(dy) <= radius + 6.0f)) {
-                blend_px(px, 226, 122, 59, 0.90f);
+            /* Anti-aliased rounded focus ring */
+            float d = fabsf(dist - radius);
+            if (d < 2.2f) {
+                float ring_a = d < 1.1f ? 0.82f : 0.82f * (1.0f - (d - 1.1f) / 1.1f);
+                blend_px(px, 226, 122, 59, ring_a * dim);
             }
-            /* Center ivory pip */
-            if (dist <= 3.2f) {
-                float a = dist <= 2.2f ? 0.95f : (3.2f - dist);
-                blend_px(px, 244, 243, 223, a);
+            /* Subtle center anchor pip */
+            if (dist <= 2.6f) {
+                float a = dist <= 1.6f ? 0.88f : 0.88f * (2.6f - dist);
+                blend_px(px, 244, 243, 223, a * dim);
             }
         }
     }

@@ -40,7 +40,7 @@ from keyless.ipc.state import (
     SharedGazeWriter,
 )
 from keyless.vision.landmarks import CameraObservation, STEREO_FEATURE_DIM
-from keyless.vision.one_euro import OneEuroFilter2D
+from keyless.gaze.state_estimator import GazeKinematics, GazeStateEstimator
 from keyless.vision.stereo_capture import StereoCapture
 
 logger = logging.getLogger(__name__)
@@ -95,6 +95,9 @@ class MonocularPrediction:
     skew_ms: float = 0.0
     display: str = ""
     in_gap: bool = False
+    kinematics: str = "fixation"
+    blinks_suppressed: int = 0
+    outliers_suppressed: int = 0
 
 
 class MonocularGazeEstimator:
@@ -141,10 +144,11 @@ class MonocularGazeEstimator:
         self._angle_weights: np.ndarray | None = None
         # Per-display local (du, dv) residual weights: connector -> (feature_dim + 1, 2)
         self._local_weights: dict[str, np.ndarray] = {}
-        self._filter = OneEuroFilter2D() if smooth else None
+        self._state_est = GazeStateEstimator() if smooth else None
         self._lock = threading.Lock()
         self._last_display: str = self.rig.planes[0].connector
         self._last_in_gap: bool = False
+        self._last_kinematics: str = GazeKinematics.FIXATION.value
 
     @property
     def sample_count(self) -> int:
@@ -165,6 +169,19 @@ class MonocularGazeEstimator:
     def last_in_gap(self) -> bool:
         with self._lock:
             return self._last_in_gap
+
+    @property
+    def last_kinematics(self) -> str:
+        with self._lock:
+            return self._last_kinematics
+
+    @property
+    def blinks_suppressed(self) -> int:
+        return self._state_est.blinks_suppressed if self._state_est is not None else 0
+
+    @property
+    def outliers_suppressed(self) -> int:
+        return self._state_est.outliers_suppressed if self._state_est is not None else 0
 
     def set_rig(self, rig: DisplayRig) -> None:
         """Update physical 3D display geometry and refit existing clicks on the new rig."""
@@ -275,16 +292,18 @@ class MonocularGazeEstimator:
             self._samples.clear()
             self._angle_weights = None
             self._local_weights = {}
-            if self._filter is not None:
-                self._filter.reset()
+            if self._state_est is not None:
+                self._state_est.reset()
 
     def predict(
         self,
         feat: np.ndarray,
         *,
         t_sec: float | None = None,
+        blink_level: float = 0.0,
+        confidence: float = 1.0,
     ) -> tuple[float, float, float, float, bool]:
-        """Return ``(smooth_x, smooth_y, raw_x, raw_y, using_ridge)`` via 3D ray-plane intersection."""
+        """Return ``(smooth_x, smooth_y, raw_x, raw_y, using_ridge)`` via 3D angular Kalman + ray-plane intersection."""
         arr = np.asarray(feat, dtype=np.float64).reshape(-1)
         if arr.shape[0] != self.feature_dim:
             raise ValueError(f"feature vector must have length {self.feature_dim}")
@@ -318,21 +337,31 @@ class MonocularGazeEstimator:
             az, el = prior_az, prior_el
             using_ridge = False
 
-        hit = rig.ray_angles_to_pixel(az, el, local_offsets=local_offsets or None)
-        raw_x, raw_y = hit.x, hit.y
+        raw_hit = rig.ray_angles_to_pixel(az, el, local_offsets=local_offsets or None)
+        raw_x, raw_y = raw_hit.x, raw_hit.y
 
-        with self._lock:
-            self._last_display = hit.connector
-            self._last_in_gap = hit.in_gap
-
-        if self._filter is not None:
+        if self._state_est is not None:
             now = time.monotonic() if t_sec is None else float(t_sec)
-            sx, sy = self._filter(raw_x, raw_y, now)
-            plane = rig.plane_for_connector(hit.connector) or rig.planes[0]
-            sx = max(float(plane.x), min(float(plane.x + plane.width - 1), sx))
-            sy = max(float(plane.y), min(float(plane.y + plane.height - 1), sy))
+            est = self._state_est.update(
+                az, el, now, blink_level=blink_level, confidence=confidence
+            )
+            smooth_hit = rig.ray_angles_to_pixel(
+                est.az, est.el, local_offsets=local_offsets or None
+            )
+            sx, sy = smooth_hit.x, smooth_hit.y
+            kin = est.kinematics.value
+            active_disp = smooth_hit.connector
+            active_gap = smooth_hit.in_gap
         else:
             sx, sy = raw_x, raw_y
+            kin = GazeKinematics.FIXATION.value
+            active_disp = raw_hit.connector
+            active_gap = raw_hit.in_gap
+
+        with self._lock:
+            self._last_display = active_disp
+            self._last_in_gap = active_gap
+            self._last_kinematics = kin
 
         return sx, sy, raw_x, raw_y, using_ridge
 
@@ -546,6 +575,9 @@ class MonocularGazePublisher:
                 "measured_fps": round(self._measured_fps, 1),
                 "sample_points": self.estimator.sample_points(),
                 "overlay_active": self.overlay_active,
+                "kinematics": self.estimator.last_kinematics,
+                "blinks_suppressed": self.estimator.blinks_suppressed,
+                "outliers_suppressed": self.estimator.outliers_suppressed,
             }
 
     def _loop(self) -> None:
@@ -575,7 +607,8 @@ class MonocularGazePublisher:
                     self._publish_no_face(ts_ns, skew_ms)
                     continue
                 feat = np.concatenate([obs1.to_feature_vector(), obs2.to_feature_vector()])
-                blinking = max(obs1.max_blink, obs2.max_blink) >= self.config.blink_threshold
+                blink_level = float(max(obs1.max_blink, obs2.max_blink))
+                confidence = float(min(obs1.confidence_a, obs1.confidence_b, obs2.confidence_a, obs2.confidence_b))
                 yaw = 0.5 * (float(obs1.yaw) + float(obs2.yaw))
                 pitch = 0.5 * (float(obs1.pitch) + float(obs2.pitch))
                 roll = 0.5 * (float(obs1.roll) + float(obs2.roll))
@@ -587,13 +620,18 @@ class MonocularGazePublisher:
                     self._publish_no_face(ts_ns, 0.0)
                     continue
                 feat = obs1.to_feature_vector()
-                blinking = obs1.max_blink >= self.config.blink_threshold
+                blink_level = float(obs1.max_blink)
+                confidence = float(min(obs1.confidence_a, obs1.confidence_b))
                 yaw = float(obs1.yaw)
                 pitch = float(obs1.pitch)
                 roll = float(obs1.roll)
                 frame_dict = observation_to_frame_section(obs1, self._resolved_cams[0])
 
-            sx, sy, rx, ry, using_ridge = self.estimator.predict(feat, t_sec=t_sec)
+            sx, sy, rx, ry, using_ridge = self.estimator.predict(
+                feat, t_sec=t_sec, blink_level=blink_level, confidence=confidence
+            )
+            kin = self.estimator.last_kinematics
+            blinking = blink_level >= 0.24 or kin in ("blink_hold", "recovery")
             flags = FLAG_FACE_DETECTED | (FLAG_BLINKING if blinking else 0)
             pred = MonocularPrediction(
                 x=sx,
@@ -612,6 +650,9 @@ class MonocularGazePublisher:
                 skew_ms=skew_ms,
                 display=self.estimator.last_display,
                 in_gap=self.estimator.last_in_gap,
+                kinematics=kin,
+                blinks_suppressed=self.estimator.blinks_suppressed,
+                outliers_suppressed=self.estimator.outliers_suppressed,
             )
             with self._lock:
                 self._latest_feat = feat
