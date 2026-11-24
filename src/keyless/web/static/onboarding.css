@@ -235,6 +235,16 @@
 .ob-face.ok .ob-check { transform: scale(1); }
 .ob-face.ok .ob-check path { stroke-dashoffset: 0; transition: stroke-dashoffset 360ms ease 160ms; }
 
+/* --- allow: one macOS permission per screen -------------------------------- */
+.ob-allow { position: relative; width: 150px; height: 150px; border-radius: 50%; background: var(--ob-faint);
+  display: grid; place-items: center; transition: background 300ms ease; }
+.ob-allow > svg:first-child { width: 72px; height: 72px; fill: none; stroke: var(--ob-amber-hi);
+  stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+.ob-allow.ok { background: rgba(95, 208, 143, 0.16); }
+.ob-allow .ob-check { right: -2px; bottom: -2px; }
+.ob-allow.ok .ob-check { transform: scale(1); }
+.ob-allow.ok .ob-check path { stroke-dashoffset: 0; transition: stroke-dashoffset 360ms ease 160ms; }
+
 /* --- ready: display preview ------------------------------------------------ */
 .ob-map svg { display: block; max-width: 100%; height: auto; }
 .ob-map .mon { fill: rgba(244, 243, 223, 0.04); stroke: rgba(244, 243, 223, 0.28); stroke-width: 1.5; }

@@ -1,10 +1,11 @@
 // Keyless onboarding: one thing per screen, no jargon, auto-advance when it can.
-// Steps: hello -> camera -> ready -> (countdown) -> run -> solving -> done | retry
+// Steps: hello -> [allow, macOS only, one screen per missing grant] -> camera -> ready
+//        -> (countdown) -> run -> solving -> done | retry
 // The "light" is the same stimulus the native stage draws (overlay_wayland.c):
 // amber halo, 3-arm inward spiral, ivory pip. Keep the two in sync.
 
 const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-const STEPS = ['hello', 'camera', 'ready', 'run', 'done'];
+const BASE_STEPS = ['hello', 'camera', 'ready', 'run', 'done'];
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -189,6 +190,28 @@ function faceHint(pred) {
   return ['Perfect.', 'Hold that.', true];
 }
 
+// One OS grant per screen. Only missing ones are shown; each is skippable.
+const ALLOW_COPY = {
+  camera: {
+    title: 'Let Keyless see you',
+    sub: 'Your camera stays on this Mac.<br>Nothing is uploaded.',
+    button: 'Allow camera',
+    icon: '<rect x="14" y="20" width="30" height="22" rx="5"/><path d="M44 27 l10 -6 v20 l-10 -6 z"/>',
+  },
+  input_monitoring: {
+    title: 'Learn from your clicks',
+    sub: 'Where you click teaches Keyless where you look.<br>It only listens for mouse clicks.',
+    button: 'Allow clicks',
+    icon: '<path d="M22 14 l20 18 l-9 2 l5 11 l-5 2 l-5 -11 l-6 6 z"/>',
+  },
+  accessibility: {
+    title: 'Let Keyless click for you',
+    sub: 'So your voice can press the button you’re looking at.',
+    button: 'Allow',
+    icon: '<circle cx="32" cy="16" r="5"/><path d="M18 26 h28 M32 26 v12 l-8 14 M32 38 l8 14"/>',
+  },
+};
+
 function accuracyPhrase(px) {
   if (px == null) return 'Calibrated';
   if (px <= 45) return 'About the size of a button';
@@ -216,6 +239,9 @@ export class Onboarding {
     this._keys = (e) => this._onKey(e);
     this._minSolveUntil = 0;
     this.monitors = [];
+    this.steps = BASE_STEPS;
+    this.missing = [];
+    this._allowPoll = null;
   }
 
   static async shouldAutoOpen() {
@@ -234,6 +260,9 @@ export class Onboarding {
     if (this.root) return;
     const st = await api('/v1/gaze/status').catch(() => null);
     this.monitors = (st && st.display && st.display.monitors) || [];
+    const perms = await api('/v1/permissions/setup').catch(() => null);
+    this.missing = ((perms && perms.steps) || []).filter((p) => p.state !== 'granted').map((p) => p.id);
+    this.steps = this.missing.length ? ['hello', 'allow', ...BASE_STEPS.slice(1)] : BASE_STEPS;
     this.root = document.createElement('div');
     this.root.className = 'ob';
     this.root.setAttribute('role', 'dialog');
@@ -242,7 +271,7 @@ export class Onboarding {
     this.root.innerHTML = `
       <div class="ob-glow"></div>
       <div class="ob-top">
-        <div class="ob-pips">${STEPS.map((s) => `<i data-step="${s}"></i>`).join('')}</div>
+        <div class="ob-pips">${this.steps.map((s) => `<i data-step="${s}"></i>`).join('')}</div>
         <button class="ob-close" type="button" aria-label="Close">Not now</button>
       </div>
       <div class="ob-stage"></div>`;
@@ -263,6 +292,7 @@ export class Onboarding {
     }
     this._stopStreams();
     this._unwatchViewport();
+    this._stopAllowPoll();
     if (this.orb) this.orb.stop();
     if (this.runOrb) this.runOrb.stop();
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -287,7 +317,7 @@ export class Onboarding {
   }
 
   _pips(step) {
-    const idx = STEPS.indexOf(step === 'retry' ? 'done' : step);
+    const idx = this.steps.indexOf(step === 'retry' ? 'done' : step);
     this.root.querySelectorAll('.ob-pips i').forEach((el, i) => {
       el.classList.toggle('on', i === idx);
       el.classList.toggle('past', i < idx);
@@ -297,6 +327,7 @@ export class Onboarding {
   go(step, { first = false } = {}) {
     if (!this.root) return;
     if (step !== 'run') this._unwatchViewport();
+    if (step !== 'allow') this._stopAllowPoll();
     this.step = step;
     this._pips(step);
     this.root.dataset.step = step;
@@ -357,7 +388,58 @@ export class Onboarding {
 
   _wire_hello(card) {
     this._mountOrb(card.querySelector('.ob-orb'), { size: 0.95 });
-    card.querySelector('.ob-primary').addEventListener('click', () => this.go('camera'));
+    card.querySelector('.ob-primary').addEventListener('click', () => this.go(this.missing.length ? 'allow' : 'camera'));
+  }
+
+  // --- allow (macOS permissions, one per screen) -----------------------------
+
+  _allow() {
+    const id = this.missing[0];
+    const c = ALLOW_COPY[id] || ALLOW_COPY.camera;
+    return `
+      <div class="ob-hero"><div class="ob-allow"><svg viewBox="0 0 64 64" aria-hidden="true">${c.icon}</svg>
+        <svg class="ob-check" viewBox="0 0 52 52" aria-hidden="true"><path d="M14 27 l8 8 l16 -18" pathLength="1"/></svg></div></div>
+      <h1 class="ob-title">${c.title}</h1>
+      <p class="ob-sub" id="ob-allow-sub">${c.sub}</p>
+      <div class="ob-actions">
+        <button class="ob-btn ob-primary" type="button">${c.button}</button>
+        <button class="ob-btn ob-ghost" type="button" id="ob-allow-skip">Skip</button>
+      </div>`;
+  }
+
+  _wire_allow(card) {
+    if (this.orb) this.orb.stop();
+    const id = this.missing[0];
+    card.querySelector('#ob-allow-skip').addEventListener('click', () => this._nextAllow());
+    card.querySelector('.ob-primary').addEventListener('click', async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        const res = await api('/v1/permissions/setup/request', { method: 'POST', body: { id } });
+        if (res.outcome === 'opened_settings') {
+          card.querySelector('#ob-allow-sub').innerHTML = 'Turn on Keyless in the list that just opened,<br>then come back here.';
+        }
+      } catch {}
+      e.currentTarget.disabled = false;
+    });
+    // Advance on its own the moment the grant lands (prompt or System Settings).
+    this._allowPoll = setInterval(async () => {
+      const perms = await api('/v1/permissions/setup').catch(() => null);
+      const row = perms && (perms.steps || []).find((p) => p.id === id);
+      if (row && row.state === 'granted' && this.step === 'allow') {
+        this._stopAllowPoll();
+        card.querySelector('.ob-allow').classList.add('ok');
+        setTimeout(() => this.step === 'allow' && this._nextAllow(), REDUCED ? 150 : 650);
+      }
+    }, 1000);
+  }
+
+  _stopAllowPoll() {
+    if (this._allowPoll) { clearInterval(this._allowPoll); this._allowPoll = null; }
+  }
+
+  _nextAllow() {
+    this.missing.shift();
+    this.go(this.missing.length ? 'allow' : 'camera');
   }
 
   _mountOrb(canvas, { size = 1 } = {}) {
