@@ -594,6 +594,121 @@ class WebGazeManager:
             pub.set_dev_monitor_border(bool(enabled))
         return self.gaze_status()
 
+
+    # --- LLM / ACP Auto-Detection & 1-Click Selection -------------------
+
+    def llm_providers_summary(self) -> dict[str, Any]:
+        import os
+        import socket
+        from keyless.models.providers.acp_registry import resolve_agent_binary
+
+        cfg = AppConfig.load(self.paths.settings_path)
+
+        # Fast 120ms local Ollama check
+        ollama_up = False
+        try:
+            with socket.create_connection(("127.0.0.1", 11434), timeout=0.12):
+                ollama_up = True
+        except OSError:
+            ollama_up = resolve_agent_binary("ollama") is not None
+
+        has_npx = resolve_agent_binary("npx") is not None
+        candidates = [
+            {
+                "id": "acp:agy",
+                "name": "Gemini (agy)",
+                "kind": "ACP Agent",
+                "description": "Local Gemini / Antigravity ACP agent",
+                "ready": resolve_agent_binary("agy") is not None,
+                "patch": {"llm_provider": "acp", "llm_backend": "acp", "acp_agent_id": "agy"},
+            },
+            {
+                "id": "acp:opencode",
+                "name": "OpenCode",
+                "kind": "ACP Agent",
+                "description": "Open-source terminal coding agent via ACP",
+                "ready": resolve_agent_binary("opencode") is not None,
+                "patch": {"llm_provider": "acp", "llm_backend": "acp", "acp_agent_id": "opencode"},
+            },
+            {
+                "id": "acp:claude-acp",
+                "name": "Claude Code",
+                "kind": "ACP Agent",
+                "description": "Anthropic Claude via ACP adapter",
+                "ready": resolve_agent_binary("claude") is not None or has_npx,
+                "patch": {"llm_provider": "acp", "llm_backend": "acp", "acp_agent_id": "claude-acp"},
+            },
+            {
+                "id": "acp:codex-acp",
+                "name": "Codex",
+                "kind": "ACP Agent",
+                "description": "OpenAI Codex via ACP adapter",
+                "ready": resolve_agent_binary("codex") is not None or has_npx,
+                "patch": {"llm_provider": "acp", "llm_backend": "acp", "acp_agent_id": "codex-acp"},
+            },
+            {
+                "id": "acp:gemini",
+                "name": "Gemini CLI",
+                "kind": "ACP Agent",
+                "description": "Official Google Gemini CLI via ACP",
+                "ready": resolve_agent_binary("gemini") is not None or has_npx,
+                "patch": {"llm_provider": "acp", "llm_backend": "acp", "acp_agent_id": "gemini"},
+            },
+            {
+                "id": "ollama",
+                "name": "Ollama (Local)",
+                "kind": "Local LLM",
+                "description": f"Offline local inference ({cfg.ollama_model})",
+                "ready": ollama_up,
+                "patch": {"llm_provider": "ollama", "llm_backend": "ollama"},
+            },
+            {
+                "id": "gemini",
+                "name": "Gemini API",
+                "kind": "Cloud API",
+                "description": f"Direct Google API ({cfg.gemini_model})",
+                "ready": bool(os.environ.get("GEMINI_API_KEY")),
+                "patch": {"llm_provider": "gemini", "llm_backend": "gemini", "llm_preset": "gemini"},
+            },
+            {
+                "id": "openai_compat",
+                "name": "OpenAI / Custom API",
+                "kind": "Cloud API",
+                "description": f"OpenAI-compatible endpoint ({cfg.llm_preset})",
+                "ready": bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")),
+                "patch": {"llm_provider": "openai_compat", "llm_backend": "openai_compat"},
+            },
+        ]
+
+        # Determine currently selected preset id
+        active_id = "auto"
+        prov = cfg.llm_provider if cfg.llm_provider != "auto" else cfg.llm_backend
+        if prov == "acp":
+            active_id = f"acp:{cfg.acp_agent_id}"
+        elif prov in ("ollama", "gemini", "openai_compat"):
+            active_id = prov
+
+        recommended = next((c["id"] for c in candidates if c["ready"]), "ollama")
+        return {
+            "active_id": active_id,
+            "recommended_id": recommended,
+            "providers": candidates,
+        }
+
+    def select_llm_provider(self, preset_id: str) -> dict[str, Any]:
+        summary = self.llm_providers_summary()
+        target_id = summary["recommended_id"] if preset_id == "auto" else preset_id
+        match = next((p for p in summary["providers"] if p["id"] == target_id), None)
+        if match is None:
+            raise ValueError(f"Unknown LLM preset: {preset_id}")
+        cfg = AppConfig.load(self.paths.settings_path)
+        for k, v in match["patch"].items():
+            setattr(cfg, k, v)
+        cfg.save(self.paths.settings_path)
+        out = self.llm_providers_summary()
+        out["config"] = asdict(cfg)
+        return out
+
     def shutdown(self) -> None:
         self.stop_recording()
         self.stop_gaze()

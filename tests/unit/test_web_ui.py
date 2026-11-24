@@ -219,3 +219,19 @@ def test_viewport3d_asset_and_fast_stream_tick(web_server) -> None:
     tick, ver = srv.gaze_manager.gaze_stream_tick(-1)
     assert tick["running"] is False
     assert "prediction" in tick
+
+
+def test_llm_providers_auto_detect_and_one_click_select(web_server) -> None:
+    _srv, base, _paths = web_server
+    st, _, raw = _req(base, "GET", "/v1/llm/providers")
+    assert st == 200
+    data = json.loads(raw)
+    ids = {p["id"] for p in data["providers"]}
+    assert {"acp:agy", "acp:opencode", "acp:claude-acp", "acp:codex-acp", "ollama", "gemini"} <= ids
+
+    st, _, raw = _req(base, "POST", "/v1/llm/select", {"id": "acp:agy"})
+    assert st == 200
+    selected = json.loads(raw)
+    assert selected["active_id"] == "acp:agy"
+    assert selected["config"]["llm_provider"] == "acp"
+    assert selected["config"]["acp_agent_id"] == "agy"

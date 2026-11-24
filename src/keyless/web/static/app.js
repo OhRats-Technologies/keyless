@@ -28,6 +28,7 @@ const state = {
   config: {},
   schema: [],
   models: null,
+  llmProviders: null,
   rig: null,
   selectedRigIdx: 0,
   settingsTab: 'gaze',
@@ -38,16 +39,15 @@ const state = {
 const VIEW_META = {
   home: ['Home', 'Voice commands, live engine state, and quick launch'],
   gaze: ['Gaze', 'Monocular (10D) and binocular (20D) 3D multi-display tracking deck'],
-  sessions: ['Sessions', 'Phase 1 >95% candidate recall gate and dataset curation'],
   activity: ['Activity', 'Voice and browser-agent execution log'],
-  settings: ['Settings', '3D display rig, platform-filtered configuration, permissions, and models'],
+  settings: ['Settings', 'AI providers, gaze overlay, cameras, voice, and system'],
 };
 
 const SETTINGS_TABS = [
   { id: 'gaze', label: 'Gaze & Overlay', group: 'Gaze & cursor', section: 'Hardware' },
   { id: 'cameras', label: 'Cameras', group: 'Cameras', section: 'Hardware' },
   { id: 'voice', label: 'Voice & Audio', group: 'Voice & audio', section: 'Intelligence' },
-  { id: 'llm', label: 'Language Model', group: 'Language model', section: 'Intelligence' },
+  { id: 'llm', label: 'AI & ACP Agents', group: 'Language model', section: 'Intelligence' },
   { id: 'system', label: 'Permissions & Models', section: 'System' },
   { id: 'developer', label: 'Developer', group: 'Developer', section: 'System' },
   { id: 'privacy', label: 'Privacy & Updates', group: 'Privacy & updates', section: 'System' },
@@ -159,31 +159,18 @@ function updateChrome() {
   document.getElementById('header-listen-label').textContent =
     st === 'listening' ? 'Listening' : st === 'paused' ? 'Paused' : 'Listen';
 
-  const recording = Boolean(state.gaze && state.gaze.recording);
-  document.getElementById('header-rec-led').className = 'led ' + (recording ? 'err' : '');
-  document.getElementById('header-rec-label').textContent = recording ? 'Recording' : 'Record';
-  document.getElementById('header-record-btn').classList.toggle('btn-danger', recording);
 
-  const badge = document.getElementById('header-recall');
-  if (state.recall && state.recall.overall_recall != null) {
-    const pct = (state.recall.overall_recall * 100).toFixed(1);
-    badge.textContent = `Recall ${pct}% (${state.recall.hits}/${state.recall.clicks})`;
-    badge.className = 'badge ' + (state.recall.gate_met ? 'ok' : 'warn');
-  } else {
-    badge.textContent = 'Recall: no data';
-    badge.className = 'badge';
-  }
 }
 
 async function refreshCore() {
-  const [status, gaze, recall] = await Promise.all([
+  const [status, gaze, llm] = await Promise.all([
     api('/v1/status').catch(() => state.status),
     api('/v1/gaze/status').catch(() => state.gaze),
-    api('/v1/sessions/recall').catch(() => state.recall),
+    api('/v1/llm/providers').catch(() => state.llmProviders),
   ]);
   state.status = status;
   state.gaze = gaze;
-  state.recall = recall;
+  state.llmProviders = llm;
   if (gaze && gaze.rig) state.rig = gaze.rig;
   updateChrome();
 }
@@ -214,17 +201,17 @@ async function setView(view, { settingsTab = null } = {}) {
     const hist = await api('/v1/history?limit=100').catch(() => ({ actions: [] }));
     state.history = hist.actions || [];
   } else if (view === 'settings') {
-    const [cfg, schemaRes, mod, rig] = await Promise.all([
+    const [cfg, schemaRes, mod, llm] = await Promise.all([
       api('/v1/config').catch(() => ({})),
       api('/v1/config/schema').catch(() => ({ host: 'linux', settings: [] })),
       api('/v1/models').catch(() => null),
-      api('/v1/displays/rig').catch(() => state.rig),
+      api('/v1/llm/providers').catch(() => state.llmProviders),
     ]);
     state.config = cfg;
     state.host = schemaRes.host || 'linux';
     state.schema = schemaRes.settings || [];
     state.models = mod ? mod.model : null;
-    if (rig) state.rig = rig;
+    state.llmProviders = llm;
   }
   renderView();
 }
@@ -246,9 +233,9 @@ function renderHome(root) {
   const g = state.gaze || {};
   const cams = g.available_cameras || [];
   const mons = (g.display && g.display.monitors) || [];
-  const recallTxt = state.recall && state.recall.overall_recall != null
-    ? `${(state.recall.overall_recall * 100).toFixed(1)}%`
-    : '--';
+  const llmSum = state.llmProviders || { active_id: 'auto', providers: [] };
+  const activeProv = (llmSum.providers || []).find((p) => p.id === llmSum.active_id);
+  const readyCount = (llmSum.providers || []).filter((p) => p.ready).length;
 
   const cats = state.commands || [];
   const q = state.commandQuery.trim().toLowerCase();
@@ -275,8 +262,8 @@ function renderHome(root) {
           <button id="home-primary" class="btn btn-primary" type="button">
             ${st === 'listening' ? 'Pause listening' : st === 'paused' ? 'Resume listening' : 'Start listening'}
           </button>
-          <button id="home-open-gaze" class="btn" type="button">Open gaze deck</button>
-          <button id="home-open-displays" class="btn" type="button">3D Display Rig</button>
+          <button id="home-open-gaze" class="btn" type="button">Open 3D gaze deck</button>
+          <button id="home-open-llm" class="btn" type="button">AI Assistant setup</button>
         </div>
       </div>
       <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
@@ -294,9 +281,9 @@ function renderHome(root) {
         <span class="telemetry">${g.running && g.stats ? `${g.stats.measured_fps || 0} fps / ${g.stats.samples || 0} clicks adapted` : 'Press Start tracking in Gaze'}</span>
       </div>
       <div class="home-stat-cell">
-        <span class="eyebrow">Phase 1 recall gate</span>
-        <span class="big-readout">${esc(recallTxt)}</span>
-        <span class="telemetry">${state.recall && state.recall.clicks ? `${state.recall.hits}/${state.recall.clicks} clicks (${state.recall.gate_met ? 'gate met' : 'target >95%'})` : 'Record real sessions to measure'}</span>
+        <span class="eyebrow">AI Assistant (ACP / LLM)</span>
+        <span class="big-readout">${esc(activeProv ? activeProv.name.toUpperCase() : 'AUTO')}</span>
+        <span class="telemetry">${readyCount} provider(s) auto-detected ready on this machine</span>
       </div>
       <div class="home-stat-cell">
         <span class="eyebrow">Recent actions</span>
@@ -334,7 +321,7 @@ function renderHome(root) {
 
   document.getElementById('home-primary').addEventListener('click', toggleListening);
   document.getElementById('home-open-gaze').addEventListener('click', () => setView('gaze'));
-  document.getElementById('home-open-displays').addEventListener('click', () => { state.viewportMode = '3d'; setView('gaze'); });
+  document.getElementById('home-open-llm').addEventListener('click', () => setView('settings', { settingsTab: 'llm' }));
   root.querySelectorAll('[data-cmd-cat]').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.commandQuery = '';
@@ -566,19 +553,7 @@ function renderGaze(root) {
           </div>
         </section>
 
-        <section class="panel-section">
-          <span class="eyebrow">Dataset Flywheel</span>
-          <div class="row-between">
-            <span class="telemetry">Input hook: ${env.input_group_active ? 'ACTIVE' : 'LOCKED'}</span>
-            ${!env.input_group_active && env.pkexec_available ? '<button id="gaze-grant-btn" class="btn btn-sm" type="button">Grant access</button>' : ''}
-          </div>
-          <div class="row-gap">
-            <button id="gaze-rec-btn" class="btn btn-sm ${recording ? 'btn-danger' : ''}" type="button">
-              ${recording ? 'Stop recording' : 'Record session'}
-            </button>
-            <button id="gaze-open-sessions" class="btn btn-sm" type="button">Curate</button>
-          </div>
-        </section>
+
       </aside>
     </div>
   `;
@@ -669,8 +644,6 @@ function renderGaze(root) {
     state.gazeTrail = [];
     renderGaze(root);
   });
-  document.getElementById('gaze-rec-btn').addEventListener('click', toggleRecording);
-  document.getElementById('gaze-open-sessions').addEventListener('click', () => setView('sessions'));
   const grantBtn = document.getElementById('gaze-grant-btn');
   if (grantBtn) grantBtn.addEventListener('click', requestInputPermission);
 
@@ -1159,8 +1132,10 @@ function renderSettings(root) {
         ${matches.map((s) => renderSpecControl(s, state.config[s.key])).join('') || '<p class="muted">No matching settings for this platform.</p>'}
       </div>
     `;
-  } else if (state.settingsTab === 'displays') {
-    paneHtml = renderDisplaysRigPane();
+  } else if (state.settingsTab === 'llm') {
+    paneHtml = renderLlmSettingsPane(specs);
+  } else if (state.settingsTab === 'advanced') {
+    paneHtml = renderAdvancedSettingsPane(specs);
   } else if (state.settingsTab === 'system') {
     const env = (state.gaze && state.gaze.environment) || {};
     const model = state.models || {};
@@ -1225,9 +1200,21 @@ function renderSettings(root) {
     });
   });
 
-  if (!q && state.settingsTab === 'displays') {
-    wireDisplaysRigEvents(root);
-    drawRigCanvas();
+  if (!q && state.settingsTab === 'llm') {
+    root.querySelectorAll('[data-llm-select]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          clearError();
+          const res = await api('/v1/llm/select', {
+            method: 'POST',
+            body: JSON.stringify({ id: btn.dataset.llmSelect }),
+          });
+          state.llmProviders = res;
+          if (res.config) state.config = res.config;
+          renderSettings(root);
+        } catch (err) { showError('Could not switch AI provider', err.message); }
+      });
+    });
   }
 
   const grantBtn = document.getElementById('set-grant-input');
@@ -1449,6 +1436,81 @@ function drawRigCanvas() {
   });
 }
 
+
+function renderLlmSettingsPane(specs) {
+  const llm = state.llmProviders || { active_id: 'auto', recommended_id: 'acp:agy', providers: [] };
+  const providers = llm.providers || [];
+  const llmSpecs = specs.filter((s) => s.group === 'Language model');
+
+  return `
+    <div class="settings-card" style="gap:12px;">
+      <div class="row-between">
+        <div>
+          <span class="eyebrow">AI Assistant & ACP Agents</span>
+          <div class="telemetry">Pick a pre-configured agent or auto-detect what is installed on this machine.</div>
+        </div>
+        <button class="btn btn-primary btn-sm" data-llm-select="auto" type="button">Auto-detect best</button>
+      </div>
+
+      <div class="provider-grid">
+        ${providers.map((p) => {
+          const isSel = p.id === llm.active_id;
+          return `
+            <button class="provider-card ${isSel ? 'selected' : ''}" data-llm-select="${esc(p.id)}" type="button">
+              <div class="provider-card-head">
+                <strong>${esc(p.name)}</strong>
+                <span class="badge ${p.ready ? 'ok' : ''}">${p.ready ? 'Ready' : 'Setup'}</span>
+              </div>
+              <small>${esc(p.description)}</small>
+              <span class="telemetry">${esc(p.kind)}${isSel ? ' / ACTIVE' : ''}</span>
+            </button>
+          `;
+        }).join('')}
+      </div>
+
+      <details style="border-top:1px solid var(--or-border-soft);padding-top:10px;margin-top:4px;">
+        <summary class="eyebrow" style="cursor:pointer;user-select:none;">Advanced model & API overrides (optional)</summary>
+        <div style="margin-top:10px;">
+          ${llmSpecs.map((s) => renderSpecControl(s, state.config[s.key])).join('')}
+        </div>
+      </details>
+    </div>
+  `;
+}
+
+function renderAdvancedSettingsPane(specs) {
+  const adv = specs.filter((s) => s.group === 'Advanced');
+  const buckets = [
+    {
+      title: 'Camera & Exposure',
+      keys: new Set(['frame_width', 'frame_height', 'fps', 'cam1_exposure', 'cam1_gain', 'cam2_exposure', 'cam2_gain', 'use_gpu']),
+    },
+    {
+      title: 'Voice, Audio & Pop Trigger',
+      keys: new Set(['transcript_overlay', 'pop_peak_floor', 'pop_min_rms', 'vad_aggressiveness', 'silence_ms']),
+    },
+  ];
+  const assigned = new Set();
+  buckets.forEach((b) => b.keys.forEach((k) => assigned.add(k)));
+
+  const groups = [
+    ...buckets.map((b) => ({ title: b.title, items: adv.filter((s) => b.keys.has(s.key)) })),
+    { title: 'Runtime, Vision & Input', items: adv.filter((s) => !assigned.has(s.key)) },
+  ].filter((g) => g.items.length > 0);
+
+  return groups.map((g, idx) => `
+    <details class="adv-disclosure" ${idx === 0 ? 'open' : ''}>
+      <summary>
+        <span class="eyebrow">${esc(g.title)}</span>
+        <span class="telemetry">${g.items.length} setting(s)</span>
+      </summary>
+      <div style="margin-top:10px;">
+        ${g.items.map((s) => renderSpecControl(s, state.config[s.key])).join('')}
+      </div>
+    </details>
+  `).join('');
+}
+
 function renderSpecControl(spec, currentVal) {
   const val = currentVal !== undefined ? currentVal : spec.default;
   const badge = spec.apply === 'restart' ? ' <span class="badge">restart</span>' : '';
@@ -1581,7 +1643,6 @@ function initEvents() {
     btn.addEventListener('click', () => setView(btn.dataset.view));
   });
   document.getElementById('header-listen-btn').addEventListener('click', toggleListening);
-  document.getElementById('header-record-btn').addEventListener('click', toggleRecording);
   document.getElementById('error-dismiss-btn').addEventListener('click', clearError);
   document.getElementById('error-grant-btn').addEventListener('click', requestInputPermission);
   document.getElementById('error-copy-btn').addEventListener('click', (e) => {

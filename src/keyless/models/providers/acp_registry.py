@@ -49,6 +49,15 @@ class AcpAgentSpec:
 # Curated, minimal offline list.  These are launch commands, not bundled code.
 OFFLINE_AGENTS: tuple[AcpAgentSpec, ...] = (
     AcpAgentSpec(
+        "agy",
+        "Gemini (agy)",
+        "Google Antigravity / Gemini ACP agent",
+        ("agy", "acp"),
+        "https://gemini.google.com",
+        source="offline",
+        install_hint="Install the agy CLI and sign in.",
+    ),
+    AcpAgentSpec(
         "opencode",
         "OpenCode",
         "Open-source coding agent",
@@ -152,13 +161,33 @@ def _command_from_distribution(agent: dict[str, Any]) -> tuple[tuple[str, ...], 
     return (), ""
 
 
+def _expanded_path() -> str:
+    home = Path.home()
+    extra = [
+        str(home / ".local" / "bin"),
+        str(home / ".bun" / "bin"),
+        str(home / ".opencode" / "bin"),
+        str(home / ".npm-global" / "bin"),
+        "/usr/local/bin",
+    ]
+    base = os.environ.get("PATH", "")
+    parts = [p for p in extra if Path(p).is_dir()]
+    if base:
+        parts.append(base)
+    return os.pathsep.join(parts)
+
+
+def resolve_agent_binary(cmd: str) -> str | None:
+    return shutil.which(cmd, path=_expanded_path())
+
+
 def _installed(command: tuple[str, ...]) -> bool:
     if not command:
         return False
     if command[0] in {"npx", "uvx"}:
         # Runnable on demand, but not installed until the package is present.
         return False
-    return shutil.which(command[0]) is not None
+    return resolve_agent_binary(command[0]) is not None
 
 
 def _from_registry(payload: dict[str, Any]) -> list[AcpAgentSpec]:

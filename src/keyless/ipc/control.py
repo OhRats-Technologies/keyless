@@ -758,6 +758,19 @@ class ControlServer:
                     if payload is None:
                         return
                     _json(self, server.gaze_manager.set_dev_monitor_border(bool(payload.get("enabled", False))))
+                elif self.command == "GET" and path == "/v1/llm/providers":
+                    _json(self, server.gaze_manager.llm_providers_summary())
+                elif self.command == "POST" and path == "/v1/llm/select":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    try:
+                        _json(
+                            self,
+                            server.gaze_manager.select_llm_provider(str(payload.get("id", "auto"))),
+                        )
+                    except ValueError as exc:
+                        _json(self, {"error": str(exc)}, status=400)
                 elif self.command == "GET" and path == "/v1/displays/rig":
                     _json(self, server.gaze_manager.get_display_rig())
                 elif self.command == "POST" and path == "/v1/displays/rig":

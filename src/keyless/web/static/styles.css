@@ -879,3 +879,71 @@ th {
     border-bottom: 1px solid var(--or-border-soft);
   }
 }
+
+/* Just-Works AI Provider Picker */
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.provider-card {
+  padding: 12px 14px;
+  border: 1px solid var(--or-border-soft);
+  border-radius: var(--or-radius);
+  background: var(--or-bg);
+  color: var(--or-text);
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font: inherit;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.provider-card:hover {
+  background: var(--or-surface-hover);
+  border-color: var(--or-border);
+}
+
+.provider-card.selected {
+  background: var(--or-surface-elevated);
+  border-color: var(--or-accent);
+  box-shadow: inset 3px 0 0 var(--or-accent);
+}
+
+.provider-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.provider-card strong {
+  font-size: 0.86rem;
+}
+
+.provider-card small {
+  color: var(--or-text-muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.adv-disclosure {
+  border: 1px solid var(--or-border-soft);
+  background: var(--or-surface);
+  padding: 12px 16px;
+}
+
+.adv-disclosure summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.adv-disclosure summary::-webkit-details-marker { display: none; }
