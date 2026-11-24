@@ -115,20 +115,76 @@ class LinuxStageOverlay:
 
     def stop(self) -> None:
         proc, self._proc = self._proc, None
-        if proc is None or proc.poll() is not None:
-            return
+        _stop_stage_process(proc)
+
+
+def _stop_stage_process(proc: subprocess.Popen[bytes] | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.wait(timeout=1.0)  # STAGE_DONE makes it exit on its own
+    except subprocess.TimeoutExpired:
+        proc.terminate()
         try:
-            proc.wait(timeout=1.0)  # STAGE_DONE makes it exit on its own
+            proc.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            proc.kill()
+
+
+class MacStageOverlay:
+    """Runs ``platform/macos/stage_window.py`` (one window per display) for a run.
+
+    Same ``start/stop/running/error`` contract as ``LinuxStageOverlay``. The
+    child prints ``ready`` once its windows are up, so ``start`` waits for
+    that line instead of guessing with a timeout.
+    """
+
+    READY_TIMEOUT_S = 5.0
+
+    def __init__(self, paths: AppPaths | None = None, *, stage_name: str = STAGE_SHM_NAME) -> None:
+        self.paths = paths or current_paths()
+        self.stage_name = stage_name
+        self._proc: subprocess.Popen[bytes] | None = None
+        self.error = ""
+
+    @property
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def start(self) -> bool:
+        import select
+        import sys
+
+        try:
+            self._proc = subprocess.Popen(
+                [sys.executable, "-m", "keyless.platform.macos.stage_window",
+                 self.stage_name, str(os.getpid())],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            self.error = str(exc)
+            return False
+        assert self._proc.stdout is not None
+        ready, _, _ = select.select([self._proc.stdout], [], [], self.READY_TIMEOUT_S)
+        line = self._proc.stdout.readline() if ready else b""
+        if line.strip() == b"ready":
+            return True
+        self._proc.kill()
+        err = (self._proc.stderr.read() if self._proc.stderr else b"").decode(errors="replace")
+        self.error = err.strip().splitlines()[-1] if err.strip() else "stage window did not start"
+        self._proc = None
+        return False
+
+    def stop(self) -> None:
+        proc, self._proc = self._proc, None
+        _stop_stage_process(proc)
 
 
 __all__ = [
     "LinuxStageOverlay",
+    "MacStageOverlay",
     "STAGE_ACTIVE",
     "STAGE_DONE",
     "STAGE_PAUSED",

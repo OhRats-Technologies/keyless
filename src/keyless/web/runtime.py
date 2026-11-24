@@ -291,6 +291,13 @@ class WebGazeManager:
             out.update(self.calibration_profile())
         return out
 
+    def set_calibration_viewport(self, fullscreen: bool) -> dict[str, Any]:
+        with self._lock:
+            sess = self._calibration
+        if sess is not None:
+            sess.set_viewport(fullscreen)
+        return self.calibration_status()
+
     def cancel_calibration(self) -> dict[str, Any]:
         with self._lock:
             sess = self._calibration

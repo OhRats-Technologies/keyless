@@ -857,6 +857,11 @@ class ControlServer:
                         )
                     except Exception as exc:
                         _json(self, {"error": str(exc)}, status=500)
+                elif self.command == "POST" and path == "/v1/calibration/viewport":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    _json(self, server.gaze_manager.set_calibration_viewport(bool(payload.get("fullscreen"))))
                 elif self.command == "POST" and path == "/v1/calibration/cancel":
                     server._read_json_body(self)
                     _json(self, server.gaze_manager.cancel_calibration())

@@ -262,6 +262,7 @@ export class Onboarding {
       try { localStorage.setItem('keyless.onboard.dismissed', '1'); } catch {}
     }
     this._stopStreams();
+    this._unwatchViewport();
     if (this.orb) this.orb.stop();
     if (this.runOrb) this.runOrb.stop();
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -295,6 +296,7 @@ export class Onboarding {
 
   go(step, { first = false } = {}) {
     if (!this.root) return;
+    if (step !== 'run') this._unwatchViewport();
     this.step = step;
     this._pips(step);
     this.root.dataset.step = step;
@@ -545,8 +547,11 @@ export class Onboarding {
     try {
       const res = await api('/v1/calibration/start', { method: 'POST', body: {} });
       this._onCalibration(res);
-      if (res.mode === 'browser' && wantFs && !document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(() => {});
+      if (res.mode === 'browser') {
+        this._watchViewport();
+        if (wantFs && !document.fullscreenElement) {
+          document.documentElement.requestFullscreen().catch(() => {}).finally(() => this._reportViewport());
+        }
       }
     } catch (err) {
       this.calib = { state: 'failed', message: String(err.message || err) };
@@ -554,6 +559,37 @@ export class Onboarding {
       return;
     }
     this._ensureCalStream();
+  }
+
+  // --- browser-stage viewport ------------------------------------------------
+  // The light is placed in display fractions, so labels are only right while
+  // the page covers the whole display. Maximized is not enough (menu bar, tabs).
+
+  _viewportIsScreen() {
+    if (!document.documentElement.requestFullscreen) return true; // cannot do better here
+    return !!document.fullscreenElement
+      && Math.abs(window.innerWidth - screen.width) <= 2
+      && Math.abs(window.innerHeight - screen.height) <= 2;
+  }
+
+  _reportViewport() {
+    if (!this.root || this.step !== 'run') return;
+    api('/v1/calibration/viewport', { method: 'POST', body: { fullscreen: this._viewportIsScreen() } }).catch(() => {});
+  }
+
+  _watchViewport() {
+    if (this._viewportWatch) return;
+    this._viewportWatch = () => this._reportViewport();
+    document.addEventListener('fullscreenchange', this._viewportWatch);
+    window.addEventListener('resize', this._viewportWatch);
+    this._reportViewport();
+  }
+
+  _unwatchViewport() {
+    if (!this._viewportWatch) return;
+    document.removeEventListener('fullscreenchange', this._viewportWatch);
+    window.removeEventListener('resize', this._viewportWatch);
+    this._viewportWatch = null;
   }
 
   // --- run -----------------------------------------------------------------
@@ -571,11 +607,15 @@ export class Onboarding {
             <strong id="ob-run-title">Follow the light</strong>
             <span id="ob-run-sub">Press Esc to stop</span>
           </div>
+          <button class="ob-btn ob-primary" type="button" id="ob-run-fs" hidden>Full screen</button>
         </div>
       </div>`;
   }
 
   _wire_run(card) {
+    card.querySelector('#ob-run-fs').addEventListener('click', () => {
+      document.documentElement.requestFullscreen().catch(() => {}).finally(() => this._reportViewport());
+    });
     if (this.orb) this.orb.stop();
     this.runOrb = new Orb(card.querySelector('.ob-run-orb'));
     this.runOrb.size = 0;
@@ -592,7 +632,12 @@ export class Onboarding {
       card.style.setProperty('--p', String(c.progress || 0));
       const title = card.querySelector('#ob-run-title');
       const sub = card.querySelector('#ob-run-sub');
-      if (c.state === 'paused') {
+      const fsBtn = card.querySelector('#ob-run-fs');
+      if (fsBtn) fsBtn.hidden = !(c.state === 'paused' && c.message === 'not_fullscreen');
+      if (c.state === 'paused' && c.message === 'not_fullscreen') {
+        title.textContent = 'Go full screen';
+        sub.textContent = 'The light needs the whole screen.';
+      } else if (c.state === 'paused') {
         title.textContent = 'Where did you go?';
         sub.textContent = 'Look back at the screen to keep going.';
       } else if (c.state === 'solving') {

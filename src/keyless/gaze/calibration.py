@@ -31,6 +31,7 @@ from keyless.gaze.stage import (
     STAGE_PAUSED,
     STAGE_TARGET,
     LinuxStageOverlay,
+    MacStageOverlay,
     StageWriter,
 )
 
@@ -70,12 +71,15 @@ class CalibrationSession:
         self._burst = -1.0
 
         base_rig: DisplayRig = publisher.estimator._base_rig
-        self._overlay: LinuxStageOverlay | None = None
+        self._overlay: LinuxStageOverlay | MacStageOverlay | None = None
         self._writer: StageWriter | None = None
         if use_overlay:
             try:
+                from keyless.platform.router import current_host
+
                 self._writer = StageWriter()
-                ov = LinuxStageOverlay(publisher.paths)
+                stage_cls = MacStageOverlay if current_host() == "macos" else LinuxStageOverlay
+                ov = stage_cls(publisher.paths)
                 if ov.start():
                     self._overlay = ov
                 else:
@@ -89,6 +93,9 @@ class CalibrationSession:
                 planes = [p for p in base_rig.planes if p.is_primary] or [base_rig.planes[0]]
             base_rig = DisplayRig(planes[:1])
         self.base_rig = base_rig
+        # Browser stage: labels assume the page viewport is exactly the display,
+        # so the run only advances while the page reports true full screen.
+        self._viewport_ok = self.mode != "browser"
         dist = 600.0
         pred = publisher.latest_prediction()
         if pred is not None and 0.25 < abs(getattr(pred, "tz", 0.0)) < 1.5:
@@ -127,6 +134,10 @@ class CalibrationSession:
             if t_plan < 0.0:
                 return
             self._frames.append(FrameSample(t_plan, feat.copy(), float(blink), float(conf), float(dist_mm)))
+
+    def set_viewport(self, fullscreen: bool) -> None:
+        """Browser stage only: the page reports whether its viewport covers the display."""
+        self._viewport_ok = bool(fullscreen) or self.mode != "browser"
 
     def _face_visible(self) -> bool:
         pred = self.pub.latest_prediction()
@@ -179,7 +190,7 @@ class CalibrationSession:
 
         while not self._stop.is_set():
             now = time.monotonic()
-            face = self._face_visible()
+            face = self._face_visible() and self._viewport_ok
             with self._lock:
                 state = self.state
                 iv = self._interval
@@ -193,7 +204,7 @@ class CalibrationSession:
                             self._t_plan = iv[1] + (now - iv[0])
                             self._interval = None
                             self.state = "paused"
-                            self.message = "face_lost"
+                            self.message = "face_lost" if self._viewport_ok else "not_fullscreen"
                         back_since = None
                         continue
                 t_plan = iv[1] + (now - iv[0])
