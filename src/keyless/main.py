@@ -745,6 +745,66 @@ def gaze_lab(
     )
 
 
+@gaze_app.command("run")
+def gaze_run(
+    camera: str | None = typer.Option(
+        None,
+        "--camera",
+        help="Optional camera path or index override (defaults to AppConfig / auto-detected mono).",
+    ),
+    duration: float = typer.Option(
+        0.0,
+        "--duration",
+        min=0.0,
+        help="Stop automatically after N seconds (0 runs until Ctrl+C).",
+    ),
+    min_clicks: int = typer.Option(
+        5,
+        "--min-clicks",
+        min=2,
+        help="Natural clicks required before blending from cold-start prior to ridge adaptation.",
+    ),
+    ridge_alpha: float = typer.Option(
+        0.01,
+        "--ridge-alpha",
+        min=1e-6,
+        help="L2 regularization strength for online ridge adaptation.",
+    ),
+    adapt_clicks: bool = typer.Option(
+        True,
+        "--clicks/--no-clicks",
+        help="Passively adapt from natural physical clicks (zero dot grid, reversible).",
+    ),
+) -> None:
+    """Publish live monocular webcam gaze frames to the shared-memory seam."""
+    from keyless.gaze.monocular import MonocularGazePublisher
+
+    cfg = AppConfig.load()
+    pub = MonocularGazePublisher(
+        cfg,
+        camera_id=camera,
+        min_clicks=min_clicks,
+        ridge_alpha=ridge_alpha,
+        enable_click_adaptation=adapt_clicks,
+    )
+    console.print(
+        f"[green]Starting monocular gaze publisher[/green] "
+        f"(display {pub.layout.total_width}x{pub.layout.total_height}, "
+        f"shm={pub.shm_name}, passive_clicks={adapt_clicks}). Press Ctrl+C to stop."
+    )
+    try:
+        stats = pub.run(duration_sec=duration if duration > 0 else None)
+    except Exception as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"Stopped monocular publisher: frames={stats['frames_read']}, "
+        f"faces={stats['faces_detected']}, adapted_clicks={stats['clicks_adapted']}, "
+        f"ridge_active={stats['using_ridge']}."
+    )
+
+
 @gaze_app.command("record")
 def gaze_record(
     duration: float = typer.Option(
@@ -768,6 +828,11 @@ def gaze_record(
         "--ocr/--no-ocr",
         help="Include OCR candidate generation when screenshots are captured.",
     ),
+    with_camera: bool = typer.Option(
+        True,
+        "--camera/--no-camera",
+        help="Attach live monocular webcam features and predicted gaze pixel to logged clicks.",
+    ),
     session_id: str | None = typer.Option(
         None,
         "--session-id",
@@ -790,15 +855,41 @@ def gaze_record(
         session_id=session_id,
         redact_text=redact_text,
     )
+    mono_pub = None
+    if with_camera:
+        try:
+            from keyless.gaze.monocular import MonocularGazePublisher
+
+            mono_pub = MonocularGazePublisher(
+                AppConfig.load(),
+                enable_click_adaptation=False,
+                publish_shm=True,
+            )
+            mono_pub.start()
+            console.print("[green]Monocular webcam gaze stream attached.[/green]")
+        except Exception as exc:
+            console.print(
+                f"[yellow]Monocular camera unavailable ({exc}); recording clicks and candidates only.[/yellow]"
+            )
+            mono_pub = None
+
     recorder = SessionRecorder(
         collector,
         build_live_generator(use_ocr=ocr),
         screen_provider=build_live_screen_provider(capture_pixels=(save_screenshots or ocr)),
+        frame_provider=mono_pub.latest_frame_section if mono_pub is not None else None,
         save_screenshots=save_screenshots,
     )
+
+    def _handle_click(x: float, y: float) -> None:
+        gaze_px = mono_pub.latest_pixel() if mono_pub is not None else None
+        recorder.record_click(x, y, gaze_pixel=gaze_px)
+        if mono_pub is not None:
+            mono_pub.on_click(x, y)
+
     observer = None
     if current_host() == "linux":
-        observer = LinuxClickObserver(recorder.record_click)
+        observer = LinuxClickObserver(_handle_click)
         if not observer.start():
             console.print(
                 f"[yellow]Live click observer unavailable: {observer.unavailable_reason}[/yellow]"
@@ -823,6 +914,8 @@ def gaze_record(
     finally:
         if observer is not None:
             observer.stop()
+        if mono_pub is not None:
+            mono_pub.stop()
         recorder.close()
 
     stats = recorder.stats()

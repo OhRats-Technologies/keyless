@@ -1,38 +1,41 @@
-# Handoff — Gaze v2 greenfield
+# Handoff — Gaze v2 Greenfield & Monocular Tracking (`alt`)
 
-**Date:** 2026-11-23
-**Branch:** `alt` (renamed from `greenfield/gaze-v2` 2026-11-23; single active development branch)
-**Base:** `main` / `origin/main` = `5bad72c` (Noah's last commit; do not merge without explicit approval)
+**Date:** 2026-11-24
+**Branch:** `alt` (single active development branch; synced with `origin/main` through `70db92f`)
+**Base:** `main` / `origin/main` = `70db92f` (n123xyz's browser agent + Split View; do not merge `alt` into `main` without explicit approval)
 **Audit snapshot:** tag `legacy-gaze-v1` = `641d055` (audit only; never a code source)
 
 > Read `AGENTS.md` first, then `docs/GREENFIELD.md`, then this file.
 
-## 1. What is on `alt`
+## 1. Current Vision & Priority Shift (2026-11-24)
 
-### Product fixes (ported from `port/greenfield-product`)
-- `5f162f1` / `3091ba4` / `036cef5`: Parakeet Unified default STT, configurable camera auto-exposure, provisional captions + command confirmation fixes, default-skipped UI/slow tests.
+UI unification (`openspec/changes/unify-ui-contract-renderers`) and `origin/main` browser-agent integration are **complete on Linux** (only the macOS Swift build gate `5.5` / `7.2` remains for a Mac host). **Do not spend more cycles on UI scaffolding.**
 
-### Architecture & UI unification (Waves 1–2)
-- `d92efea`: domain logic moved to `keyless.core.{onboarding,history,lifecycle}`; `keyless.ipc.control` has ZERO `keyless.ui` imports (AST-guarded by `tests/unit/test_core_imports.py`).
-- `5eb7132` + `6a241cf` + `e2f6ba1`: `keyless.config.specs` — one typed `SettingSpec` per `AppConfig` field; `GET /v1/config/schema` serves the registry; `POST /v1/config` validates strictly and returns `{config, restart_required, changed}`.
-- `681dd86` + `65511b5`: `keyless.ipc.client` — typed loopback `ControlClient` (`status`, `get_config`, `config_schema`, `patch_config`, `setup`, `models`, `history`, `ui_state`, `ui_action`, `start`, `pause`) + `HttpSessionController`; `run_ui()` drives the daemon through the control plane.
-- `ff2a700`: canonical `DisplayTopology` + normalizer in `platform/base.py`; `platform/router.py` raises `NotSupportedError` on Windows/unknown hosts instead of silently falling back to Linux.
-- `9cf3c5c` + `0a1064e` + `971f50c` + `9edf30f` + `0bcf04f`: `design-tokens.json` single source of truth, `.agents/skills/ohrats-ui/SKILL.md`, schema-v1 `ui/contract.py` + `GET /v1/ui/state` + `POST /v1/ui/action`, schema-driven Settings window, redesigned Home/Onboarding + 4 regenerated goldens.
+The #1 priority now is **shipping working monocular eye tracking** on top of the Gaze v2 flywheel:
 
-### Gaze v2 data flywheel, recall gate, Lab UI & Dream-RSI harness (Waves 3–5)
-- `a7567c0` + `f01e886` + `4dc9eca` + `5da9d03`: `gaze/schema.py` (v0), `gaze/collect.py` (`SessionCollector` bounded async JSONL writer + sha256 blob store + explicit `redact_text`), `gaze/replay.py` (session-level `split_sessions`), `gaze/metrics.py` (decision metrics + Baseline 0 `NearestCandidateToPixelBaseline`), CLI `keyless gaze replay`.
-- `eb49a56` + `9c298a6` + `7a727f8`: `gaze/candidates.py`, `gaze/candidate_generator.py` (AX/DOM/OCR/visual union with LRU cache and honest unavailable-source reporting), CLI `keyless gaze eval-candidates` (>95% Phase 1 gate).
-- `9312e73` + `fc04f92` + `65511b5` + `274ab99`: removed broken `click_harvest.py`, 28 orphaned `.pyc` files, and stale `recenter`/`steer_to_mouse` LLM intents; added `gaze/recorder.py` (`SessionRecorder`, `LinuxClickObserver`, KDE Plasma Wayland capture/cursor support), opt-in `gaze_collect_enabled` daemon hook, CLI `keyless gaze record`, `scripts/gaze-flywheel.sh`, and `scripts/dream-loop.sh`.
-- `32813da`: Dream-RSI harness (`scripts/agent_dream.py`, `.agents/skills/dream-harness/SKILL.md`, `.agents/harness/policy-ledger.jsonl`) wired to local `pi-strata` + Strata (`Qwen3.8-Flash-Next IQ3_S`) with 6 deterministic invariants (including AST `no_undefined_names`).
-- Keyless Lab UI (`src/keyless/gaze/curate.py`, `src/keyless/ui/lab/window.py`, `keyless gaze lab` / `./scripts/gaze-flywheel.sh lab`): visual candidate/click inspector, accept/reject/retarget/delete curation, per-app Phase 1 recall dashboard, session-level split exporter, and Dream-RSI console.
+1. **Live Monocular Gaze Publisher (`src/keyless/gaze/monocular.py`) — SHIPPED:**
+   - Captures one webcam cross-platform (`resolve_camera_config` + V4L2/OpenCV) and extracts 10D face/iris features via MediaPipe `FaceFeatureExtractor` (GPU EGL verified at ~30 FPS on RTX 3090).
+   - **Cold-start geometric prior (frame 1):** projects iris offsets + head yaw/pitch onto `DisplayTopology` bounds so live display-only preview works immediately with zero dot-grid calibration (GREENFIELD §6.3).
+   - **Reversible passive click adaptation:** pairs natural physical clicks with the freshest 10D observation; once `min_clicks` (default 5) are collected, fits regularized linear ridge regression (`(X^T X + alpha I)^-1 X^T Y`) and blends smoothly from the prior. Fully reversible via `undo_last()` / `reset()`.
+   - **Seam:** publishes `(x, y, flags, timestamp_ns)` to `SharedGazeWriter` (`keyless_gaze_v1`), consumed by `SharedMemoryGazeSource` in `daemon.py`, Firefox DOM bridge, and `HomePanel`.
+   - **CLI:** `keyless gaze run` (standalone publisher) and `keyless gaze record --camera` (default on; records clicks + candidates + monocular features + predicted pixel in one command). Keyless Lab's **Record session** button also attaches the live monocular stream automatically.
+2. **Real-World Phase 1 Recall & Baseline Gate (NEXT ACTION):**
+   - Record 2 to 3 natural desktop sessions with `keyless gaze record --save-screenshots` (or Keyless Lab **Record session**).
+   - Run `keyless gaze eval-candidates --regenerate` and verify overall candidate recall **>95%** (GREENFIELD §9 kill criterion). Below 95%: fix perception (AX/OCR/DOM/visual coverage), not the model.
+   - Run `keyless gaze replay <session_dir>` to record real webcam `hit@25/50/100` and `baseline_top1`.
+3. **Phase 2 Offline Target Scorer (ONLY AFTER STEP 2 PASSES):**
+   - Plug a real feature/embedding extractor (e.g. EG2 or lightweight monocular target scorer) into `keyless gaze probe <sessions_dir> --extractor module:callable` and verify it beats `baseline_top1` on session-held-out splits (`split_sessions`).
+4. **Deferred / Parked Work:**
+   - `openspec/changes/unify-ui-contract-renderers` tasks `5.5` and `7.2` require a macOS host (`cd packaging/macos && swift build -c release && xcrun swift test`). Everything verifiable on Linux is already green.
 
-### Embedding probe, synthetic 3D lab, live-preview policy, OpenSpec (2026-11-23)
-- `d74f397`: `gaze/experiment.py` — `EmbeddingExtractor` protocol, `EmbeddingHead` per-id centroid probe, `evaluate_experiment`; CLI `keyless gaze probe` with `module:callable` extractor spec, session-level split, explicit beats/falsified verdict vs `baseline_top1`. No backbone wired yet (EG2 wrapper will implement the same protocol).
-- `23770b9`: `experiments/synth_lab/` — headless Blender fake person (mobile pupils) + monitor UI with exact ground truth; renders through the real `CandidateGenerator` + RapidOCR into schema-v0 sessions. Ground-truth recall 100%; probe CLI verdict exercised end-to-end with a toy `HashTextExtractor`. `--blend` flag saves an editable scene.
-- `91d175f`: GREENFIELD §6.3 + Appendix C.5 — live display-only preview allowed from Phase 1 with any scorer; frozen-eval gate for online updates deferred to Phase 4; reversibility always required.
-- `4b077c9`: OpenSpec initialized (`openspec/`, spec-driven schema; skills in `~/.agents/skills/`). Hierarchy in AGENTS.md: GREENFIELD owns direction; openspec/ holds change proposals + requirement deltas citing GREENFIELD sections.
+## 2. What Is Already Shipped on `alt`
 
-## 2. Verification (current)
+- **Browser agent & voice parity (`origin/main` merged at `bc9c9bc` / `3bb36b5`):** Playwright Firefox browser agent, YouTube fast reflexes, Split View voice commands, Parakeet Unified default STT, provisional captions + live level meter.
+- **Engine-owned UI contract & OhRats brand system:** `design-tokens.json` (canonical OhRats palette `#efede5`/`#1a1a1b`, `#634936` hairlines, `#c95b2b`/`#e27a3b` accent), generated `Tokens.swift`, `GET /v1/ui/state`, `POST /v1/ui/action`, `GET /v1/events` (SSE), Qt + SwiftUI contract parity tests, and `Keyless Lab` (`keyless gaze lab`).
+- **Gaze v2 data flywheel & probe harness:** `gaze/schema.py` (v0), `gaze/collect.py`, `gaze/replay.py`, `gaze/metrics.py`, `gaze/candidates.py`, `gaze/candidate_generator.py`, `gaze/recorder.py`, `gaze/curate.py`, `gaze/experiment.py` (`keyless gaze probe`), `gaze/monocular.py` (`keyless gaze run`), and synthetic Blender 3D lab (`experiments/synth_lab/`).
+- **Dream-RSI local + frontier harness:** `scripts/agent_dream.py` (6 deterministic invariants), `scripts/dream-loop.sh`, `scripts/gaze-flywheel.sh`, `.agents/skills/dream-harness/SKILL.md`.
+
+## 3. Verification (current)
 
 ```bash
 .venv/bin/python scripts/agent_dream.py eval
@@ -41,36 +44,18 @@
 #   compileall, pytest_core, pytest_ui
 ```
 
-Known exclusions remain pre-existing environment failures (`test_packaging.py`, `test_release_assets.py`, `test_instance_lock.py`), not regressions.
+Live hardware verification on `fernix` (CachyOS / KDE Plasma 6 Wayland, RTX 3090, Ruision UVC webcam):
+```bash
+.venv/bin/keyless gaze run --duration 2.5 --no-clicks
+# 76 frames, 76 faces detected (~30.4 FPS on GPU EGL), published to keyless_gaze_v1
+```
 
-## 3. THE NEXT GATE (what to build now)
+## 4. Do Not
 
-**The flywheel is built and proven on synthetic data. The missing input is a real gaze source.**
-
-1. Build the live gaze source: webcam → MediaPipe face/iris landmarks → gaze pixel via cold-start mapping from natural clicks (5–10 clicks, no dot grid, GREENFIELD §6.3) → publish to the shared-memory channel (`SharedMemoryGazeSource` consumer side already exists).
-2. Run the live preview loop: throttled screen capture → `CandidateGenerator` → nearest-candidate scorer → overlay highlight of top-1/top-3, **display-only** (pointer never moves implicitly; single-cursor rules hold).
-3. Record natural desktop sessions while using the machine (`input` group active for click observation):
-   - CLI: `./scripts/gaze-flywheel.sh record`
-   - GUI: `./scripts/gaze-flywheel.sh lab` -> click **Record session**
-4. Curate in Keyless Lab, then `./scripts/gaze-flywheel.sh eval` (`keyless gaze eval-candidates --regenerate`). **Phase 1 gate: real-click candidate recall >95%** (GREENFIELD §9 kill criterion). Below it: fix perception, not the model.
-5. Phase 2 model work (EG2 wrapper behind `EmbeddingExtractor`) starts only after real-session recall passes; every claim judged by `gaze probe` vs `baseline_top1` on session-held-out splits.
-
-No neural network, gaze prediction model, or training exists on this branch. That is deliberate.
-
-## 4. Known issues / honest gaps
-
-- macOS/Windows AX bridges are stubs (`UnsupportedAccessibilityBridge`); the generator falls back to DOM+OCR+visual and reports `sources["ax"]=False`.
-- Global mouse click observation in `keyless gaze record` / Lab is wired for Linux (`evdev` + KWin/Hyprland/X11 cursor query) and degrades honestly when `/dev/input/event*` is unreadable or on macOS/Windows.
-- DOM candidates carry points, not rects; the synthesized 120x32 bbox is a documented approximation.
-- Select-option lists in `config/specs.py` are static snapshots of the current catalogs.
-- `main` is intentionally behind. Do not merge without the user's explicit approval.
-
-## 5. Do not
-
-- Do not create extra side branches unless explicitly asked; keep active greenfield work on `alt`.
+- Do not create extra side branches; keep active work on `alt`.
 - Do not import or copy `legacy-gaze-v1`.
-- Do not restore a calibration file, calibration grid, scalar bias, or startup gate.
+- Do not restore a calibration file, dot grid, scalar bias, or startup gate.
 - Do not reintroduce a global recenter or "steer to mouse" anchor.
 - Do not show two cursors; do not move the real pointer when the overlay is unavailable.
-- Do not start model work before real-session candidate recall > 95%.
-- Do not merge to `main`.
+- Do not start Phase 2 neural/scorer training before real-session candidate recall > 95%.
+- Do not merge `alt` into `main` without explicit user approval.

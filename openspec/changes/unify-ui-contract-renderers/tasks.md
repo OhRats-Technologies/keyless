@@ -25,11 +25,11 @@
 - [x] 4.5 Regenerate and review the four `tests/ui/goldens/` PNGs per the ohrats-ui visual finish gate.
 
 ## 5. SwiftUI becomes a contract renderer
-- [ ] 5.1 Add Swift models decoding the schema-v1 document; XCTest against the shared golden fixture.
-- [ ] 5.2 Implement the six row widgets natively (`Rows.swift`) plus a generic `SectionListView`.
-- [ ] 5.3 Replace `HomeView` with contract rendering; then `SettingsView`, `ActivityView`, `MenuBarView`.
-- [ ] 5.4 Replace `OnboardingView`'s hand-coded steps with contract-driven setup rendering; keep `PermissionGuide` as the TCC adapter only.
-- [ ] 5.5 Delete superseded hand-coded screen code from `ContentView.swift` / `OnboardingView.swift`; `swift build -c release` passes.
+- [x] 5.1 Add Swift models decoding the schema-v1 document; XCTest against the shared golden fixture. (`ContractModels.swift` + `Tests/KeylessTests/ContractModelsTests.swift` decode the same `tests/fixtures/ui/` goldens the Qt shell renders; XCTest itself runs only where Swift exists — see 5.5.)
+- [x] 5.2 Implement the six row widgets natively (`Rows.swift`) plus a generic `SectionListView`.
+- [x] 5.3 Replace `HomeView` with contract rendering; then `SettingsView`, `ActivityView`, `MenuBarView`.
+- [x] 5.4 Replace `OnboardingView`'s hand-coded steps with contract-driven setup rendering; keep `PermissionGuide` as the TCC adapter only.
+- [ ] 5.5 Delete superseded hand-coded screen code from `ContentView.swift` / `OnboardingView.swift`; `swift build -c release` passes. (Code deletion is done and pinned by `tests/unit/test_ui_contract_parity.py`; the build gate cannot run on this Linux host — no Swift toolchain or linked macOS environment. Run on the user's Mac: `cd packaging/macos && swift build -c release`, then `xcrun swift test` for the fixture XCTest.)
 
 ## 6. Live events and cleanup
 - [x] 6.1 Switch both shells from 1 s polling to `/v1/events` with polling fallback.

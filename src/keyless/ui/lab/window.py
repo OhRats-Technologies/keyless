@@ -372,6 +372,7 @@ class LabWindow(QMainWindow):
         self._current_event_index: int | None = None
         self._recorder: Any = None
         self._click_observer: Any = None
+        self._mono_publisher: Any = None
         self._worker: _CommandWorker | None = None
         self._perm_worker: _CallableWorker | None = None
         self._last_error_text: str = ""
@@ -1353,18 +1354,42 @@ class LabWindow(QMainWindow):
         )
         from keyless.platform.router import current_host
 
+        mono_pub = None
+        try:
+            from keyless.config.schema import AppConfig
+            from keyless.gaze.monocular import MonocularGazePublisher
+
+            mono_pub = MonocularGazePublisher(
+                AppConfig.load(self._paths.settings_path),
+                enable_click_adaptation=False,
+                publish_shm=True,
+            )
+            mono_pub.start()
+        except Exception:
+            mono_pub = None
+
         collector = SessionCollector(self._paths)
         recorder = SessionRecorder(
             collector,
             build_live_generator(use_ocr=True),
             screen_provider=build_live_screen_provider(capture_pixels=True),
+            frame_provider=mono_pub.latest_frame_section if mono_pub is not None else None,
             save_screenshots=True,
         )
+
+        def _handle_click(x: float, y: float) -> None:
+            gaze_px = mono_pub.latest_pixel() if mono_pub is not None else None
+            recorder.record_click(x, y, gaze_pixel=gaze_px)
+            if mono_pub is not None:
+                mono_pub.on_click(x, y)
+
         observer = None
         if current_host() == "linux":
-            observer = LinuxClickObserver(recorder.record_click)
+            observer = LinuxClickObserver(_handle_click)
             if not observer.start():
                 reason = observer.unavailable_reason
+                if mono_pub is not None:
+                    mono_pub.stop()
                 recorder.close()
                 env = probe_lab_environment()
                 self._show_error(
@@ -1377,17 +1402,22 @@ class LabWindow(QMainWindow):
                 self._refresh_environment_view()
                 return
         self._clear_error()
+        self._mono_publisher = mono_pub
         self._recorder = recorder
         self._click_observer = observer
         self.record_btn.setText("Stop recording")
+        cam_note = " with monocular webcam gaze" if mono_pub is not None else " (camera unavailable, clicks only)"
         self.status_label.setText(
-            f"Recording live clicks ({recorder.session_id[:10]}). Use your apps normally, then press Stop recording."
+            f"Recording live clicks{cam_note} ({recorder.session_id[:10]}). Use your apps normally, then press Stop recording."
         )
 
     def _stop_recording(self) -> None:
         if self._click_observer is not None:
             self._click_observer.stop()
             self._click_observer = None
+        if self._mono_publisher is not None:
+            self._mono_publisher.stop()
+            self._mono_publisher = None
         if self._recorder is not None:
             self._recorder.close()
             stats = self._recorder.stats()

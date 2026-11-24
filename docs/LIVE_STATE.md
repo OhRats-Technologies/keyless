@@ -1,85 +1,25 @@
-# LIVE STATE — working notes for the current autonomous run
+# LIVE STATE — Active Execution Plan (`alt`)
 
-Purpose: survive short context windows. Update this file after every completed
-block. It is scratch/live state; `docs/HANDOFF.md` remains the polished handoff.
+**Updated:** 2026-11-24
+**Active Goal:** Ship working monocular eye tracking end-to-end (capture -> cold-start + passive click adaptation -> shared memory -> real-session Phase 1 recall gate >95% -> Phase 2 target scorer).
+**Superseded / Closed:** `unify-ui-contract-renderers` Linux work is complete (only macOS `swift build -c release` / TCC walk-through on a Mac remains). Do not re-open UI contract refactors.
 
-## Standing instructions (from user, 2026-11-23, user is napping)
+## Completed Milestones
 
-1. Finish the stage-2 probe scaffold (tests green).
-2. Rename branch `greenfield/gaze-v2` -> `alt`, push to GitHub, delete the
-   remote `greenfield/gaze-v2`. Only `main` and `alt` should exist on GitHub.
-3. Start the app (`keyless serve`) and confirm it runs (voice-only path is OK).
-4. Check the user's camera works (webcam capture).
-5. Build a synthetic test: fake person + fake eyes in a 3D environment, to
-   exercise the gaze pipeline without a human. Check `legacy/gaze-v1` for any
-   prior synthetic-scene code. Consider making the lab a web (HTML/three.js)
-   thing if that is easier.
+- [x] `origin/main` (`n123xyz` browser agent + Split View) merged into `alt`.
+- [x] Engine-owned UI contract + SSE (`/v1/events`) + Qt/SwiftUI contract parity tests green.
+- [x] Canonical OhRats design tokens + `Keyless Lab` curator + inline copyable error callout.
+- [x] Gaze v2 flywheel (`collect`, `replay`, `metrics`, `candidates`, `candidate_generator`, `recorder`, `curate`, `experiment` / `gaze probe`).
+- [x] Synthetic 3D Blender gaze lab (`experiments/synth_lab/`) verified at 100% recall.
+- [x] **Monocular gaze publisher (`src/keyless/gaze/monocular.py`)**:
+  - Cold-start geometric prior (frame 1) + reversible passive online ridge regression (5+ natural clicks, no dot grid).
+  - CLI `keyless gaze run` verified live on `fernix` UVC webcam (76/76 faces at ~30.4 FPS on RTX 3090 EGL, publishing to `keyless_gaze_v1`).
+  - Wired into `keyless gaze record --camera` (default on) and Keyless Lab **Record session** so real clicks automatically pair with 10D monocular features and predicted gaze pixels.
 
-## Decisions
+## Immediate Next Steps (In Order)
 
-- 2026-11-23 (user): cold-start rule relaxed — online updates always
-  reversible, but the frozen held-out eval gate defers to Phase 4 (no
-  dataset yet); correction-rate stream must keep logging.
-- 2026-11-23 (user): live preview from Phase 1 — show top-k guess in real
-  time during use, display-only, using whatever scorer exists (baseline
-  included). Pointer actuation stays explicit-only. GREENFIELD.md §6.3 +
-  Appendix C.5 updated.
-
-## Block log
-
-- [x] Probe scaffold tests green (`tests/unit/test_gaze_experiment.py`) — 45 gaze tests, 296 full suite
-- [x] Committed on `alt` (d74f397)
-- [x] Branch rename + GitHub surgery done — GitHub has only `main` + `alt`; local `alt` tracks `origin/alt`; old `greenfield/gaze-v2` deleted on remote. `.env` added to `.gitignore` (was about to be committed — it holds local secrets, not pushed).
-- [x] App runs (daemon voice-only OK) — `keyless serve` on :8766, `POST /v1/start` -> state "listening" on Linux/KDE/Wayland; doctor OK. Paused after check so the camera is free.
-- [x] Camera capture works — UVC webcam /dev/video1 (+video2, media0), MJPG/YUYV/H264; ffmpeg 1280x720 frame saved at /tmp/opencode/keyless-camera/frame-092037.jpg, visually verified (user's room, empty chair).
-- [ ] Synthetic gaze lab: status below
-
-## Synthetic 3D gaze lab (experiments/synth_lab/)
-
-- `build_scene.py` — Blender scene (headless via flatpak): fake person with mobile
-  pupils converging on a target button, monitor UI with 8 labeled buttons, an
-  ortho `screen_cam` (the "screenshot") and a `webcam_cam` at the face.
-  Exports `ground_truth.json` (button bboxes + per-frame target + gaze pixel).
-  Coordinate frame: monitor at y=0 facing -Y; person at y=-0.62; screen pixels
-  map linearly to the panel.
-- `make_session.py` — feeds the renders through the real `CandidateGenerator`
-  (RapidOCR, same backend as `keyless gaze record`), matches ground-truth gaze
-  to candidates, writes a schema-v0 session, prints recall + `metric_table`.
-  Exit code 1 if recall < 95% (GREENFIELD candidate gate).
-- First run: recall 0% — bezel/button z-order bug (camera saw the bezel back).
-  Fixed, then a second bug: the fake person occluded the panel for the
-  screenshot camera. Fixes: person meshes get `hide_render` on the screen pass
-  (the screenshot is a framebuffer, not a camera), full-extent button planes,
-  0.70 font ratio.
-- `extractors.py` — `HashTextExtractor`: deterministic text→vector toy
-  extractor for the probe CLI smoke test (no real semantics on purpose).
-- Status 2026-11-23: DONE end-to-end. Two sessions written
-  (`--session-id`, `--gaze-jitter` for split variety):
-  - ground-truth candidate recall 100% (gate ≥95% passes)
-  - `keyless gaze replay` clean; `baseline_top1` = 1.0 (sanity)
-  - `keyless gaze probe .tmp-synth-lab/sessions --extractor
-    'extractors:HashTextExtractor'` → train 1 / test 1, probe top1 0.125 vs
-    baseline_top1 1.0 → honest "falsified" verdict printed. Semantic-free
-    features losing to nearest-pixel is the expected outcome; the harness,
-    split, fit/predict, and verdict all work. Next: plug a real EG2 wrapper
-    with the same (event, candidate) -> vector signature.
-
-## Cross-platform note (user, 2026-11-23)
-
-App is cross-platform by design already: `src/keyless/platform/` = `base.py`
-(protocols) + `linux/` `macos/` `windows/` `cua/` `stub.py` + `router.py`
-(host selection); `build_live_generator`/`build_live_screen_provider` pick
-sources per OS; the gaze seam + experiment harness are platform-neutral
-(extractor injected as `module:callable`). The synth lab is a dev-time tool
-(Blender not a runtime dep); keep new code platform-neutral through the same seam.
-
-## Findings
-
-- `keyless gaze probe <sessions_dir> --extractor module:callable` works
-  end-to-end; verdict line is explicit (beats / falsified vs `baseline_top1`).
-- Probe semantics learned the hard way: `fit` only embeds the *clicked*
-  candidate (the label), and `predict` scores each candidate against its OWN
-  centroid. Fixtures must reflect that.
-- Rich console wraps long CLI lines; test assertions must use short fragments.
-- Platform here is Linux: the SwiftUI host (packaging/macos) cannot be built
-  on this machine; "app runs" is verified via `keyless serve` daemon path.
+1. [ ] **Record 2 to 3 real desktop sessions** on `fernix` with `keyless gaze record --save-screenshots` (or Keyless Lab **Record session**) while clicking normally across Firefox, terminal, and IDE.
+2. [ ] **Run Phase 1 recall gate:** `keyless gaze eval-candidates --regenerate`. Verify overall candidate recall > 95%. If < 95%, inspect missed clicks in Keyless Lab and fix perception (AX/OCR/DOM/visual) first.
+3. [ ] **Measure real monocular baseline:** Run `keyless gaze replay <session_dir>` on the recorded sessions to log real `hit@25/50/100` and `baseline_top1`.
+4. [ ] **Phase 2 scorer (only after Step 2 > 95%):** Implement a real `EmbeddingExtractor` / monocular target scorer and benchmark via `keyless gaze probe` against `baseline_top1` on session-held-out splits.
+5. [ ] **macOS verification (on a Mac):** Run `cd packaging/macos && swift build -c release && xcrun swift test` to close OpenSpec tasks `5.5` and `7.2`.

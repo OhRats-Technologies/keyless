@@ -37,6 +37,11 @@ from keyless.gaze.candidates import (
 )
 from keyless.gaze.candidate_generator import CandidateGenerator, GenerationResult
 from keyless.gaze.recorder import ScreenSnapshot, SessionRecorder
+from keyless.gaze.monocular import (
+    MonocularGazeEstimator,
+    MonocularGazePublisher,
+    MonocularPrediction,
+)
 from keyless.gaze.experiment import (
     EmbeddingExtractor,
     EmbeddingHead,
@@ -71,6 +76,9 @@ __all__ = [
     "GenerationResult",
     "ScreenSnapshot",
     "SessionRecorder",
+    "MonocularGazeEstimator",
+    "MonocularGazePublisher",
+    "MonocularPrediction",
     "EmbeddingExtractor",
     "EmbeddingHead",
     "IdentityExtractor",
