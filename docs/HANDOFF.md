@@ -7,6 +7,35 @@
 
 > Read `AGENTS.md` first, then `docs/GREENFIELD.md`, then this file.
 
+## 00. NEXT SESSION: macOS parity (written 2026-11-24, on Linux, before moving to the Mac)
+
+**Branch:** `alt` (pushed). Last Linux commit: onboarding + pursuit warm-up + learner + rig solver (D12).
+Everything in section 0 was built and verified **on Linux (KDE Wayland) only**. On macOS it is
+not good yet. Known gaps, verified by reading the code:
+
+| Piece | Linux | macOS today | What to build |
+|---|---|---|---|
+| Gaze publisher + camera | works (v4l2/pipewire) | `opencv` backend selected; untested since D12 | run `keyless ui`, confirm frames/fps, MediaPipe on Apple Silicon |
+| Eye cursor (reticle) | `overlay_wayland.c` | **not started**: `monocular.py` starts the overlay only on linux | drive `platform/cua/agent_cursor.py` from the shm channel; keep AGENTS rule 3/4 (single cursor, `pointer_mode.py`) |
+| Click learning | `LinuxClickObserver` (evdev) | **none**: `monocular.py` wires clicks only on linux | `CGEventTap` (Quartz) listener for left-mouse-down -> `publisher.on_click(x, y, t_click=monotonic)`; needs Accessibility/Input Monitoring permission UX in onboarding |
+| Calibration stage | native layer-shell stage, all displays dimmed | **falls back to browser full-screen on ONE display** | native stage for macOS: borderless click-through `NSWindow` per `NSScreen` at `.screenSaver` level, reads `keyless_stage_v1` (layout `=QddffffII`, see `gaze/stage.py`); port `draw_stimulus` (or use a Metal/CoreImage layer). Python side (`CalibrationSession`) needs only a `MacStageOverlay` with the same `start/stop/running/error` as `LinuxStageOverlay` |
+| Display layout | xdg-output | `platform/macos/display.py` | verify `width_mm/height_mm` (CGDisplayScreenSize) and Retina scale: stage/shm coords are **logical points**; check `DisplayPlane.scale` handling |
+| Browser fallback monitor | n/a | browser cannot know which screen it is on | pass `connector` from the page if `window.getScreenDetails()` is available (Chromium), else primary |
+
+### Order of work on the Mac
+1. `git checkout alt && git pull`; `uv sync`/venv; run the test command in `AGENTS.md` (expect 398 pass + 1 skip; packaging/release tests are known-failing).
+2. `keyless ui` -> onboarding opens. Confirm camera step reaches "Perfect." and that the browser-fallback warm-up completes with a grade. Record grade/latency/accuracy here.
+3. Click capture (CGEventTap) -> verify `stats.clicks_seen` rises in `/v1/gaze/status` and ignored clicks increment `clicks_ignored`.
+4. Eye cursor via cua `agent_cursor` reading the shm channel; hide while `stats.calibrating` (publisher writes flags=0 then).
+5. Native macOS stage so the warm-up spans all displays and fixes multi-monitor layout (the main D12 win).
+6. Onboarding copy: add a permissions step on macOS (Camera, Accessibility/Input Monitoring) before "Follow the light"; keep it one action per screen, skippable.
+7. Then run the D12 falsifier (decisions.md) on real sessions.
+
+### Do not
+- reintroduce legacy calibration code or a startup gate (AGENTS rules 1, 7);
+- move the hardware pointer implicitly (rule 3);
+- merge to `main`.
+
 ## 0. Latest: onboarding + pursuit warm-up (2026-11-24, D12)
 
 - Web onboarding (`web/static/onboarding.{js,css}`): hello -> camera (live face guide) ->
