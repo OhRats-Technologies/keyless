@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from collections.abc import Callable
 
@@ -375,12 +376,42 @@ class HomePanel(QWidget):
 
     def toggle(self) -> None:
         status = self.window.controller.status
-        if status.state is SessionState.LISTENING:
-            self.window.controller.pause()
-        else:
-            self.window.controller.start()
+        action = "pause" if status.state is SessionState.LISTENING else "start"
+        self.window.on_ui_action(action)
         self._last_state = None
         self.poll_state()
+
+
+class UiEventWatcher(QThread):
+    """Deliver engine ``state`` events (``GET /v1/events`` SSE) to the UI thread.
+
+    Runs ``ControlClient.events()`` on a worker thread and emits the parsed
+    payload whenever the engine publishes a snapshot change. A stream error
+    or close is retried after a short delay; the window's polling timer is
+    the fallback the whole time, so a missing stream is never visible.
+    """
+
+    event = Signal(dict)
+
+    def __init__(self, client, parent: object = None) -> None:
+        super().__init__(parent)
+        self._client = client
+        self._stop = threading.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                for payload in self._client.events():
+                    if self._stop.is_set():
+                        break
+                    self.event.emit(payload)
+            except Exception:
+                pass  # stream break: polling covers until we reconnect
+            if self._stop.wait(2.0):
+                break
 
 
 class MainWindow(QMainWindow):
@@ -495,7 +526,6 @@ class MainWindow(QMainWindow):
             self.config,
             self.paths,
             on_config_changed=self.apply_live_config_change,
-            on_calibrate=self.launch_calibration,
             on_run_setup=self.show_inline_setup,
             on_check_updates=lambda: self.check_for_updates(force=True),
             on_apply_update=self.apply_available_update,
@@ -520,6 +550,20 @@ class MainWindow(QMainWindow):
         self._status_timer.setInterval(1000)
         self._status_timer.timeout.connect(self.home.poll_state)
         self._status_timer.start()
+
+        # Live contract events replace the 1 s poll fast path; the timer stays
+        # as a slow fallback so a dead stream is invisible to the user.
+        self._events_live = False
+        self._event_watcher: UiEventWatcher | None = None
+        if self._control_client is not None:
+            from keyless.ipc.client import ControlClient
+
+            event_client = ControlClient(self._control_client.base_url, timeout=30.0)
+            self._event_watcher = UiEventWatcher(event_client, parent=self)
+            self._event_watcher.event.connect(
+                self._on_engine_event, Qt.QueuedConnection
+            )
+            self._event_watcher.start()
 
         self._restart_timer = QTimer(self)
         self._restart_timer.setSingleShot(True)
@@ -549,9 +593,10 @@ class MainWindow(QMainWindow):
     def _restart_listening_daemon(self) -> None:
         if self._shutdown or self.controller.status.state is not SessionState.LISTENING:
             return
-        self.controller.pause()
-        self.controller.start()
-        self.home.poll_state()
+        # Both steps go through the contract action registry, not /v1/pause
+        # and /v1/start compatibility routes.
+        self.on_ui_action("pause")
+        self.on_ui_action("start")
 
     def open_lab(self):
         from keyless.ui.lab.window import LabWindow
@@ -636,17 +681,6 @@ class MainWindow(QMainWindow):
         if self.tray is not None:
             self.tray.set_update_available(None)
 
-    def launch_calibration(self) -> None:
-        QMessageBox.information(
-            self,
-            "Align the eye cursor",
-            "The legacy calibration engine has been removed.\n\n"
-            "The new target-level gaze model is not installed yet. "
-            "Voice control remains available.",
-        )
-        self.home.refresh()
-        self.settings.refresh()
-
     def show_inline_setup(self) -> OnboardingWidget:
         """Show the distraction-free setup flow inline inside this single window."""
         if self._inline_setup is not None:
@@ -681,8 +715,8 @@ class MainWindow(QMainWindow):
         self.settings.refresh()
         self.home.refresh()
         if self.controller.status.state is not SessionState.LISTENING:
-            self.controller.start()
-            self.home.poll_state()
+            # Start through the contract action registry, not a compat route.
+            self.on_ui_action("start")
 
     def open_onboarding(self) -> OnboardingWindow:
         """Open setup in a standalone dialog (kept for external callers/tests)."""
@@ -800,6 +834,10 @@ class MainWindow(QMainWindow):
                 self._control_client.ui_action(action, arg)
             except Exception:
                 return
+        elif action in ("start", "pause") and self._control_server is None:
+            # In-process shell (no engine HTTP surface): the window's own
+            # controller is the session surface for start/pause.
+            getattr(self.controller, action)()
         else:
             if self._control_server is None and self._contract_source is None:
                 self.contract_document()
@@ -810,6 +848,13 @@ class MainWindow(QMainWindow):
                 return
         self.home.poll_state()
 
+    def _on_engine_event(self, _payload: dict) -> None:
+        """Engine pushed a state snapshot: refresh now, slow the fallback poll."""
+        if not self._events_live:
+            self._events_live = True
+            self._status_timer.setInterval(5000)
+        self.home.poll_state()
+
     def shutdown(self) -> None:
         if self._shutdown:
             return
@@ -817,6 +862,9 @@ class MainWindow(QMainWindow):
         self._status_timer.stop()
         self._restart_timer.stop()
         self._update_poll_timer.stop()
+        if self._event_watcher is not None:
+            self._event_watcher.stop()
+            self._event_watcher.wait(3000)
         if self._update_worker is not None and self._update_worker.isRunning():
             self._update_worker.wait(2000)
         if self._inline_setup is not None:
@@ -901,7 +949,6 @@ def run_ui(
         on_open=window.present_window,
         on_pause=window.home.toggle,
         on_quit=app.quit,
-        on_calibrate=window.launch_calibration,
         on_open_lab=window.open_lab,
     )
     if tray.start():

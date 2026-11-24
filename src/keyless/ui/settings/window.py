@@ -174,7 +174,6 @@ class SettingsPanel(QWidget):
         paths: AppPaths | None = None,
         *,
         on_config_changed: Callable[[], None] | None = None,
-        on_calibrate: Callable[[], None] | None = None,
         on_run_setup: Callable[[], None] | None = None,
         on_check_updates: Callable[[], None] | None = None,
         on_apply_update: Callable[[], None] | None = None,
@@ -186,7 +185,6 @@ class SettingsPanel(QWidget):
         self.config = config or AppConfig.load(self.paths.settings_path)
         self.client = client
         self._on_config_changed = on_config_changed
-        self._on_calibrate = on_calibrate
         self._on_run_setup = on_run_setup
         self._on_check_updates = on_check_updates
         self._on_apply_update = on_apply_update
@@ -477,17 +475,24 @@ class SettingsPanel(QWidget):
             from keyless.ipc.client import ControlError
 
             try:
-                result = self.client.patch_config(patch)
+                # The contract action is the UI path; PATCH /v1/config stays
+                # reserved for CLI/automation.
+                body = self.client.ui_action("set_config", patch)
             except ControlError as exc:
                 payload_errors = exc.payload.get("errors")
                 self._show_errors(payload_errors if isinstance(payload_errors, dict) else {})
                 return False
             fields = {field.name for field in dataclass_fields(AppConfig)}
+            raw_config = body.get("config")
             self.config = AppConfig(
-                **{key: value for key, value in result.config.items() if key in fields}
+                **{
+                    key: value
+                    for key, value in (raw_config if isinstance(raw_config, dict) else {}).items()
+                    if key in fields
+                }
             )
-            changed = list(result.changed)
-            restart_required = bool(result.restart_required)
+            changed = [str(key) for key in body.get("changed", [])]
+            restart_required = bool(body.get("restart_required", False))
         else:
             changed = [key for key, value in patch.items() if getattr(self.config, key) != value]
             for key in changed:

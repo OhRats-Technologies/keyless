@@ -50,7 +50,6 @@ class Tray:
         on_open: Callable[[], None] | None = None,
         on_pause: Callable[[], None] | None = None,
         on_quit: Callable[[], None] | None = None,
-        on_calibrate: Callable[[], None] | None = None,
         on_open_lab: Callable[[], None] | None = None,
     ) -> None:
         self.icon = QSystemTrayIcon(make_icon())
@@ -59,20 +58,17 @@ class Tray:
         self.open_action = QAction("Open Keyless", self.menu)
         self.lab_action = QAction("Open Keyless Lab", self.menu)
         self.pause_action = QAction("Pause", self.menu)
-        self.calibrate_action = QAction("Calibrate", self.menu)
         self.update_action = QAction("Update available…", self.menu)
         self.update_action.setVisible(False)
         self.quit_action = QAction("Quit", self.menu)
         self.open_action.triggered.connect(on_open or (lambda: None))
         self.lab_action.triggered.connect(on_open_lab or (lambda: None))
         self.pause_action.triggered.connect(on_pause or (lambda: None))
-        self.calibrate_action.triggered.connect(on_calibrate or (lambda: None))
         self.quit_action.triggered.connect(on_quit or (lambda: None))
         self.menu.addAction(self.open_action)
         self.menu.addAction(self.lab_action)
         self.menu.addAction(self.pause_action)
         self.menu.addSeparator()
-        self.menu.addAction(self.calibrate_action)
         self.menu.addAction(self.update_action)
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
