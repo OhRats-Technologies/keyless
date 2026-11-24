@@ -260,18 +260,18 @@ struct OnboardingView: View {
         ZStack {
             LinearGradient(
                 colors: [
-                    Color(red: 0.05, green: 0.06, blue: 0.11),
-                    Color(red: 0.09, green: 0.11, blue: 0.20),
-                    Color(red: 0.04, green: 0.05, blue: 0.09),
+                    Tokens.Dark.surfaceAlt,
+                    Tokens.Dark.surface,
+                    Tokens.Dark.background,
                 ],
                 startPoint: .topLeading, endPoint: .bottomTrailing
             )
             RadialGradient(
-                colors: [Color.accentColor.opacity(0.18), Color.clear],
+                colors: [Tokens.Dark.accent.opacity(0.18), Color.clear],
                 center: .topTrailing, startRadius: 40, endRadius: 620
             )
             RadialGradient(
-                colors: [Color.purple.opacity(0.12), Color.clear],
+                colors: [Tokens.Dark.accent.opacity(0.12), Color.clear],
                 center: .bottomLeading, startRadius: 40, endRadius: 560
             )
         }
@@ -283,13 +283,13 @@ struct OnboardingView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(LinearGradient(
-                        colors: [.blue, .purple],
+                        colors: [Tokens.Dark.accent, Tokens.Dark.accent.opacity(0.7)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ))
                 Image(systemName: "eye.fill")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Tokens.Dark.accentText)
             }
             .frame(width: 30, height: 30)
             Text("Keyless")
@@ -298,7 +298,7 @@ struct OnboardingView: View {
             if engine.state == "listening" {
                 Label("Listening", systemImage: "waveform")
                     .font(.caption)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Tokens.Dark.success)
             }
         }
         .padding(.horizontal, 56)
@@ -316,7 +316,7 @@ struct OnboardingView: View {
                     ZStack {
                         Circle()
                             .fill(item.index <= currentStepIndex
-                                  ? Color.accentColor : Color.white.opacity(0.08))
+                                  ? Tokens.Dark.accent : Tokens.Dark.text.opacity(0.08))
                             .frame(width: 22, height: 22)
                         if item.index < currentStepIndex {
                             Image(systemName: "checkmark")
@@ -335,7 +335,7 @@ struct OnboardingView: View {
                 if item.step != SetupStep.allCases.last {
                     Rectangle()
                         .fill(item.index < currentStepIndex
-                              ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.12))
+                              ? Tokens.Dark.accent.opacity(0.6) : Tokens.Dark.text.opacity(0.12))
                         .frame(height: 1)
                         .padding(.horizontal, 12)
                         .layoutPriority(-1)
@@ -390,7 +390,7 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Keyless, on your Mac")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.accentColor.opacity(0.9))
+                    .foregroundStyle(Tokens.Dark.accent.opacity(0.9))
                 Text("Let Keyless\nuse this Mac")
                     .font(.system(size: 50, weight: .bold, design: .rounded))
                     .lineSpacing(2)
@@ -412,11 +412,11 @@ struct OnboardingView: View {
             ZStack {
                 ForEach([300.0, 226.0, 152.0], id: \.self) { size in
                     Circle()
-                        .stroke(Color.accentColor.opacity(size == 300 ? 0.10 : 0.18), lineWidth: 1)
+                        .stroke(Tokens.Dark.accent.opacity(size == 300 ? 0.10 : 0.18), lineWidth: 1)
                         .frame(width: size, height: size)
                 }
                 Circle()
-                    .fill(RadialGradient(colors: [Color.accentColor.opacity(0.35), Color.accentColor.opacity(0.04)],
+                    .fill(RadialGradient(colors: [Tokens.Dark.accent.opacity(0.35), Tokens.Dark.accent.opacity(0.04)],
                                          center: .center, startRadius: 4, endRadius: 90))
                     .frame(width: 180, height: 180)
                 Image(systemName: "eye.fill")
@@ -469,9 +469,9 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 12) {
                     ZStack {
-                        Circle().fill(Color.green.opacity(0.18))
+                        Circle().fill(Tokens.Dark.success.opacity(0.18))
                         Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
+                            .foregroundStyle(Tokens.Dark.success)
                     }
                     .frame(width: 36, height: 36)
                     VStack(alignment: .leading, spacing: 2) {
@@ -505,10 +505,10 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             Spacer()
             ZStack {
-                Circle().fill(Color.green.opacity(0.14)).frame(width: 84, height: 84)
+                Circle().fill(Tokens.Dark.success.opacity(0.14)).frame(width: 84, height: 84)
                 Image(systemName: "checkmark")
                     .font(.system(size: 36, weight: .semibold))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Tokens.Dark.success)
             }
             Text("You're all set")
                 .font(.system(size: 40, weight: .bold, design: .rounded))
@@ -552,7 +552,7 @@ struct OnboardingView: View {
     private func tip(_ title: String, _ detail: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+                .foregroundStyle(Tokens.Dark.success)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.subheadline.weight(.semibold))
                 Text(detail).font(.caption).foregroundStyle(.white.opacity(0.55))
@@ -568,7 +568,7 @@ struct OnboardingView: View {
                 Text(setupStatus).font(.subheadline).foregroundStyle(.white.opacity(0.8))
             }
             if let restartHint {
-                Text(restartHint).font(.caption).foregroundStyle(.orange)
+                Text(restartHint).font(.caption).foregroundStyle(Tokens.Dark.warning)
             }
             HStack(spacing: 18) {
                 Button("Next") { flow.skipCurrent() }
@@ -579,7 +579,7 @@ struct OnboardingView: View {
             }
             .buttonStyle(.plain)
             .font(.subheadline)
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(Tokens.Dark.accent)
         }
     }
 
@@ -609,11 +609,11 @@ struct OnboardingView: View {
             HStack(spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.blue.opacity(0.18))
+                        .fill(Tokens.Dark.accent.opacity(0.18))
                         .frame(width: 42, height: 42)
                     Image(systemName: "waveform.and.mic")
                         .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(Tokens.Dark.accent)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Offline speech model").font(.headline)
@@ -625,7 +625,7 @@ struct OnboardingView: View {
                 if engine.modelReady {
                     Label("Ready", systemImage: "checkmark.circle.fill")
                         .font(.subheadline)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(Tokens.Dark.success)
                 }
             }
             if busy, let job {
@@ -640,7 +640,7 @@ struct OnboardingView: View {
                         Spacer()
                         Button("Stop") { Task { await engine.cancelModelDownload() } }
                             .buttonStyle(.plain)
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(Tokens.Dark.accent)
                             .font(.caption)
                     }
                 }
@@ -648,11 +648,11 @@ struct OnboardingView: View {
                 HStack {
                     Text(job.error.isEmpty ? "The download stopped." : job.error)
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Tokens.Dark.warning)
                     Spacer()
                     Button("Try again") { Task { await engine.downloadModel() } }
                         .buttonStyle(.plain)
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(Tokens.Dark.accent)
                         .font(.caption)
                 }
             } else if model?.ready == false {
@@ -693,7 +693,7 @@ struct OnboardingView: View {
             ForEach(Array(componentChecksList.prefix(revealedChecks))) { check in
                 HStack(spacing: 8) {
                     Image(systemName: check.done ? "checkmark.circle.fill" : "circle.dashed")
-                        .foregroundStyle(check.done ? .green : .white.opacity(0.35))
+                        .foregroundStyle(check.done ? Tokens.Dark.success : Tokens.Dark.text.opacity(0.35))
                     Text(check.title).font(.caption)
                         .foregroundStyle(check.done ? .white.opacity(0.85) : .white.opacity(0.5))
                 }
@@ -749,7 +749,7 @@ struct OnboardingView: View {
 
     private func toastBanner(_ message: String) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Tokens.Dark.success)
             Text(message).font(.subheadline)
             Spacer()
             Button { toast = nil } label: {
@@ -837,7 +837,7 @@ private struct PermissionCard: View {
             if grant == .granted {
                 Label("Allowed", systemImage: "checkmark.circle.fill")
                     .font(.subheadline)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Tokens.Dark.success)
             } else if waiting {
                 HStack(spacing: 7) {
                     ProgressView().controlSize(.small)
@@ -873,9 +873,9 @@ private struct PermissionCard: View {
 
     private var tint: Color {
         switch kind {
-        case .camera, .microphone: return .blue
-        case .accessibility: return .purple
-        case .screenRecording: return .orange
+        case .camera, .microphone: return Tokens.Dark.accent
+        case .accessibility: return Tokens.Dark.accent
+        case .screenRecording: return Tokens.Dark.warning
         }
     }
 }

@@ -71,6 +71,9 @@ private struct SidebarView: View {
     @ObservedObject var engine: EngineBridge
     @Binding var selection: ContentView.AppTab
     let openSetup: (SetupStep?) -> Void
+    @Environment(\.colorScheme) private var scheme
+
+    private var theme: Theme { Theme(scheme) }
 
     var body: some View {
         List(selection: $selection) {
@@ -81,13 +84,13 @@ private struct SidebarView: View {
             } header: {
                 HStack(spacing: 10) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(LinearGradient(colors: [.blue, .purple],
+                        RoundedRectangle(cornerRadius: Tokens.radius_Default, style: .continuous)
+                            .fill(LinearGradient(colors: [theme.accent, theme.accent.opacity(0.7)],
                                                  startPoint: .topLeading,
                                                  endPoint: .bottomTrailing))
                         Image(systemName: "eye.fill")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(theme.accentText)
                     }
                     .frame(width: 26, height: 26)
                     VStack(alignment: .leading, spacing: 0) {
@@ -115,8 +118,8 @@ private struct SidebarView: View {
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 8) {
                 Circle()
-                    .fill(engine.state == "listening" ? .green
-                          : engine.detail.contains("Not connected") ? .orange : .secondary)
+                    .fill(engine.state == "listening" ? theme.success
+                          : engine.detail.contains("Not connected") ? theme.warning : theme.muted)
                     .frame(width: 7, height: 7)
                 Text(engine.detail.contains("Not connected") ? "Offline" : "Connected")
                     .font(.caption)
@@ -134,7 +137,10 @@ private struct SidebarView: View {
 struct HomeView: View {
     @ObservedObject var engine: EngineBridge
     @ObservedObject var audio: AudioLevelMonitor
+    @Environment(\.colorScheme) private var scheme
     let openSetup: (SetupStep?) -> Void
+
+    private var theme: Theme { Theme(scheme) }
 
     var body: some View {
         ScrollView {
@@ -146,7 +152,7 @@ struct HomeView: View {
             .frame(maxWidth: 880, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(theme.background)
         .navigationTitle("Home")
         .onAppear { audio.startMonitoring() }
         .onDisappear { audio.stopMonitoring() }
@@ -160,14 +166,14 @@ struct HomeView: View {
         ZStack(alignment: .leading) {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(LinearGradient(
-                    colors: [Color.accentColor.opacity(0.20), Color.purple.opacity(0.12)],
+                    colors: [theme.accent.opacity(0.20), theme.accent.opacity(0.08)],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 ))
             HStack(spacing: 24) {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("KEYLESS", systemImage: "eye.fill")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(theme.accent)
                     Text(statusTitle)
                         .font(.system(size: 32, weight: .bold, design: .rounded))
                     Text(statusDetail)
@@ -194,11 +200,11 @@ struct HomeView: View {
         ZStack {
             ForEach([112.0, 84.0, 56.0], id: \.self) { size in
                 Circle()
-                    .stroke(Color.accentColor.opacity(size == 112 ? 0.18 : 0.30), lineWidth: 1)
+                    .stroke(theme.accent.opacity(size == 112 ? 0.18 : 0.30), lineWidth: 1)
                     .frame(width: size, height: size)
             }
             Circle()
-                .fill(RadialGradient(colors: [Color.accentColor.opacity(0.5), Color.accentColor.opacity(0.05)],
+                .fill(RadialGradient(colors: [theme.accent.opacity(0.5), theme.accent.opacity(0.05)],
                                      center: .center, startRadius: 2, endRadius: 30))
                 .frame(width: 60, height: 60)
             Image(systemName: "eye.fill")
@@ -220,7 +226,7 @@ struct HomeView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .tint(audio.isMuted ? .orange : Color.accentColor)
+                    .tint(audio.isMuted ? theme.warning : theme.accent)
                     .help(audio.isMuted ? "Unmute microphone" : "Mute microphone")
                     .accessibilityLabel(audio.isMuted ? "Unmute microphone" : "Mute microphone")
                 }
@@ -330,6 +336,9 @@ struct SettingsView: View {
     let showOnboarding: () -> Void
     @State private var confirmingReset = false
     @State private var applyingBackend = false
+    @Environment(\.colorScheme) private var scheme
+
+    private var theme: Theme { Theme(scheme) }
 
     var body: some View {
         Form {
@@ -383,7 +392,7 @@ struct SettingsView: View {
                             ProgressView().controlSize(.mini)
                             Text("Restarting…").foregroundStyle(.secondary)
                         } else {
-                            Circle().fill(cuaDriverReady ? .green : .orange)
+                            Circle().fill(cuaDriverReady ? theme.success : theme.warning)
                                 .frame(width: 7, height: 7)
                             Text(cuaDriverReady ? "Ready · \(cuaDriverVersion)" : "Not downloaded")
                                 .foregroundStyle(.secondary)
@@ -526,10 +535,10 @@ struct SettingsView: View {
 
     private var stateColor: Color {
         switch engine.state {
-        case "listening": return .green
-        case "error": return .red
-        case "paused": return .orange
-        default: return .secondary
+        case "listening": return theme.success
+        case "error": return theme.danger
+        case "paused": return theme.warning
+        default: return theme.muted
         }
     }
 

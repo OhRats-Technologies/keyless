@@ -13,9 +13,9 @@
 - [x] 2.5 Add `GET /v1/events` (SSE): state-change notifications for capability/setup/progress/history; bounded concurrent streams; keep polling fallback.
 
 ## 3. Shared tokens reach every shell
-- [ ] 3.1 Add a codegen script emitting `Tokens.swift` from `design-tokens.json` into `packaging/macos/`.
-- [ ] 3.2 Add a unit test asserting the generated Swift constants match the JSON.
-- [ ] 3.3 Replace SwiftUI system-color/inline-literal styling with generated tokens.
+- [x] 3.1 Add a codegen script emitting `Tokens.swift` from `design-tokens.json` into `packaging/macos/`.
+- [x] 3.2 Add a unit test asserting the generated Swift constants match the JSON.
+- [x] 3.3 Replace SwiftUI system-color/inline-literal styling with generated tokens.
 
 ## 4. Qt becomes a contract renderer
 - [ ] 4.1 Implement a generic row dispatcher in `src/keyless/ui/components.py` for the six row kinds.

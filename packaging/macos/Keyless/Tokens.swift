@@ -72,3 +72,28 @@ enum Tokens {
     static func small() -> Font { .custom(fontFamily, size: fontSize_S) }
     static func telemetry() -> Font { .custom(monoFontFamily, size: fontSize_S) }
 }
+
+// Appearance-aware facade: picks the light or dark palette for the current
+// color scheme, mirroring how the Qt shell swaps token themes. Views read
+// `Theme.accent` etc. instead of system colors or literals.
+struct Theme {
+    private let isDark: Bool
+
+    init(_ scheme: ColorScheme) {
+        isDark = scheme == .dark
+    }
+
+    var background: Color { isDark ? Tokens.Dark.background : Tokens.Light.background }
+    var surface: Color { isDark ? Tokens.Dark.surface : Tokens.Light.surface }
+    var surfaceAlt: Color { isDark ? Tokens.Dark.surface_alt : Tokens.Light.surface_alt }
+    var sidebar: Color { isDark ? Tokens.Dark.sidebar : Tokens.Light.sidebar }
+    var text: Color { isDark ? Tokens.Dark.text : Tokens.Light.text }
+    var muted: Color { isDark ? Tokens.Dark.muted : Tokens.Light.muted }
+    var accent: Color { isDark ? Tokens.Dark.accent : Tokens.Light.accent }
+    var accentText: Color { isDark ? Tokens.Dark.accent_text : Tokens.Light.accent_text }
+    var border: Color { isDark ? Tokens.Dark.border : Tokens.Light.border }
+    var danger: Color { isDark ? Tokens.Dark.danger : Tokens.Light.danger }
+    var success: Color { isDark ? Tokens.Dark.success : Tokens.Light.success }
+    var warning: Color { isDark ? Tokens.Dark.warning : Tokens.Light.warning }
+    var selected: Color { isDark ? Tokens.Dark.selected : Tokens.Light.selected }
+}
