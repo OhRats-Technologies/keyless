@@ -21,14 +21,14 @@ STATE_VERSION = 1
 class OnboardingStep(str, Enum):
     WELCOME = "welcome"
     DEVICES = "devices"
-    CALIBRATION = "calibration"
+    PERMISSIONS = "permissions"
     READY = "ready"
 
 
 STEPS: tuple[OnboardingStep, ...] = (
     OnboardingStep.WELCOME,
     OnboardingStep.DEVICES,
-    OnboardingStep.CALIBRATION,
+    OnboardingStep.PERMISSIONS,
     OnboardingStep.READY,
 )
 
@@ -36,11 +36,11 @@ OPTIONAL_STEPS: set[OnboardingStep] = set()
 
 _LEGACY_STEP_MAP: dict[str, OnboardingStep] = {
     "welcome": OnboardingStep.WELCOME,
-    "permissions": OnboardingStep.DEVICES,
     "cameras": OnboardingStep.DEVICES,
     "stt": OnboardingStep.DEVICES,
     "devices": OnboardingStep.DEVICES,
-    "calibration": OnboardingStep.CALIBRATION,
+    "permissions": OnboardingStep.PERMISSIONS,
+    "calibration": OnboardingStep.PERMISSIONS,
     "provider": OnboardingStep.READY,
     "practice": OnboardingStep.READY,
     "ready": OnboardingStep.READY,

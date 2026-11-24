@@ -69,7 +69,7 @@ def _state(**overrides) -> dict:
             "job": None,
         },
         setup={
-            "steps": ["welcome", "devices", "calibration", "ready"],
+            "steps": ["welcome", "devices", "permissions", "ready"],
             "state": {"step": "welcome", "completed": []},
             "complete": False,
         },
@@ -98,7 +98,7 @@ def test_document_shape_and_version() -> None:
     assert document["screens"]["setup"]["steps"] == [
         "welcome",
         "devices",
-        "calibration",
+        "permissions",
         "ready",
     ]
 
@@ -196,7 +196,7 @@ def test_activity_and_settings_are_honest() -> None:
 
 def test_setup_marks_current_and_completed_steps() -> None:
     setup = {
-        "steps": ["welcome", "devices", "calibration", "ready"],
+        "steps": ["welcome", "devices", "permissions", "ready"],
         "state": {"step": "devices", "completed": ["welcome"]},
         "complete": False,
     }

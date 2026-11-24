@@ -138,14 +138,14 @@ def test_control_plane_setup_is_engine_owned(tmp_path: Path) -> None:
     try:
         setup = request("/v1/setup")
         assert setup["schema_version"] == 1
-        assert setup["steps"] == ["welcome", "devices", "calibration", "ready"]
+        assert setup["steps"] == ["welcome", "devices", "permissions", "ready"]
         assert setup["calibration"]["ready"] is True
         assert setup["calibration"]["legacy_removed"] is True
         assert setup["complete"] is False
 
-        moved = request("/v1/setup", {"action": "go_to", "step": "calibration"})
-        assert moved["state"]["step"] == "calibration"
-        assert request("/v1/setup")["state"]["step"] == "calibration"
+        moved = request("/v1/setup", {"action": "go_to", "step": "permissions"})
+        assert moved["state"]["step"] == "permissions"
+        assert request("/v1/setup")["state"]["step"] == "permissions"
 
         request("/v1/setup", {"action": "go_to", "step": "ready"})
         complete = request("/v1/setup", {"action": "complete"})

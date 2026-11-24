@@ -131,9 +131,9 @@ def test_onboarding_window_resumes_and_reaches_ready(qapp, tmp_path: Path, monke
         assert window.stack.currentIndex() == 0
         window.next()  # welcome -> devices
         assert flow.step is OnboardingStep.DEVICES
-        window.next()  # devices -> calibration
+        window.next()  # devices -> permissions
         assert flow.step is OnboardingStep.CALIBRATION
-        window.next()  # calibration -> ready
+        window.next()  # permissions -> ready
         assert flow.step is OnboardingStep.READY
         window.next()  # finish
         assert flow.is_complete

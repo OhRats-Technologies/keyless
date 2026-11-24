@@ -704,8 +704,8 @@ class DevicesPage(StepPage):
             self._dl_worker.wait(1000)
 
 
-class CalibrationPage(StepPage):
-    step = OnboardingStep.CALIBRATION
+class PermissionsPage(StepPage):
+    step = OnboardingStep.PERMISSIONS
     next_label = "Continue"
 
     def __init__(self) -> None:
@@ -766,7 +766,7 @@ class ReadyPage(StepPage):
 _STEP_VOICE_HELP = {
     OnboardingStep.WELCOME: "Welcome to Keyless. Everything runs privately on your device. Press Get started to check your camera and microphone.",
     OnboardingStep.DEVICES: "Check that your microphone and camera are ready, then download the offline speech model if needed.",
-    OnboardingStep.CALIBRATION: "Voice control is ready. Gaze v2 will learn from your clicks when it ships. No calibration is needed.",
+    OnboardingStep.PERMISSIONS: "Voice control is ready. Gaze v2 will learn from your clicks when it ships. No calibration is needed.",
     OnboardingStep.READY: "You are ready to go hands-free. Press Start listening whenever you want Keyless active.",
 }
 
@@ -835,7 +835,7 @@ class OnboardingWidget(QWidget):
                 report_provider=report_provider,
                 enable_previews=enable_previews,
             ),
-            OnboardingStep.CALIBRATION: CalibrationPage(),
+            OnboardingStep.PERMISSIONS: PermissionsPage(),
             OnboardingStep.READY: ReadyPage(),
         }
         for step in STEPS:
