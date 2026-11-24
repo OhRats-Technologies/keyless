@@ -1,3 +1,8 @@
+import { Viewport3D } from '/assets/viewport3d.js';
+
+const viewport3d = new Viewport3D();
+let rafId = null;
+
 // Keyless Precision Instrument UI - Unified Multi-Display 3D Monocular + Binocular Gaze & Voice
 
 const state = {
@@ -7,6 +12,7 @@ const state = {
   status: { state: 'stopped', detail: '' },
   gaze: null,
   cameraMode: 'auto',
+  viewportMode: '3d',
   gazeTrail: [],
   recall: null,
   sessions: [],
@@ -24,7 +30,7 @@ const state = {
   models: null,
   rig: null,
   selectedRigIdx: 0,
-  settingsTab: 'displays',
+  settingsTab: 'gaze',
   settingsQuery: '',
   lastError: null,
 };
@@ -38,7 +44,6 @@ const VIEW_META = {
 };
 
 const SETTINGS_TABS = [
-  { id: 'displays', label: 'Displays (3D Rig)', section: 'Hardware' },
   { id: 'gaze', label: 'Gaze & Overlay', group: 'Gaze & cursor', section: 'Hardware' },
   { id: 'cameras', label: 'Cameras', group: 'Cameras', section: 'Hardware' },
   { id: 'voice', label: 'Voice & Audio', group: 'Voice & audio', section: 'Intelligence' },
@@ -225,6 +230,7 @@ async function setView(view, { settingsTab = null } = {}) {
 }
 
 function renderView() {
+  if (state.view !== 'gaze') stopGazeRaf();
   const root = document.getElementById('view-root');
   if (state.view === 'home') renderHome(root);
   else if (state.view === 'gaze') renderGaze(root);
@@ -328,7 +334,7 @@ function renderHome(root) {
 
   document.getElementById('home-primary').addEventListener('click', toggleListening);
   document.getElementById('home-open-gaze').addEventListener('click', () => setView('gaze'));
-  document.getElementById('home-open-displays').addEventListener('click', () => setView('settings', { settingsTab: 'displays' }));
+  document.getElementById('home-open-displays').addEventListener('click', () => { state.viewportMode = '3d'; setView('gaze'); });
   root.querySelectorAll('[data-cmd-cat]').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.commandQuery = '';
@@ -343,6 +349,54 @@ function renderHome(root) {
     if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
   });
 }
+
+
+function getCanvasPalette() {
+  const cs = getComputedStyle(document.documentElement);
+  return {
+    surface: cs.getPropertyValue('--or-surface').trim(),
+    elevated: cs.getPropertyValue('--or-surface-elevated').trim(),
+    ivory: cs.getPropertyValue('--or-ivory').trim(),
+    border: cs.getPropertyValue('--or-border').trim(),
+    borderSoft: cs.getPropertyValue('--or-border-soft').trim(),
+    accent: cs.getPropertyValue('--or-accent').trim(),
+    ok: cs.getPropertyValue('--or-positive').trim(),
+    muted: cs.getPropertyValue('--or-text-muted').trim(),
+    text: cs.getPropertyValue('--or-text').trim(),
+  };
+}
+
+function stopGazeRaf() {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+}
+
+function startGazeRaf() {
+  if (rafId !== null) return;
+  const tick = () => {
+    if (state.view !== 'gaze' || document.hidden) {
+      rafId = null;
+      return;
+    }
+    if (state.viewportMode === '2d') {
+      drawGazeCanvas();
+    } else {
+      const canvas = document.getElementById('gaze-canvas');
+      if (canvas) {
+        viewport3d.render(canvas, state.gaze, state.rig, state.gazeTrail, getCanvasPalette());
+      }
+    }
+    rafId = requestAnimationFrame(tick);
+  };
+  rafId = requestAnimationFrame(tick);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopGazeRaf();
+  else if (state.view === 'gaze') startGazeRaf();
+});
 
 // ---- GAZE INSTRUMENT DECK (Monocular 10D + Binocular 20D + 3D Rig) -----
 
@@ -372,7 +426,11 @@ function renderGaze(root) {
         <div class="viewport-bar">
           <div class="row-gap">
             <span class="led ${running ? (pred && pred.face_detected ? 'ok' : 'warn') : ''}" id="gaze-live-led"></span>
-            <span class="eyebrow">Optical Viewport</span>
+            <div class="seg-group">
+              <button class="seg-btn ${state.viewportMode === '3d' ? 'active' : ''}" data-vp-mode="3d" type="button">3D Rig</button>
+              <button class="seg-btn ${state.viewportMode === 'top' ? 'active' : ''}" data-vp-mode="top" type="button">Top</button>
+              <button class="seg-btn ${state.viewportMode === '2d' ? 'active' : ''}" data-vp-mode="2d" type="button">2D</button>
+            </div>
             <span class="badge ${usingRidge ? 'ok' : ''}" id="gaze-mode-badge">
               ${running ? `${esc((g.mode || 'monocular').toUpperCase())} ${stats.feature_dim || 10}D` : 'STANDBY'}
             </span>
@@ -433,10 +491,50 @@ function renderGaze(root) {
             <button class="seg-btn ${state.cameraMode === 'mono' ? 'active' : ''}" data-cam-mode="mono" type="button" ${running ? 'disabled' : ''}>Mono 10D</button>
             <button class="seg-btn ${state.cameraMode === 'stereo' ? 'active' : ''}" data-cam-mode="stereo" type="button" ${running || !hasStereo ? 'disabled' : ''} title="${hasStereo ? 'Dual-camera binocular 20D' : 'Connect a second webcam for binocular mode'}">Bino 20D</button>
           </div>
+          <div class="telemetry">${cams.length ? esc(cams[0].name) : 'No webcam detected'}</div>
+        </section>
+
+        <section class="panel-section">
           <div class="row-between">
-            <span class="telemetry">${cams.length ? esc(cams[0].name) : 'No webcam detected'}</span>
-            <button id="gaze-rig-btn" class="btn btn-sm" type="button">Edit 3D Rig</button>
+            <span class="eyebrow">3D Display Rig</span>
+            <div class="row-gap">
+              <span class="badge ${(state.rig && state.rig.auto_rig !== false) ? 'ok' : 'warn'}" id="gaze-rig-status">
+                ${(state.rig && state.rig.auto_rig !== false) ? ((state.rig && state.rig.rig_meta && state.rig.rig_meta.inferred) ? 'Auto' : 'Learning') : 'Manual'}
+              </span>
+              <button class="btn btn-sm" data-rig-preset="auto" type="button">Reset</button>
+            </div>
           </div>
+          <div class="row-gap" id="gaze-rig-chips">
+            ${((state.rig && state.rig.displays) || []).map((d) => `
+              <span class="telemetry">${esc(d.connector)} ${d.yaw_deg >= 0 ? '+' : ''}${Number(d.yaw_deg || 0).toFixed(1)} deg</span>
+            `).join(' &nbsp;|&nbsp; ')}
+          </div>
+          <details>
+            <summary class="telemetry" style="cursor:pointer;user-select:none;">Manual rig override</summary>
+            <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+              <div class="row-gap">
+                <button class="btn btn-sm" data-rig-preset="flat" type="button">Flat</button>
+                <button class="btn btn-sm" data-rig-preset="curved" type="button">Curved</button>
+                <button class="btn btn-sm" data-rig-preset="swap" type="button" ${((state.rig && state.rig.displays) || []).length < 2 ? 'disabled' : ''}>Swap L/R</button>
+              </div>
+              ${((state.rig && state.rig.displays) || []).length ? (() => {
+                const ds = state.rig.displays;
+                if (state.selectedRigIdx >= ds.length) state.selectedRigIdx = 0;
+                const ad = ds[state.selectedRigIdx];
+                return `
+                  <div class="seg-group">
+                    ${ds.map((d, i) => `<button class="seg-btn ${i === state.selectedRigIdx ? 'active' : ''}" data-rig-sel="${i}" type="button">${esc(d.connector)}</button>`).join('')}
+                  </div>
+                  <div class="rig-num-grid">
+                    <div class="rig-num-field"><label>X (mm)</label><input type="number" step="10" data-rig-field="cx_mm" value="${ad.cx_mm}"></div>
+                    <div class="rig-num-field"><label>Z (mm)</label><input type="number" step="10" min="200" data-rig-field="cz_mm" value="${ad.cz_mm}"></div>
+                    <div class="rig-num-field"><label>Yaw</label><input type="number" step="1" min="-75" max="75" data-rig-field="yaw_deg" value="${ad.yaw_deg}"></div>
+                  </div>
+                  <button id="rig-save-btn" class="btn btn-sm" type="button">Apply override</button>
+                `;
+              })() : ''}
+            </div>
+          </details>
         </section>
 
         <section class="panel-section">
@@ -518,7 +616,50 @@ function renderGaze(root) {
     renderGaze(root);
   });
 
-  document.getElementById('gaze-rig-btn').addEventListener('click', () => setView('settings', { settingsTab: 'displays' }));
+  root.querySelectorAll('[data-vp-mode]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.viewportMode = btn.dataset.vpMode;
+      if (state.viewportMode === '3d') viewport3d.setPreset('3d');
+      else if (state.viewportMode === 'top') viewport3d.setPreset('top');
+      renderGaze(root);
+    });
+  });
+  root.querySelectorAll('[data-rig-sel]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.selectedRigIdx = Number(btn.dataset.rigSel);
+      renderGaze(root);
+    });
+  });
+  root.querySelectorAll('[data-rig-preset]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        clearError();
+        state.rig = await api('/v1/displays/rig/preset', {
+          method: 'POST',
+          body: JSON.stringify({ preset: btn.dataset.rigPreset }),
+        });
+        renderGaze(root);
+      } catch (err) { showError('Could not update 3D rig', err.message); }
+    });
+  });
+  root.querySelectorAll('[data-rig-field]').forEach((inp) => {
+    inp.addEventListener('input', () => {
+      const d = state.rig && state.rig.displays && state.rig.displays[state.selectedRigIdx];
+      if (!d) return;
+      const v = parseFloat(inp.value);
+      if (Number.isFinite(v)) d[inp.dataset.rigField] = v;
+    });
+  });
+  const rigSaveBtn = document.getElementById('rig-save-btn');
+  if (rigSaveBtn) {
+    rigSaveBtn.addEventListener('click', async () => {
+      try {
+        clearError();
+        state.rig = await api('/v1/displays/rig', { method: 'POST', body: JSON.stringify(state.rig) });
+        renderGaze(root);
+      } catch (err) { showError('Could not save 3D rig', err.message); }
+    });
+  }
   document.getElementById('gaze-undo-btn').addEventListener('click', async () => {
     state.gaze = await api('/v1/gaze/undo', { method: 'POST', body: '{}' });
     renderGaze(root);
@@ -533,8 +674,9 @@ function renderGaze(root) {
   const grantBtn = document.getElementById('gaze-grant-btn');
   if (grantBtn) grantBtn.addEventListener('click', requestInputPermission);
 
-  drawGazeCanvas();
+  if (state.viewportMode === 'top') viewport3d.setPreset('top');
   drawAttitudeDial();
+  startGazeRaf();
 }
 
 function drawGazeCanvas() {
@@ -1380,15 +1522,36 @@ function connectStreams() {
     const gazeSrc = new EventSource('/v1/gaze/stream');
     gazeSrc.addEventListener('gaze', (evt) => {
       try {
-        state.gaze = JSON.parse(evt.data);
+        const delta = JSON.parse(evt.data);
+        if (!state.gaze) state.gaze = delta;
+        else {
+          const prevPts = (state.gaze.stats && state.gaze.stats.sample_points) || [];
+          state.gaze = { ...state.gaze, ...delta };
+          if (delta.stats) {
+            state.gaze.stats = { ...delta.stats, sample_points: delta.sample_points || prevPts };
+          }
+        }
+        if (delta.rig) {
+          state.rig = delta.rig;
+          const chips = document.getElementById('gaze-rig-chips');
+          if (chips && state.rig.displays) {
+            chips.innerHTML = state.rig.displays.map((d) =>
+              `<span class="telemetry">${esc(d.connector)} ${d.yaw_deg >= 0 ? '+' : ''}${Number(d.yaw_deg || 0).toFixed(1)} deg</span>`
+            ).join(' &nbsp;|&nbsp; ');
+          }
+          const rStat = document.getElementById('gaze-rig-status');
+          if (rStat) {
+            const isAuto = state.rig.auto_rig !== false;
+            rStat.textContent = isAuto ? (state.rig.rig_meta && state.rig.rig_meta.inferred ? 'Auto' : 'Learning') : 'Manual';
+          }
+        }
         const pred = state.gaze.prediction;
         if (state.gaze.running && pred && pred.face_detected && pred.kinematics !== 'blink_hold' && pred.kinematics !== 'recovery') {
           state.gazeTrail.push([pred.x, pred.y]);
-          if (state.gazeTrail.length > 24) state.gazeTrail.shift();
+          if (state.gazeTrail.length > 20) state.gazeTrail.shift();
         }
         updateChrome();
         if (state.view === 'gaze') {
-          drawGazeCanvas();
           drawAttitudeDial();
           const st = state.gaze.stats || {};
           const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };

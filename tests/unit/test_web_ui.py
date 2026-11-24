@@ -207,3 +207,15 @@ def test_developer_active_monitor_border_toggle_and_auto_rig_preset(web_server) 
     st, _, raw = _req(base, "POST", "/v1/displays/rig/preset", {"preset": "auto"})
     assert st == 200
     assert json.loads(raw)["auto_rig"] is True
+
+
+def test_viewport3d_asset_and_fast_stream_tick(web_server) -> None:
+    srv, base, _paths = web_server
+    st, ctype, js = _req(base, "GET", "/assets/viewport3d.js")
+    assert st == 200
+    assert "javascript" in ctype
+    assert b"export class Viewport3D" in js
+
+    tick, ver = srv.gaze_manager.gaze_stream_tick(-1)
+    assert tick["running"] is False
+    assert "prediction" in tick

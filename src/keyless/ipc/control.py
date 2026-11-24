@@ -464,12 +464,13 @@ class ControlServer:
         handler.send_header("Cache-Control", "no-cache")
         handler.send_header("Connection", "keep-alive")
         handler.end_headers()
+        last_rig_ver = -1
         while not self._events_stop.is_set():
-            snap = self.gaze_manager.gaze_status()
+            snap, last_rig_ver = self.gaze_manager.gaze_stream_tick(last_rig_ver)
             payload = json.dumps(snap, separators=(",", ":"), default=str).encode()
             handler.wfile.write(b"event: gaze\ndata: " + payload + b"\n\n")
             handler.wfile.flush()
-            delay = 0.066 if snap.get("running") else 0.75
+            delay = 0.033 if snap.get("running") else 0.75
             if self._events_stop.wait(delay):
                 break
 

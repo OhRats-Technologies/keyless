@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,12 @@ class WebGazeManager:
         self._recorder: Any = None
         self._click_observer: Any = None
         self._last_error: str = ""
+        # TTL caches to keep SSE streaming strictly zero-I/O
+        self._cache_ts: float = 0.0
+        self._cached_env: Any = None
+        self._cached_cameras: list[dict[str, Any]] = []
+        self._cached_layout: Any = None
+        self._rig_version: int = 1
 
     @property
     def sessions_dir(self) -> Path:
@@ -54,24 +61,42 @@ class WebGazeManager:
 
     # --- Monocular gaze publisher ---------------------------------------
 
-    def gaze_status(self) -> dict[str, Any]:
+    def _refresh_hw_cache(self, *, force: bool = False) -> tuple[Any, list[dict[str, Any]], Any]:
+        now = time.monotonic()
+        if not force and self._cached_env is not None and (now - self._cache_ts) < 5.0:
+            return self._cached_env, self._cached_cameras, self._cached_layout
+        env = probe_lab_environment()
+        cameras: list[dict[str, Any]] = []
+        try:
+            from keyless.platform.router import list_cameras
+
+            cameras = [{"id": c.id, "name": c.name, "path": c.path} for c in list_cameras()]
+        except Exception:
+            pass
+        layout = None
+        try:
+            from keyless.platform.router import get_display_layout
+
+            layout = get_display_layout()
+        except Exception:
+            pass
+        self._cached_env = env
+        self._cached_cameras = cameras
+        self._cached_layout = layout
+        self._cache_ts = now
+        return env, cameras, layout
+
+    def gaze_status(self, *, force_hw: bool = False) -> dict[str, Any]:
         with self._lock:
             pub = self._publisher
             rec = self._recorder
             last_err = self._last_error
 
-        env = probe_lab_environment()
+        env, cameras, cached_layout = self._refresh_hw_cache(force=force_hw)
         running = pub is not None
         pred = pub.latest_prediction() if pub is not None else None
         stats = pub.stats() if pub is not None else None
-        layout = pub.layout if pub is not None else None
-        if layout is None:
-            try:
-                from keyless.platform.router import get_display_layout
-
-                layout = get_display_layout()
-            except Exception:
-                layout = None
+        layout = pub.layout if pub is not None else cached_layout
 
         monitors = []
         if layout is not None:
@@ -87,16 +112,6 @@ class WebGazeManager:
                 }
                 for m in layout.monitors
             ]
-        cameras = []
-        try:
-            from keyless.platform.router import list_cameras
-
-            cameras = [
-                {"id": c.id, "name": c.name, "path": c.path}
-                for c in list_cameras()
-            ]
-        except Exception:
-            pass
 
         return {
             "running": running,
@@ -113,11 +128,56 @@ class WebGazeManager:
             "prediction": asdict(pred) if pred is not None else None,
             "stats": stats,
             "rig": self.get_display_rig(),
+            "rig_version": self._rig_version + (stats["samples"] if stats else 0),
             "overlay_active": bool(pub is not None and getattr(pub, "overlay_active", False)),
             "environment": asdict(env),
             "manual_input_command": MANUAL_INPUT_CMD,
             "last_error": last_err,
         }
+
+    def gaze_stream_tick(self, last_rig_ver: int = -1) -> tuple[dict[str, Any], int]:
+        """Ultra-lightweight zero-I/O frame snapshot for 30 Hz SSE streaming."""
+        with self._lock:
+            pub = self._publisher
+            rec = self._recorder
+            rig_v_base = self._rig_version
+
+        if pub is None:
+            return {
+                "running": False,
+                "recording": rec is not None,
+                "overlay_active": False,
+                "prediction": None,
+            }, last_rig_ver
+
+        pred = pub.latest_prediction()
+        st = pub.stats()
+        rig_ver = rig_v_base + int(st.get("samples", 0))
+        compact_stats = {
+            "mode": st.get("mode", "monocular"),
+            "feature_dim": st.get("feature_dim", 10),
+            "frames_read": st.get("frames_read", 0),
+            "faces_detected": st.get("faces_detected", 0),
+            "clicks_adapted": st.get("clicks_adapted", 0),
+            "samples": st.get("samples", 0),
+            "min_clicks": st.get("min_clicks", 5),
+            "using_ridge": st.get("using_ridge", False),
+            "measured_fps": st.get("measured_fps", 0.0),
+            "blinks_suppressed": st.get("blinks_suppressed", 0),
+            "outliers_suppressed": st.get("outliers_suppressed", 0),
+        }
+        payload: dict[str, Any] = {
+            "running": True,
+            "mode": pub.active_mode,
+            "recording": rec is not None,
+            "overlay_active": bool(getattr(pub, "overlay_active", False)),
+            "prediction": asdict(pred) if pred is not None else None,
+            "stats": compact_stats,
+        }
+        if rig_ver != last_rig_ver:
+            payload["rig"] = self.get_display_rig()
+            payload["sample_points"] = st.get("sample_points", [])
+        return payload, rig_ver
 
     def start_gaze(
         self,
@@ -445,6 +505,7 @@ class WebGazeManager:
         rig = DisplayRig(new_planes)
         rig.save(self.rig_path)
         with self._lock:
+            self._rig_version += 1
             pub = self._publisher
         if pub is not None:
             pub.set_display_rig(rig, auto_rig=False)
@@ -495,6 +556,7 @@ class WebGazeManager:
 
         rig.save(self.rig_path)
         with self._lock:
+            self._rig_version += 1
             pub = self._publisher
         if pub is not None:
             pub.set_display_rig(rig)

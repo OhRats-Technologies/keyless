@@ -99,6 +99,13 @@ class MonocularPrediction:
     kinematics: str = "fixation"
     blinks_suppressed: int = 0
     outliers_suppressed: int = 0
+    az: float = 0.0
+    el: float = 0.0
+    tx: float = 0.0
+    ty: float = 0.0
+    tz: float = 0.0
+    blink_left: float = 0.0
+    blink_right: float = 0.0
 
 
 class MonocularGazeEstimator:
@@ -154,6 +161,8 @@ class MonocularGazeEstimator:
         self._last_display: str = self.rig.planes[0].connector
         self._last_in_gap: bool = False
         self._last_kinematics: str = GazeKinematics.FIXATION.value
+        self._last_az: float = 0.0
+        self._last_el: float = 0.0
 
     @property
     def sample_count(self) -> int:
@@ -179,6 +188,11 @@ class MonocularGazeEstimator:
     def last_kinematics(self) -> str:
         with self._lock:
             return self._last_kinematics
+
+    @property
+    def last_angles(self) -> tuple[float, float]:
+        with self._lock:
+            return self._last_az, self._last_el
 
     @property
     def blinks_suppressed(self) -> int:
@@ -380,6 +394,8 @@ class MonocularGazeEstimator:
             self._last_display = active_disp
             self._last_in_gap = active_gap
             self._last_kinematics = kin
+            self._last_az = float(est.az) if self._state_est is not None else float(az)
+            self._last_el = float(est.el) if self._state_est is not None else float(el)
 
         return sx, sy, raw_x, raw_y, using_ridge
 
@@ -644,6 +660,11 @@ class MonocularGazePublisher:
                 yaw = 0.5 * (float(obs1.yaw) + float(obs2.yaw))
                 pitch = 0.5 * (float(obs1.pitch) + float(obs2.pitch))
                 roll = 0.5 * (float(obs1.roll) + float(obs2.roll))
+                tx = 0.5 * (float(obs1.tx) + float(obs2.tx))
+                ty = 0.5 * (float(obs1.ty) + float(obs2.ty))
+                tz = 0.5 * (float(obs1.tz) + float(obs2.tz))
+                blink_left = max(float(obs1.blink_left), float(obs2.blink_left))
+                blink_right = max(float(obs1.blink_right), float(obs2.blink_right))
                 frame_dict = observation_to_frame_section(
                     obs1, self._resolved_cams[0], obs2, self._resolved_cams[1]
                 )
@@ -657,6 +678,11 @@ class MonocularGazePublisher:
                 yaw = float(obs1.yaw)
                 pitch = float(obs1.pitch)
                 roll = float(obs1.roll)
+                tx = float(obs1.tx)
+                ty = float(obs1.ty)
+                tz = float(obs1.tz)
+                blink_left = float(obs1.blink_left)
+                blink_right = float(obs1.blink_right)
                 frame_dict = observation_to_frame_section(obs1, self._resolved_cams[0])
 
             sx, sy, rx, ry, using_ridge = self.estimator.predict(
@@ -685,6 +711,13 @@ class MonocularGazePublisher:
                 kinematics=kin,
                 blinks_suppressed=self.estimator.blinks_suppressed,
                 outliers_suppressed=self.estimator.outliers_suppressed,
+                az=self.estimator.last_angles[0],
+                el=self.estimator.last_angles[1],
+                tx=tx,
+                ty=ty,
+                tz=tz,
+                blink_left=blink_left,
+                blink_right=blink_right,
             )
             with self._lock:
                 self._latest_feat = feat
