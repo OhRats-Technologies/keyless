@@ -732,6 +732,7 @@ th {
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .row-gap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .muted { color: var(--or-text-muted); }
+.error-text { color: var(--or-accent); font-size: 12px; }
 
 @media (max-width: 1020px) {
   .deck-gaze, .sessions-deck, .home-hero, .home-stats, .telemetry-strip {

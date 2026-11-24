@@ -210,11 +210,12 @@ export class Viewport3D {
       this._smoothAz += ((pred.az || 0) - this._smoothAz) * lerp;
       this._smoothEl += ((pred.el || 0) - this._smoothEl) * lerp;
       this._smoothYaw += (-(pred.yaw || 0) - this._smoothYaw) * lerp;
-      this._smoothPitch += ((pred.pitch || 0) - this._smoothPitch) * lerp;
+      // MediaPipe pitch < 0 = chin UP, while rotMatrix +pitch tilts forward vector UP (-Y), so negate pitch.
+      this._smoothPitch += (-(pred.pitch || 0) - this._smoothPitch) * lerp;
       this._smoothRoll += ((pred.roll || 0) - this._smoothRoll) * lerp;
-      // Head translation clamped gently around origin (mm)
+      // MediaPipe +ty is UP, while 3D world +Y is DOWN, so negate ty.
       const htx = Math.max(-110, Math.min(110, -(pred.tx || 0) * 260));
-      const hty = Math.max(-80, Math.min(80, (pred.ty || 0) * 200));
+      const hty = Math.max(-80, Math.min(80, -(pred.ty || 0) * 200));
       this._smoothTx += (htx - this._smoothTx) * 0.15;
       this._smoothTy += (hty - this._smoothTy) * 0.15;
       const bL = pred.blinking || pred.kinematics === 'blink_hold' ? 1.0 : Math.min(1, (pred.blink_left || 0) * 2.2);

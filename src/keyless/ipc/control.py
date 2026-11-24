@@ -24,6 +24,8 @@ Endpoints (all JSON):
   GET  /v1/models       -> pinned speech model status + active download job
   POST /v1/models/download -> start verified background download (409 if busy)
   POST /v1/models/cancel   -> cooperative stop; partial files stay resumable
+  GET  /v1/audio/devices -> mic inputs enumerated from the host runtime
+  GET  /v1/cameras/devices -> cameras enumerated from the host platform layer
   GET  /v1/runtime    -> python executable + args for native-host launches
 
 Setup is engine-owned: the step order and persisted step come from
@@ -155,7 +157,7 @@ class ControlServer:
             job = self._model_job.as_dict() if self._model_job is not None else None
         return {
             "id": asset.id,
-            "name": "Parakeet Unified EN",
+            "name": asset.display_name,
             "display_name": asset.display_name,
             "size": asset.total_bytes,
             "state": status.state.value,
@@ -771,6 +773,36 @@ class ControlServer:
                         )
                     except ValueError as exc:
                         _json(self, {"error": str(exc)}, status=400)
+                elif self.command == "GET" and path == "/v1/llm/options":
+                    try:
+                        query = parse_qs(parsed.query)
+                        preset_id = (
+                            query.get("id", [""])[0]
+                            or server.gaze_manager.llm_providers_summary()["active_id"]
+                        )
+                        force = query.get("force", ["0"])[0] in ("1", "true", "yes")
+                        _json(self, server.gaze_manager.llm_provider_options(preset_id, force=force))
+                    except Exception as exc:
+                        _json(self, {"error": f"Provider probe failed: {exc}", "models": [], "efforts": []}, status=502)
+                elif self.command == "GET" and path == "/v1/audio/devices":
+                    _json(self, server.gaze_manager.audio_input_devices())
+                elif self.command == "GET" and path == "/v1/cameras/devices":
+                    _json(self, server.gaze_manager.camera_devices())
+                elif self.command == "POST" and path == "/v1/llm/configure":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    _json(
+                        self,
+                        server.gaze_manager.configure_llm(
+                            model=payload.get("model") if "model" in payload else None,
+                            reasoning_effort=(
+                                payload.get("reasoning_effort")
+                                if "reasoning_effort" in payload
+                                else None
+                            ),
+                        ),
+                    )
                 elif self.command == "GET" and path == "/v1/displays/rig":
                     _json(self, server.gaze_manager.get_display_rig())
                 elif self.command == "POST" and path == "/v1/displays/rig":

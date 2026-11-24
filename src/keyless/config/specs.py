@@ -25,9 +25,20 @@ ALL_PLATFORMS: tuple[str, ...] = ("all",)
 _CAMERA_MODES = ("auto", "mono", "stereo")
 _CAMERA_BACKENDS = ("v4l2", "pipewire")
 _ACTION_BACKENDS = ("native", "cua")
-_STT_QUANTIZATIONS = ("q8", "int8")
-_STT_PROVIDERS = ("cpu", "cuda")
-_STT_MODELS = ("parakeet-unified-en-0.6b", "parakeet-tdt-0.6b-v2")
+_STT_QUANTIZATIONS = ("int8",)
+_STT_PROVIDERS = ("auto", "cpu", "cuda")
+_STT_MODELS = ("parakeet-tdt-0.6b-v3",)
+# evdev key codes users actually reach for; the picker stores the code name.
+_PTT_KEYS = (
+    "KEY_RIGHTCTRL",
+    "KEY_LEFTCTRL",
+    "KEY_RIGHTALT",
+    "KEY_LEFTALT",
+    "KEY_RIGHTSHIFT",
+    "KEY_SPACE",
+    "KEY_F6",
+)
+_TTS_VOICES = ("juno", "mira")
 _LLM_BACKENDS = ("auto", "ollama", "gemini", "openai_compat", "acp")
 _LLM_PROVIDERS = ("auto", "ollama", "gemini", "openai_compat", "acp")
 _LLM_PRESETS = (
@@ -61,6 +72,13 @@ class SettingSpec:
     maximum: float | None = None
     apply: str = "live"
     platforms: tuple[str, ...] = field(default=ALL_PLATFORMS)
+    # Hidden specs stay patchable through the control plane but are not shown
+    # in any Settings surface: they are pinned by the app (model assets) or
+    # internal bookkeeping the user never edits directly.
+    hidden: bool = False
+    # Key of a boolean parent setting. The row is only shown while that parent
+    # is enabled; the parent toggle owns the child rows' visibility.
+    visible_when: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -76,55 +94,58 @@ class SettingSpec:
             "maximum": self.maximum,
             "apply": self.apply,
             "platforms": list(self.platforms),
+            "hidden": self.hidden,
+            "visible_when": self.visible_when,
         }
 
 
-def _bool(key: str, default: bool, label: str, help_text: str, group: str, *, apply: str = "live", platforms: tuple[str, ...] = ALL_PLATFORMS) -> SettingSpec:
-    return SettingSpec(key, "bool", default, label, help_text, group, "toggle", None, None, None, apply, platforms)
+def _bool(key: str, default: bool, label: str, help_text: str, group: str, *, apply: str = "live", platforms: tuple[str, ...] = ALL_PLATFORMS, hidden: bool = False, visible_when: str | None = None) -> SettingSpec:
+    return SettingSpec(key, "bool", default, label, help_text, group, "toggle", None, None, None, apply, platforms, hidden, visible_when)
 
 
-def _int(key: str, default: int, label: str, help_text: str, group: str, *, minimum: float, maximum: float, apply: str = "live", platforms: tuple[str, ...] = ALL_PLATFORMS) -> SettingSpec:
-    return SettingSpec(key, "int", default, label, help_text, group, "number", None, minimum, maximum, apply, platforms)
+def _int(key: str, default: int, label: str, help_text: str, group: str, *, minimum: float, maximum: float, apply: str = "live", platforms: tuple[str, ...] = ALL_PLATFORMS, hidden: bool = False, visible_when: str | None = None) -> SettingSpec:
+    return SettingSpec(key, "int", default, label, help_text, group, "number", None, minimum, maximum, apply, platforms, hidden, visible_when)
 
 
-def _float(key: str, default: float, label: str, help_text: str, group: str, *, minimum: float, maximum: float, apply: str = "live", platforms: tuple[str, ...] = ALL_PLATFORMS) -> SettingSpec:
-    return SettingSpec(key, "float", default, label, help_text, group, "number", None, minimum, maximum, apply, platforms)
+def _float(key: str, default: float, label: str, help_text: str, group: str, *, minimum: float, maximum: float, apply: str = "live", platforms: tuple[str, ...] = ALL_PLATFORMS, hidden: bool = False, visible_when: str | None = None) -> SettingSpec:
+    return SettingSpec(key, "float", default, label, help_text, group, "number", None, minimum, maximum, apply, platforms, hidden, visible_when)
 
 
-def _select(key: str, default: str, label: str, help_text: str, group: str, options: tuple[str, ...], *, apply: str = "live", platforms: tuple[str, ...] = ALL_PLATFORMS) -> SettingSpec:
-    return SettingSpec(key, "str", default, label, help_text, group, "select", options, None, None, apply, platforms)
+def _select(key: str, default: str, label: str, help_text: str, group: str, options: tuple[str, ...], *, apply: str = "live", platforms: tuple[str, ...] = ALL_PLATFORMS, hidden: bool = False, visible_when: str | None = None) -> SettingSpec:
+    return SettingSpec(key, "str", default, label, help_text, group, "select", options, None, None, apply, platforms, hidden, visible_when)
 
 
-def _text(key: str, default: str, label: str, help_text: str, group: str, *, control: str = "text", apply: str = "live", platforms: tuple[str, ...] = ALL_PLATFORMS) -> SettingSpec:
-    return SettingSpec(key, "str", default, label, help_text, group, control, None, None, None, apply, platforms)
+def _text(key: str, default: str, label: str, help_text: str, group: str, *, control: str = "text", apply: str = "live", platforms: tuple[str, ...] = ALL_PLATFORMS, hidden: bool = False, visible_when: str | None = None) -> SettingSpec:
+    return SettingSpec(key, "str", default, label, help_text, group, control, None, None, None, apply, platforms, hidden, visible_when)
 
 
 SETTING_SPECS: tuple[SettingSpec, ...] = (
     # --- Cameras -------------------------------------------------------
     _select("camera_mode", "auto", "Camera setup", "Automatic picks one or two cameras; mono and stereo force the count.", "Cameras", _CAMERA_MODES, apply="restart"),
     _select("camera_backend", "v4l2", "Camera backend", "PipeWire shares a camera that another app already opened.", "Cameras", _CAMERA_BACKENDS, apply="restart", platforms=("linux",)),
-    _text("cam1_by_id", DEFAULT_CAM1_ID, "Primary camera", "Stable by-id path for the first camera.", "Cameras", control="path", apply="restart"),
-    _text("cam2_by_id", DEFAULT_CAM2_ID, "Secondary camera", "Stable by-id path for the optional second camera.", "Cameras", control="path", apply="restart"),
+    _text("cam1_by_id", DEFAULT_CAM1_ID, "Primary camera", "Stable by-id path for the first camera.", "Cameras", control="camera", apply="restart"),
+    _text("cam2_by_id", DEFAULT_CAM2_ID, "Secondary camera", "Stable by-id path for the optional second camera.", "Cameras", control="camera", apply="restart"),
     _bool("cam_auto_exposure", True, "Automatic exposure", "Adapt exposure and gain to room light instead of using fixed values.", "Cameras", apply="restart"),
     # --- Voice & audio -------------------------------------------------
-    _text("ptt_hotkey", "KEY_RIGHTCTRL", "Push-to-talk key", "Key name that starts and stops listening.", "Voice & audio"),
-    _select("stt_model_id", "parakeet-unified-en-0.6b", "Speech model", "Pinned offline speech-recognition model.", "Voice & audio", _STT_MODELS, apply="restart"),
-    _select("stt_quantization", "q8", "Speech precision", "Quantization used by the local speech model.", "Voice & audio", _STT_QUANTIZATIONS, apply="restart"),
-    _select("stt_provider", "cpu", "Speech device", "Run the speech model on CPU or an available CUDA device.", "Voice & audio", _STT_PROVIDERS, apply="restart"),
-    SettingSpec("audio_device", "int_or_str_or_none", None, "Microphone", "Device index, device name, or null for the system default.", "Voice & audio", "text"),
+    _select("ptt_hotkey", "KEY_RIGHTCTRL", "Push-to-talk key", "Key you hold while speaking.", "Voice & audio", _PTT_KEYS),
+    _select("stt_model_id", "parakeet-tdt-0.6b-v3", "Speech model", "Pinned offline speech-recognition model.", "Voice & audio", _STT_MODELS, apply="restart", hidden=True),
+    _select("stt_quantization", "int8", "Speech precision", "Quantization pinned by the speech model asset.", "Voice & audio", _STT_QUANTIZATIONS, apply="restart", hidden=True),
+    _select("stt_provider", "auto", "Speech device", "Compute for the speech model; auto selects CUDA when available, otherwise CPU.", "Voice & audio", _STT_PROVIDERS, apply="restart", hidden=True),
+    SettingSpec("audio_device", "int_or_str_or_none", None, "Microphone", "Input device used for speech; the system default is used when unset.", "Voice & audio", "microphone"),
     _bool("always_on_voice", True, "Always-on voice", "Listen for commands without holding the push-to-talk key.", "Voice & audio"),
     _bool("enable_pop_click", False, "Mouth-pop clicks", "Treat a detected mouth pop as a click.", "Voice & audio"),
     _bool("require_command_prefix", True, "Require command prefix", "Only route speech that starts with a command word.", "Voice & audio"),
     _bool("tts_enabled", False, "Spoken replies", "Speak short replies through the local voice.", "Voice & audio"),
-    _text("tts_voice", "juno", "Voice", "Local text-to-speech voice name.", "Voice & audio"),
-    _bool("tts_onboarding_help", True, "Speak setup hints", "Read onboarding hints aloud.", "Voice & audio"),
-    _bool("tts_speak_replies", True, "Speak every reply", "Speak assistant replies instead of showing them only.", "Voice & audio"),
+    _select("tts_voice", "juno", "Voice", "Local text-to-speech voice.", "Voice & audio", _TTS_VOICES, visible_when="tts_enabled"),
+    _bool("tts_onboarding_help", True, "Speak setup hints", "Read onboarding hints aloud.", "Voice & audio", visible_when="tts_enabled"),
+    _bool("tts_speak_replies", True, "Speak every reply", "Speak assistant replies instead of showing them only.", "Voice & audio", visible_when="tts_enabled"),
     # --- Language model ------------------------------------------------
     _select("llm_backend", "auto", "Backend", "Preferred text-model backend.", "Language model", _LLM_BACKENDS),
     _select("llm_provider", "auto", "Provider", "Explicit provider; automatic detects from the environment.", "Language model", _LLM_PROVIDERS),
     _select("llm_preset", "openai", "API preset", "OpenAI-compatible endpoint preset.", "Language model", _LLM_PRESETS),
     _text("llm_model", "", "Model", "Model id for the selected provider; empty uses the preset default.", "Language model"),
     _text("acp_agent_id", "opencode", "ACP agent", "Agent id used when the provider is acp.", "Language model"),
+    _select("llm_reasoning_effort", "low", "Reasoning effort", "Thinking/reasoning depth sent to ACP agents (low is fastest for voice commands).", "Language model", ("default", "none", "low", "medium", "high", "xhigh")),
     _text("ollama_model", "qwen2.5-coder:7b", "Ollama model", "Default local Ollama model.", "Language model"),
     _text("gemini_model", "gemini-2.5-flash", "Gemini model", "Default Gemini model.", "Language model"),
     # --- Gaze & cursor -------------------------------------------------
@@ -140,7 +161,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     # --- Privacy & updates ---------------------------------------------
     _bool("auto_update_checks", True, "Check for updates", "Look for new releases in the background.", "Privacy & updates"),
     _select("update_channel", "stable", "Update channel", "Stable builds only, or include prereleases.", "Privacy & updates", _UPDATE_CHANNELS),
-    _text("skipped_update_version", "", "Skipped version", "Version the user asked not to be reminded about.", "Privacy & updates"),
+    _text("skipped_update_version", "", "Skipped version", "Version the user asked not to be reminded about.", "Privacy & updates", hidden=True),
     # --- Developer -----------------------------------------------------
     _bool("dev_active_monitor_border", False, "Active monitor border", "Draw a green border around the monitor you are actively looking at (Wayland overlay).", "Developer", platforms=("linux",)),
     # --- Advanced ------------------------------------------------------

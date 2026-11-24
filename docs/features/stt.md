@@ -17,12 +17,19 @@ close()
 
 ## Pinned Parakeet model
 
-- Asset: `parakeet-tdt-0.6b-v2`
-- Repository: `istupakov/parakeet-tdt-0.6b-v2-onnx`
-- Revision: `0bbb45a3365852604aef28b538a8f066f4ccaa85`
-- License: CC-BY-4.0 (attribution: NVIDIA Parakeet TDT 0.6B v2, ONNX export by istupakov)
+- Asset: `parakeet-tdt-0.6b-v3`
+- Repository: `istupakov/parakeet-tdt-0.6b-v3-onnx`
+- Revision: `8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce`
+- License: CC-BY-4.0 (attribution: NVIDIA Parakeet TDT 0.6B v3, ONNX export by istupakov)
 - Files: `config.json`, `vocab.txt`, `nemo128.onnx`, `encoder-model.int8.onnx`,
-  `decoder_joint-model.int8.onnx` (about 630.7 MB)
+  `decoder_joint-model.int8.onnx` (about 670.6 MB)
+- Language coverage: 25 European languages (v2 was English-only); Keyless voice
+  commands stay English.
+
+`parakeet-unified-en-0.6b` and `parakeet-tdt-0.6b-v2` are retired: the catalog
+no longer ships them, `AppConfig.load` rewrites their stored ids to the v3
+default, and the first daemon start deletes their model directories
+(`models/catalog.py:LEGACY_STT_ASSET_IDS`).
 
 Every file pins bytes and SHA-256 in `models/catalog.py`. The downloader writes
 `<file>.partial`, resumes with HTTP Range, verifies SHA-256, promotes atomically,
@@ -30,9 +37,10 @@ and writes `receipt.json` only after all files verify. `models verify stt`
 re-hashes the files. Existing complete files are reused; a corrupt file is kept
 as `.corrupt-<timestamp>` instead of being deleted.
 
-CPU int8 is the default (`CPUExecutionProvider`). CUDA is opt-in with
-`stt_provider: "cuda"` and requires the CUDA onnxruntime provider. There is no
-fallback wrapper or cuBLAS preload.
+Compute is auto-detected (`stt_provider: "auto"`, hidden from Settings): the
+CUDA execution provider when the pinned onnxruntime exposes it, otherwise CPU.
+Precision is pinned to the asset (`int8`); neither is user-editable. There is
+no fallback wrapper or cuBLAS preload.
 
 ## Benchmark
 

@@ -39,8 +39,18 @@ def cuda_available() -> bool:
         return False
 
 
+def resolve_stt_provider(config: AppConfig) -> str:
+    """Resolve the compute device: auto means CUDA when the runtime has it."""
+    preference = (config.stt_provider or "auto").lower()
+    if preference == "cuda" and cuda_available():
+        return "cuda"
+    if preference == "cpu":
+        return "cpu"
+    return "cuda" if cuda_available() else "cpu"
+
+
 def _providers(config: AppConfig) -> tuple[str, ...]:
-    if (config.stt_provider or "cpu").lower() == "cuda" and cuda_available():
+    if resolve_stt_provider(config) == "cuda":
         return CUDA_PROVIDERS
     return DEFAULT_PROVIDERS
 

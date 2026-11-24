@@ -91,7 +91,7 @@
               "detail": "Ready offline",
               "kind": "status",
               "state": "ok",
-              "title": "Parakeet Unified EN"
+              "title": "Parakeet TDT 0.6B v3"
             },
             {
               "detail": "All granted.",
@@ -130,7 +130,7 @@
                   "value": "/dev/video1"
                 }
               ],
-              "selected": "/dev/v4l/by-id/usb-046d_0825_4BEC6610-video-index0",
+              "selected": "/dev/v4l/by-id/usb-Ruision_UVC_Camera_20200623-video-index0",
               "title": "Camera"
             },
             {
@@ -242,12 +242,12 @@
               "title": "Camera backend"
             },
             {
-              "detail": "/dev/v4l/by-id/usb-046d_0825_4BEC6610-video-index0 (restart required)",
+              "detail": "/dev/v4l/by-id/usb-Ruision_UVC_Camera_20200623-video-index0 (restart required)",
               "kind": "text",
               "title": "Primary camera"
             },
             {
-              "detail": "/dev/v4l/by-id/usb-Sunplus_IT_Co_Live_Streamer_CAM_313_20200529002-video-index0 (restart required)",
+              "detail": "/dev/v4l/by-id/usb-Ruision_UVC_Camera_20200623-video-index1 (restart required)",
               "kind": "text",
               "title": "Secondary camera"
             },
@@ -262,60 +262,41 @@
         {
           "rows": [
             {
-              "detail": "KEY_RIGHTCTRL (applies immediately)",
-              "kind": "text",
+              "action": "set_config",
+              "key": "ptt_hotkey",
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "KEY_RIGHTCTRL",
+                  "value": "KEY_RIGHTCTRL"
+                },
+                {
+                  "label": "KEY_LEFTCTRL",
+                  "value": "KEY_LEFTCTRL"
+                },
+                {
+                  "label": "KEY_RIGHTALT",
+                  "value": "KEY_RIGHTALT"
+                },
+                {
+                  "label": "KEY_LEFTALT",
+                  "value": "KEY_LEFTALT"
+                },
+                {
+                  "label": "KEY_RIGHTSHIFT",
+                  "value": "KEY_RIGHTSHIFT"
+                },
+                {
+                  "label": "KEY_SPACE",
+                  "value": "KEY_SPACE"
+                },
+                {
+                  "label": "KEY_F6",
+                  "value": "KEY_F6"
+                }
+              ],
+              "selected": "KEY_RIGHTCTRL",
               "title": "Push-to-talk key"
-            },
-            {
-              "action": "set_config",
-              "key": "stt_model_id",
-              "kind": "picker",
-              "options": [
-                {
-                  "label": "parakeet-unified-en-0.6b",
-                  "value": "parakeet-unified-en-0.6b"
-                },
-                {
-                  "label": "parakeet-tdt-0.6b-v2",
-                  "value": "parakeet-tdt-0.6b-v2"
-                }
-              ],
-              "selected": "parakeet-unified-en-0.6b",
-              "title": "Speech model"
-            },
-            {
-              "action": "set_config",
-              "key": "stt_quantization",
-              "kind": "picker",
-              "options": [
-                {
-                  "label": "q8",
-                  "value": "q8"
-                },
-                {
-                  "label": "int8",
-                  "value": "int8"
-                }
-              ],
-              "selected": "q8",
-              "title": "Speech precision"
-            },
-            {
-              "action": "set_config",
-              "key": "stt_provider",
-              "kind": "picker",
-              "options": [
-                {
-                  "label": "cpu",
-                  "value": "cpu"
-                },
-                {
-                  "label": "cuda",
-                  "value": "cuda"
-                }
-              ],
-              "selected": "cpu",
-              "title": "Speech device"
             },
             {
               "detail": "System default (applies immediately)",
@@ -341,21 +322,6 @@
               "detail": "Off (applies immediately)",
               "kind": "text",
               "title": "Spoken replies"
-            },
-            {
-              "detail": "juno (applies immediately)",
-              "kind": "text",
-              "title": "Voice"
-            },
-            {
-              "detail": "On (applies immediately)",
-              "kind": "text",
-              "title": "Speak setup hints"
-            },
-            {
-              "detail": "On (applies immediately)",
-              "kind": "text",
-              "title": "Speak every reply"
             }
           ],
           "title": "Voice & audio"
@@ -474,6 +440,39 @@
               "detail": "opencode (applies immediately)",
               "kind": "text",
               "title": "ACP agent"
+            },
+            {
+              "action": "set_config",
+              "key": "llm_reasoning_effort",
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "default",
+                  "value": "default"
+                },
+                {
+                  "label": "none",
+                  "value": "none"
+                },
+                {
+                  "label": "low",
+                  "value": "low"
+                },
+                {
+                  "label": "medium",
+                  "value": "medium"
+                },
+                {
+                  "label": "high",
+                  "value": "high"
+                },
+                {
+                  "label": "xhigh",
+                  "value": "xhigh"
+                }
+              ],
+              "selected": "low",
+              "title": "Reasoning effort"
             },
             {
               "detail": "qwen2.5-coder:7b (applies immediately)",
@@ -621,11 +620,6 @@
               ],
               "selected": "stable",
               "title": "Update channel"
-            },
-            {
-              "detail": "Not set (applies immediately)",
-              "kind": "text",
-              "title": "Skipped version"
             }
           ],
           "title": "Privacy & updates"

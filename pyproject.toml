@@ -30,6 +30,12 @@ dependencies = [
 [project.scripts]
 keyless = "keyless.main:app"
 
+[project.optional-dependencies]
+# Linux CUDA build of onnxruntime. The base install stays CPU-only (macOS
+# packaging ships no CUDA); STT compute auto-detects whichever runtime is
+# present. On a CUDA host: `uv sync --extra gpu`.
+gpu = ["onnxruntime-gpu>=1.32.0; sys_platform == 'linux'"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

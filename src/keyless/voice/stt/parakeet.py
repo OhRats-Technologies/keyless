@@ -1,4 +1,4 @@
-"""NVIDIA Parakeet STT via onnx-asr (Parakeet Unified EN 0.6B default, TDT v2 supported)."""
+"""NVIDIA Parakeet STT via onnx-asr (Parakeet TDT 0.6B v3, the only supported model)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Sequence
 
 import numpy as np
 
-from keyless.models.catalog import PARAKEET_TDT_V2_ID, PARAKEET_UNIFIED_EN_ID
+from keyless.models.catalog import PARAKEET_TDT_V3_ID
 from keyless.voice.stt.base import SttResult, SttStatus
 
 logger = logging.getLogger(__name__)
@@ -18,26 +18,33 @@ DEFAULT_PROVIDERS = ("CPUExecutionProvider",)
 CUDA_PROVIDERS = ("CUDAExecutionProvider", "CPUExecutionProvider")
 
 _ONNX_ASR_MODEL_NAMES: dict[str, str] = {
-    PARAKEET_UNIFIED_EN_ID: "nemo-conformer-rnnt",
-    PARAKEET_TDT_V2_ID: "nemo-parakeet-tdt-0.6b-v2",
+    PARAKEET_TDT_V3_ID: "nemo-parakeet-tdt-0.6b-v3",
 }
 
 
 class ParakeetSttEngine:
-    """Offline / VAD-chunked English recognition from the pinned local ONNX export."""
+    """Offline / VAD-chunked recognition from the pinned local ONNX export."""
 
-    name = PARAKEET_UNIFIED_EN_ID
+    name = PARAKEET_TDT_V3_ID
 
     def __init__(
         self,
         model_dir: Path | str,
         *,
-        model_id: str = PARAKEET_UNIFIED_EN_ID,
-        quantization: str = "q8",
+        model_id: str = PARAKEET_TDT_V3_ID,
+        quantization: str = "int8",
         providers: Sequence[str] | None = None,
         warmup: bool = True,
     ) -> None:
         import onnx_asr
+        import onnxruntime
+
+        if "CUDAExecutionProvider" in tuple(providers or DEFAULT_PROVIDERS):
+            # Load pip-delivered CUDA/cuDNN (nvidia-cudnn-cu13) before any
+            # session is created; on a CPU wheel the symbol is absent.
+            preload = getattr(onnxruntime, "preload_dlls", None)
+            if preload is not None:
+                preload()
 
         self.model_dir = Path(model_dir)
         self.model_id = model_id
@@ -46,7 +53,9 @@ class ParakeetSttEngine:
         self.compute_type = quantization
         self.providers = tuple(providers or DEFAULT_PROVIDERS)
         self.device = "cuda" if "CUDAExecutionProvider" in self.providers else "cpu"
-        onnx_name = _ONNX_ASR_MODEL_NAMES.get(model_id, "nemo-conformer-rnnt")
+        onnx_name = _ONNX_ASR_MODEL_NAMES.get(model_id)
+        if onnx_name is None:
+            raise ValueError(f"No onnx-asr model is wired for {model_id!r}")
         self._model = onnx_asr.load_model(
             onnx_name,
             path=str(self.model_dir),
@@ -58,7 +67,7 @@ class ParakeetSttEngine:
 
     def transcribe_detailed(self, audio_f32: np.ndarray) -> SttResult:
         arr = np.asarray(audio_f32, dtype=np.float32).reshape(-1)
-        if arr.size < 2560:  # <160ms (Parakeet Unified supports >=160ms segments)
+        if arr.size < 2560:  # <160ms (Parakeet TDT v3 supports >=160ms segments)
             return SttResult(text="")
         if float(np.max(np.abs(arr))) < 1e-4:
             return SttResult(text="")

@@ -432,6 +432,8 @@ def _platform_specs(specs: Iterable[dict[str, Any]], platform: str) -> list[dict
     for spec in specs:
         if not isinstance(spec, dict):
             continue
+        if spec.get("hidden"):
+            continue
         platforms = spec.get("platforms") or ["all"]
         if "all" in platforms or platform in platforms:
             selected.append(spec)
@@ -448,6 +450,9 @@ def _settings_sections(
     grouped: dict[str, list[Row]] = {}
     for spec in _platform_specs(specs, platform):
         key = str(spec.get("key", ""))
+        parent = spec.get("visible_when")
+        if parent and not config.get(str(parent)):
+            continue
         label = str(spec.get("label") or key)
         value = config.get(key)
         control = str(spec.get("control", "text"))

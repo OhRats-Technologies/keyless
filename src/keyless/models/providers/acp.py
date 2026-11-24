@@ -20,7 +20,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Sequence
 
-from keyless.models.providers.acp_registry import AcpAgentSpec
+from keyless.models.providers.acp_registry import AcpAgentSpec, resolve_agent_binary
 from keyless.models.providers.base import (
     BaseProvider,
     ProviderCapabilities,
@@ -70,6 +70,7 @@ class AcpClient:
         self._stderr_thread: threading.Thread | None = None
         self._session_id: str | None = None
         self._init_result: dict[str, Any] = {}
+        self._session_result: dict[str, Any] = {}
         self._chunks: list[str] = []
         self._lock = threading.Lock()
 
@@ -77,11 +78,13 @@ class AcpClient:
     def start(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
-        if not shutil.which(self.command[0]):
+        resolved = resolve_agent_binary(self.command[0])
+        if not resolved:
             raise FileNotFoundError(self.command[0])
+        cmd = [resolved, *self.command[1:]]
         try:
             self._proc = subprocess.Popen(
-                self.command,
+                cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -260,11 +263,24 @@ class AcpClient:
         if not self._init_result:
             self.initialize()
         result = self._request("session/new", {"cwd": str(self.cwd), "mcpServers": []})
-        session_id = str((result or {}).get("sessionId", ""))
+        self._session_result = result if isinstance(result, dict) else {}
+        session_id = str(self._session_result.get("sessionId", ""))
         if not session_id:
             raise AcpError("Agent did not return a session id.")
         self._session_id = session_id
         return session_id
+
+    @property
+    def config_options(self) -> list[dict[str, Any]]:
+        opts = self._session_result.get("configOptions")
+        return [o for o in opts if isinstance(o, dict)] if isinstance(opts, list) else []
+
+    @property
+    def available_models(self) -> list[dict[str, Any]]:
+        m = self._session_result.get("models")
+        if isinstance(m, dict) and isinstance(m.get("availableModels"), list):
+            return [x for x in m["availableModels"] if isinstance(x, dict)]
+        return []
 
     def set_config_option(self, config_id: str, value: str) -> Any:
         if self._session_id is None:
@@ -320,16 +336,20 @@ class AcpProvider(BaseProvider):
         self,
         spec: AcpAgentSpec,
         *,
+        model: str = "",
+        reasoning_effort: str = "",
         timeout: float = 180.0,
         cwd: Path | None = None,
     ) -> None:
         self.spec = spec
         self.id = f"acp:{spec.id}"
         self.display_name = f"{spec.name} (ACP)"
-        self.model = "agent-default"
+        self.model = (model or "").strip() or "agent-default"
+        self.reasoning_effort = (reasoning_effort or "").strip()
         self.timeout = timeout
         self._cwd = cwd
         self._client: AcpClient | None = None
+        self._session_configured = False
         self.capabilities = ProviderCapabilities(
             text=True,
             json_mode=False,
@@ -347,7 +367,43 @@ class AcpProvider(BaseProvider):
                 raise AcpError("No launch command is published for this agent.")
             self._client = AcpClient(self.spec.command, timeout=self.timeout, cwd=self._cwd)
             self._client.initialize()
+            self._session_configured = False
         return self._client
+
+    def _apply_session_preferences(self, client: AcpClient) -> None:
+        if self._session_configured:
+            return
+        if client._session_id is None:
+            client.new_session()
+        opts = client.config_options
+        if self.model and self.model != "agent-default":
+            model_opt = next(
+                (o for o in opts if o.get("category") == "model" or o.get("id") == "model"),
+                None,
+            )
+            if model_opt is not None:
+                try:
+                    client.set_config_option(str(model_opt["id"]), self.model)
+                except Exception as exc:
+                    logger.warning("Could not set ACP model %r: %s", self.model, exc)
+        if self.reasoning_effort and self.reasoning_effort != "default":
+            eff_opt = next(
+                (
+                    o
+                    for o in opts
+                    if o.get("category") == "thought_level"
+                    or o.get("id") in ("thought_level", "effort", "reasoning_effort")
+                ),
+                None,
+            )
+            if eff_opt is not None:
+                allowed = {str(x.get("value")) for x in (eff_opt.get("options") or []) if isinstance(x, dict)}
+                if not allowed or self.reasoning_effort in allowed:
+                    try:
+                        client.set_config_option(str(eff_opt["id"]), self.reasoning_effort)
+                    except Exception as exc:
+                        logger.warning("Could not set ACP reasoning effort %r: %s", self.reasoning_effort, exc)
+        self._session_configured = True
 
     def status(self) -> ProviderStatus:
         if not self.spec.command:
@@ -356,7 +412,7 @@ class AcpProvider(BaseProvider):
                 "No launch command is published for this agent.",
                 model=self.model,
             )
-        if shutil.which(self.spec.command[0]) is None:
+        if resolve_agent_binary(self.spec.command[0]) is None:
             return ProviderStatus(
                 ProviderState.NOT_INSTALLED,
                 self.spec.install_hint or f"{self.spec.command[0]} is not on PATH.",
@@ -414,11 +470,14 @@ class AcpProvider(BaseProvider):
             user = f"{user}\n\nRespond with valid JSON only."
         combined = f"System instructions:\n{system}\n\nUser request:\n{user}"
         client = self._ensure_client()
+        self._apply_session_preferences(client)
         return client.prompt(combined, images=images)
 
     def warm(self) -> None:
         try:
-            self._ensure_client().new_session()
+            client = self._ensure_client()
+            client.new_session()
+            self._apply_session_preferences(client)
         except Exception as exc:
             logger.info("ACP warm-up failed: %s", exc)
 

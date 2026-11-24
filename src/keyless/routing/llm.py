@@ -23,12 +23,18 @@ def _strip_code_fences(text: str) -> str:
     return cleaned.strip("`").strip()
 
 
-def _acp_provider(agent_id: str, *, timeout: float = 180.0) -> AcpProvider:
+def _acp_provider(
+    agent_id: str,
+    *,
+    model: str = "",
+    reasoning_effort: str = "",
+    timeout: float = 180.0,
+) -> AcpProvider:
     registry = fetch_registry()
     spec = next((item for item in registry if item.id == agent_id), None)
     if spec is None:
         raise ProviderError(f"ACP agent {agent_id!r} is not in the registry.")
-    return AcpProvider(spec, timeout=timeout)
+    return AcpProvider(spec, model=model, reasoning_effort=reasoning_effort, timeout=timeout)
 
 
 def build_text_provider(
@@ -41,6 +47,7 @@ def build_text_provider(
     preset: str = "openai",
     model: str = "",
     acp_agent_id: str = "opencode",
+    reasoning_effort: str = "",
     timeout_sec: float = 20.0,
 ) -> tuple[str, Provider]:
     """Resolve the legacy backend names to provider adapters."""
@@ -58,7 +65,12 @@ def build_text_provider(
         )
         return backend, provider
     if backend == "acp":
-        return "acp", _acp_provider(acp_agent_id, timeout=max(120.0, timeout_sec))
+        return "acp", _acp_provider(
+            acp_agent_id,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            timeout=max(120.0, timeout_sec),
+        )
     raise ValueError(f"Unsupported LLM backend: {backend!r}")
 
 

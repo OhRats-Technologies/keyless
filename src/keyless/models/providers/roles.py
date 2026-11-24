@@ -31,12 +31,18 @@ class RoleResolution:
         return not self.reasons
 
 
-def _acp(agent_id: str, timeout: float = 180.0) -> AcpProvider:
+def _acp(
+    agent_id: str,
+    *,
+    model: str = "",
+    reasoning_effort: str = "",
+    timeout: float = 180.0,
+) -> AcpProvider:
     specs = fetch_registry()
     spec = next((item for item in specs if item.id == agent_id), None)
     if spec is None:
         raise KeyError(f"ACP agent {agent_id!r} is not in the registry.")
-    return AcpProvider(spec, timeout=timeout)
+    return AcpProvider(spec, model=model, reasoning_effort=reasoning_effort, timeout=timeout)
 
 
 def resolve_text_role(config: AppConfig) -> RoleResolution:
@@ -50,7 +56,11 @@ def resolve_text_role(config: AppConfig) -> RoleResolution:
             model = config.gaze_vlm_model or config.ollama_model or "gemma4:e4b"
         provider: Provider = OpenAICompatProvider(preset, model)
     elif backend == "acp":
-        provider = _acp(config.acp_agent_id)
+        provider = _acp(
+            config.acp_agent_id,
+            model=config.llm_model,
+            reasoning_effort=config.llm_reasoning_effort,
+        )
     else:
         chosen = config.llm_model or config.ollama_model
         provider = OllamaProvider(chosen)
@@ -71,7 +81,11 @@ def resolve_gaze_vlm_role(config: AppConfig) -> RoleResolution:
     if backend == "openai_compat":
         provider: Provider = OpenAICompatProvider(config.gaze_vlm_preset, config.gaze_vlm_model)
     elif backend == "acp":
-        provider = _acp(config.acp_agent_id)
+        provider = _acp(
+            config.acp_agent_id,
+            model=config.llm_model,
+            reasoning_effort=config.llm_reasoning_effort,
+        )
     else:
         provider = OllamaProvider(config.gaze_vlm_model)
     reasons = check_provider_for_role(

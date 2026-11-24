@@ -29,6 +29,10 @@ const state = {
   schema: [],
   models: null,
   llmProviders: null,
+  llmOptions: null,
+  llmOptionsLoading: false,
+  audioDevices: null,
+  cameraDevices: null,
   rig: null,
   selectedRigIdx: 0,
   settingsTab: 'gaze',
@@ -212,6 +216,9 @@ async function setView(view, { settingsTab = null } = {}) {
     state.schema = schemaRes.settings || [];
     state.models = mod ? mod.model : null;
     state.llmProviders = llm;
+    if (state.settingsTab === 'llm' && llm && (!state.llmOptions || state.llmOptions.id !== llm.active_id)) {
+      loadLlmOptions(llm.active_id);
+    }
   }
   renderView();
 }
@@ -801,7 +808,7 @@ function drawAttitudeDial() {
   ctx.strokeStyle = muted; ctx.lineWidth = 1.2;
   ctx.beginPath(); ctx.moveTo(-r + 6, 0); ctx.lineTo(r - 6, 0); ctx.stroke();
   ctx.restore();
-  const bx = cx + Math.max(-1, Math.min(1, pred.yaw * 1.8)) * (r - 8);
+  const bx = cx + Math.max(-1, Math.min(1, -pred.yaw * 1.8)) * (r - 8);
   const by = cy + Math.max(-1, Math.min(1, pred.pitch * 1.8)) * (r - 8);
   ctx.fillStyle = accent; ctx.beginPath(); ctx.arc(bx, by, 5, 0, Math.PI * 2); ctx.fill();
 }
@@ -1100,11 +1107,31 @@ function renderActivity(root) {
 
 // ---- SETTINGS TWO-PANE SUB-NAVIGATION + 3D DISPLAY RIG EDITOR ----------
 
-function platformSpecs() {
+function platformSpecs({ includeHidden = false } = {}) {
   return (state.schema || []).filter((spec) => {
+    if (spec.hidden && !includeHidden) return false;
     const plats = spec.platforms || ['all'];
-    return plats.includes('all') || plats.includes(state.host);
+    if (!(plats.includes('all') || plats.includes(state.host))) return false;
+    if (spec.key === 'cam2_by_id' && state.config.camera_mode === 'mono') return false;
+    if (!includeHidden && spec.visible_when && !state.config[spec.visible_when]) return false;
+    return true;
   });
+}
+
+async function loadAudioDevices() {
+  try {
+    state.audioDevices = await api('/v1/audio/devices');
+  } catch (err) {
+    state.audioDevices = { devices: [], selected: null, error: err.message };
+  }
+}
+
+async function loadCameraDevices() {
+  try {
+    state.cameraDevices = await api('/v1/cameras/devices');
+  } catch (err) {
+    state.cameraDevices = { devices: [], selected: {}, error: err.message };
+  }
 }
 
 function renderSettings(root) {
@@ -1125,7 +1152,7 @@ function renderSettings(root) {
 
   let paneHtml = '';
   if (q) {
-    const matches = specs.filter((s) => `${s.label} ${s.help} ${s.key} ${s.group}`.toLowerCase().includes(q));
+    const matches = platformSpecs({ includeHidden: true }).filter((s) => `${s.label} ${s.help} ${s.key} ${s.group}`.toLowerCase().includes(q));
     paneHtml = `
       <div class="settings-card">
         <span class="eyebrow">Search results (${matches.length} on ${esc(state.host)})</span>
@@ -1151,7 +1178,7 @@ function renderSettings(root) {
         </div>
         <div class="field-row">
           <div class="field-label">
-            <strong>Speech-to-text model (${esc(model.name || 'Parakeet Unified EN')})</strong>
+            <strong>Speech-to-text model (${esc(model.name || 'Parakeet TDT 0.6B v3')})</strong>
             <small>Status: ${esc(model.state || 'unknown')}</small>
           </div>
           ${model.ready ? '<span class="badge ok">Ready offline</span>' : '<button id="set-dl-model" class="btn btn-sm" type="button">Download</button>'}
@@ -1197,8 +1224,31 @@ function renderSettings(root) {
       state.settingsQuery = '';
       state.settingsTab = btn.dataset.setTab;
       renderSettings(root);
+      if (state.settingsTab === 'llm' && state.llmProviders) {
+        const aid = state.llmProviders.active_id;
+        if (!state.llmOptions || state.llmOptions.id !== aid) loadLlmOptions(aid);
+      } else if (state.settingsTab === 'voice') {
+        loadAudioDevices().then(() => {
+          if (state.view === 'settings' && state.settingsTab === 'voice') renderSettings(root);
+        });
+      } else if (state.settingsTab === 'cameras') {
+        loadCameraDevices().then(() => {
+          if (state.view === 'settings' && state.settingsTab === 'cameras') renderSettings(root);
+        });
+      }
     });
   });
+
+  if (!q && state.settingsTab === 'voice' && !state.audioDevices) {
+    loadAudioDevices().then(() => {
+      if (state.view === 'settings' && state.settingsTab === 'voice') renderSettings(root);
+    });
+  }
+  if (!q && state.settingsTab === 'cameras' && !state.cameraDevices) {
+    loadCameraDevices().then(() => {
+      if (state.view === 'settings' && state.settingsTab === 'cameras') renderSettings(root);
+    });
+  }
 
   if (!q && state.settingsTab === 'llm') {
     root.querySelectorAll('[data-llm-select]').forEach((btn) => {
@@ -1212,9 +1262,43 @@ function renderSettings(root) {
           state.llmProviders = res;
           if (res.config) state.config = res.config;
           renderSettings(root);
+          loadLlmOptions(res.active_id);
         } catch (err) { showError('Could not switch AI provider', err.message); }
       });
     });
+    const modelSel = document.getElementById('llm-model-select');
+    if (modelSel) {
+      modelSel.addEventListener('change', async () => {
+        try {
+          clearError();
+          const res = await api('/v1/llm/configure', {
+            method: 'POST',
+            body: JSON.stringify({ model: modelSel.value }),
+          });
+          state.llmProviders = res;
+          if (res.config) state.config = res.config;
+          renderSettings(root);
+        } catch (err) { showError('Could not set model', err.message); }
+      });
+    }
+    root.querySelectorAll('[data-llm-effort]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          clearError();
+          const res = await api('/v1/llm/configure', {
+            method: 'POST',
+            body: JSON.stringify({ reasoning_effort: btn.dataset.llmEffort }),
+          });
+          state.llmProviders = res;
+          if (res.config) state.config = res.config;
+          renderSettings(root);
+        } catch (err) { showError('Could not set reasoning effort', err.message); }
+      });
+    });
+    const refBtn = document.getElementById('llm-refresh-models');
+    if (refBtn && state.llmProviders) {
+      refBtn.addEventListener('click', () => loadLlmOptions(state.llmProviders.active_id, { force: true }));
+    }
   }
 
   const grantBtn = document.getElementById('set-grant-input');
@@ -1231,7 +1315,12 @@ function renderSettings(root) {
     el.addEventListener('change', async () => {
       const key = el.dataset.settingKey;
       const vtype = el.dataset.settingType;
-      const val = vtype === 'bool' ? el.checked : vtype === 'int' ? parseInt(el.value, 10) : vtype === 'float' ? parseFloat(el.value) : el.value;
+      let val;
+      if (vtype === 'bool') val = el.checked;
+      else if (vtype === 'int') val = parseInt(el.value, 10);
+      else if (vtype === 'float') val = parseFloat(el.value);
+      else if (vtype === 'auto') val = el.value === '' ? null : /^\d+$/.test(el.value) ? parseInt(el.value, 10) : el.value;
+      else val = el.value;
       try {
         clearError();
         const res = await api('/v1/ui/action', { method: 'POST', body: JSON.stringify({ action: 'set_config', arg: { [key]: val } }) });
@@ -1241,6 +1330,8 @@ function renderSettings(root) {
         } else if (key === 'dev_active_monitor_border') {
           state.gaze = await api('/v1/gaze/dev-border', { method: 'POST', body: JSON.stringify({ enabled: Boolean(val) }) });
         }
+        const parents = new Set((state.schema || []).map((s) => s.visible_when).filter(Boolean));
+        if (parents.has(key)) renderSettings(root);
       } catch (err) { showError(`Invalid value for ${key}`, err.message); }
     });
   });
@@ -1437,17 +1528,63 @@ function drawRigCanvas() {
 }
 
 
+
+async function loadLlmOptions(presetId, { force = false } = {}) {
+  if (!presetId) return;
+  state.llmOptionsLoading = true;
+  if (state.view === 'settings' && state.settingsTab === 'llm') renderView();
+  try {
+    state.llmOptions = await api(
+      `/v1/llm/options?id=${encodeURIComponent(presetId)}${force ? '&force=1' : ''}`
+    );
+  } catch (err) {
+    state.llmOptions = { id: presetId, models: [], efforts: [], error: err.message };
+  } finally {
+    state.llmOptionsLoading = false;
+    if (state.view === 'settings' && state.settingsTab === 'llm') renderView();
+  }
+}
+
 function renderLlmSettingsPane(specs) {
-  const llm = state.llmProviders || { active_id: 'auto', recommended_id: 'acp:agy', providers: [] };
+  const llm = state.llmProviders || { active_id: 'auto', active_model: '', active_effort: 'low', providers: [] };
   const providers = llm.providers || [];
-  const llmSpecs = specs.filter((s) => s.group === 'Language model');
+  const opts = (state.llmOptions && state.llmOptions.id === llm.active_id) ? state.llmOptions : null;
+  const models = (opts && opts.models) || [];
+  const efforts = (opts && opts.efforts && opts.efforts.length)
+    ? opts.efforts
+    : [
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'high', name: 'High' },
+      ];
+  const curModel = llm.active_model || (opts && opts.current_model) || '';
+  const curEffort = llm.active_effort || (opts && opts.current_effort) || 'low';
+
+  let modelControl = '';
+  if (state.llmOptionsLoading) {
+    modelControl = '<span class="telemetry">Querying agent models...</span>';
+  } else if (models.length > 0 && models.length <= 40) {
+    modelControl = `
+      <select id="llm-model-select" style="min-width:240px;">
+        <option value="">Agent default${opts && opts.current_model ? ` (${esc(opts.current_model)})` : ''}</option>
+        ${models.map((m) => `<option value="${esc(m.value)}" ${m.value === curModel ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}
+      </select>
+    `;
+  } else {
+    modelControl = `
+      <input id="llm-model-select" list="llm-model-datalist" type="text" placeholder="Search ${models.length || ''} models..." value="${esc(curModel)}" style="min-width:280px;">
+      <datalist id="llm-model-datalist">
+        ${models.map((m) => `<option value="${esc(m.value)}">${esc(m.name)}</option>`).join('')}
+      </datalist>
+    `;
+  }
 
   return `
-    <div class="settings-card" style="gap:12px;">
+    <div class="settings-card" style="gap:14px;">
       <div class="row-between">
         <div>
           <span class="eyebrow">AI Assistant & ACP Agents</span>
-          <div class="telemetry">Pick a pre-configured agent or auto-detect what is installed on this machine.</div>
+          <div class="telemetry">Select your agent, pin the exact model you want, and cap reasoning effort so voice commands stay fast and cheap.</div>
         </div>
         <button class="btn btn-primary btn-sm" data-llm-select="auto" type="button">Auto-detect best</button>
       </div>
@@ -1468,12 +1605,31 @@ function renderLlmSettingsPane(specs) {
         }).join('')}
       </div>
 
-      <details style="border-top:1px solid var(--or-border-soft);padding-top:10px;margin-top:4px;">
-        <summary class="eyebrow" style="cursor:pointer;user-select:none;">Advanced model & API overrides (optional)</summary>
-        <div style="margin-top:10px;">
-          ${llmSpecs.map((s) => renderSpecControl(s, state.config[s.key])).join('')}
+      <div style="border-top:1px solid var(--or-border-soft);padding-top:12px;display:flex;flex-direction:column;gap:8px;">
+        <div class="field-row" style="padding:6px 0;">
+          <div class="field-label">
+            <strong>Model (${models.length ? `${models.length} available` : 'custom'})</strong>
+            <small>${opts && opts.error ? esc(opts.error) : 'Pin a specific model so Keyless never burns an expensive default.'}</small>
+          </div>
+          <div class="row-gap">
+            ${modelControl}
+            <button id="llm-refresh-models" class="btn btn-sm" type="button" ${state.llmOptionsLoading ? 'disabled' : ''}>Refresh</button>
+          </div>
         </div>
-      </details>
+        <div class="field-row" style="padding:6px 0;">
+          <div class="field-label">
+            <strong>Reasoning effort</strong>
+            <small>Controls thinking depth for ACP agents (Low is recommended for fast voice routing).</small>
+          </div>
+          <div class="seg-group">
+            ${efforts.map((ef) => `
+              <button class="seg-btn ${ef.value === curEffort ? 'active' : ''}" data-llm-effort="${esc(ef.value)}" type="button">
+                ${esc(ef.name)}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -1511,12 +1667,45 @@ function renderAdvancedSettingsPane(specs) {
   `).join('');
 }
 
+function microphoneControl(spec, currentVal) {
+  const data = state.audioDevices;
+  const sel = currentVal !== undefined ? currentVal : spec.default;
+  if (!data) return '<span class="telemetry">Detecting microphones&hellip;</span>';
+  if (data.error) return `<small class="error-text">${esc(data.error)}</small>`;
+  if (!data.devices.length) return '<small class="error-text">No microphones found on this host.</small>';
+  const nullOpt = `<option value="" ${sel === null || sel === undefined ? 'selected' : ''}>System default</option>`;
+  const known = sel !== null && sel !== undefined && data.devices.some((d) => String(d.id) === String(sel));
+  const customOpt = sel !== null && sel !== undefined && !known
+    ? `<option value="${esc(sel)}" selected>${esc(sel)} (not detected)</option>` : '';
+  const opts = data.devices.map((d) =>
+    `<option value="${esc(d.id)}" ${String(d.id) === String(sel) ? 'selected' : ''}>${esc(d.name)}${d.default ? ' (system default)' : ''}</option>`
+  ).join('');
+  return `<select data-setting-key="${esc(spec.key)}" data-setting-type="auto" style="min-width:220px;">${nullOpt}${customOpt}${opts}</select>`;
+}
+
+function cameraControl(spec, currentVal) {
+  const data = state.cameraDevices;
+  const sel = String(currentVal !== undefined ? currentVal : spec.default);
+  if (!data) return '<span class="telemetry">Detecting cameras&hellip;</span>';
+  if (data.error) return `<small class="error-text">${esc(data.error)}</small>`;
+  if (!data.devices.length) return '<small class="error-text">No cameras found on this host.</small>';
+  const options = data.devices.map((d) =>
+    `<option value="${esc(d.id)}" ${d.id === sel ? 'selected' : ''}>${esc(d.name)}</option>`
+  ).join('');
+  const known = data.devices.some((d) => d.id === sel);
+  return `<select data-setting-key="${esc(spec.key)}" data-setting-type="str" style="min-width:220px;">${known ? options : `<option value="${esc(sel)}" selected>${esc(sel)} (not detected)</option>` + options}</select>`;
+}
+
 function renderSpecControl(spec, currentVal) {
   const val = currentVal !== undefined ? currentVal : spec.default;
   const badge = spec.apply === 'restart' ? ' <span class="badge">restart</span>' : '';
   let inputHtml = '';
   if (spec.control === 'toggle' || spec.value_type === 'bool') {
     inputHtml = `<input type="checkbox" data-setting-key="${esc(spec.key)}" data-setting-type="bool" ${val ? 'checked' : ''}>`;
+  } else if (spec.control === 'microphone') {
+    inputHtml = microphoneControl(spec, val);
+  } else if (spec.control === 'camera') {
+    inputHtml = cameraControl(spec, val);
   } else if (spec.options && spec.options.length) {
     inputHtml = `<select data-setting-key="${esc(spec.key)}" data-setting-type="str">${spec.options.map((opt) => `<option value="${esc(opt)}" ${opt === val ? 'selected' : ''}>${esc(opt)}</option>`).join('')}</select>`;
   } else if (spec.value_type === 'int' || spec.value_type === 'float') {

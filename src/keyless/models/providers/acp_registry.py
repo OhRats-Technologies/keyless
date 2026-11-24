@@ -47,16 +47,9 @@ class AcpAgentSpec:
 
 
 # Curated, minimal offline list.  These are launch commands, not bundled code.
+# The retired "Gemini (agy)" entry was removed: its launch command is not a
+# real ACP agent surface, so it only produced dead pickers.
 OFFLINE_AGENTS: tuple[AcpAgentSpec, ...] = (
-    AcpAgentSpec(
-        "agy",
-        "Gemini (agy)",
-        "Google Antigravity / Gemini ACP agent",
-        ("agy", "acp"),
-        "https://gemini.google.com",
-        source="offline",
-        install_hint="Install the agy CLI and sign in.",
-    ),
     AcpAgentSpec(
         "opencode",
         "OpenCode",
@@ -83,15 +76,6 @@ OFFLINE_AGENTS: tuple[AcpAgentSpec, ...] = (
         "https://github.com/agentclientprotocol/codex-acp",
         source="offline",
         install_hint="Requires Node.js and an OpenAI/Codex login.",
-    ),
-    AcpAgentSpec(
-        "gemini",
-        "Gemini CLI",
-        "Google's official CLI for Gemini",
-        ("npx", "-y", "@google/gemini-cli", "--acp"),
-        "https://github.com/google-gemini/gemini-cli",
-        source="offline",
-        install_hint="Requires Node.js and `gemini` authentication.",
     ),
     AcpAgentSpec(
         "cline",

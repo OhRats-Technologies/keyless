@@ -227,11 +227,79 @@ def test_llm_providers_auto_detect_and_one_click_select(web_server) -> None:
     assert st == 200
     data = json.loads(raw)
     ids = {p["id"] for p in data["providers"]}
-    assert {"acp:agy", "acp:opencode", "acp:claude-acp", "acp:codex-acp", "ollama", "gemini"} <= ids
+    assert {"acp:opencode", "acp:claude-acp", "acp:codex-acp", "ollama", "gemini"} <= ids
 
-    st, _, raw = _req(base, "POST", "/v1/llm/select", {"id": "acp:agy"})
+    st, _, raw = _req(base, "POST", "/v1/llm/select", {"id": "acp:opencode"})
     assert st == 200
     selected = json.loads(raw)
-    assert selected["active_id"] == "acp:agy"
+    assert selected["active_id"] == "acp:opencode"
     assert selected["config"]["llm_provider"] == "acp"
-    assert selected["config"]["acp_agent_id"] == "agy"
+    assert selected["config"]["acp_agent_id"] == "opencode"
+
+
+def test_llm_configure_model_and_reasoning_effort_and_no_gemini_cli(web_server) -> None:
+    _srv, base, _paths = web_server
+    st, _, raw = _req(base, "GET", "/v1/llm/providers")
+    assert st == 200
+    ids = {p["id"] for p in json.loads(raw)["providers"]}
+    assert "acp:agy" not in ids
+    assert "acp:gemini" not in ids
+
+    st, _, raw = _req(base, "POST", "/v1/llm/select", {"id": "acp:opencode"})
+    assert st == 200
+
+    st, _, raw = _req(
+        base,
+        "POST",
+        "/v1/llm/configure",
+        {"model": "gpt-5.1", "reasoning_effort": "low"},
+    )
+    assert st == 200
+    res = json.loads(raw)
+    assert res["active_model"] == "gpt-5.1"
+    assert res["active_effort"] == "low"
+    assert res["config"]["llm_model"] == "gpt-5.1"
+    assert res["config"]["llm_reasoning_effort"] == "low"
+
+
+def test_device_endpoints_enumerate_with_explicit_error_state(web_server) -> None:
+    _srv, base, _paths = web_server
+    st, _, raw = _req(base, "GET", "/v1/audio/devices")
+    assert st == 200
+    audio = json.loads(raw)
+    assert isinstance(audio["devices"], list)
+    assert isinstance(audio["error"], str)
+
+    st, _, raw = _req(base, "GET", "/v1/cameras/devices")
+    assert st == 200
+    cameras = json.loads(raw)
+    assert isinstance(cameras["devices"], list)
+    assert isinstance(cameras["error"], str)
+    assert set(cameras["selected"]) == {"cam1_by_id", "cam2_by_id"}
+
+
+def test_llm_options_returns_json_on_probe_failure(web_server) -> None:
+    _srv, base, _paths = web_server
+    try:
+        st, _, raw = _req(base, "GET", "/v1/llm/options?id=acp:opencode")
+    except urllib.error.HTTPError as exc:
+        st, raw = exc.code, exc.read()
+    assert st in (200, 502)
+    data = json.loads(raw)
+    assert isinstance(data["models"], list)
+    assert isinstance(data["efforts"], list)
+    assert isinstance(data.get("error", ""), str)
+
+
+def test_config_schema_hides_retired_internal_keys(web_server) -> None:
+    _srv, base, _paths = web_server
+    st, _, raw = _req(base, "GET", "/v1/config/schema")
+    assert st == 200
+    settings = {s["key"]: s for s in json.loads(raw)["settings"]}
+    for key in (
+        "stt_model_id",
+        "stt_quantization",
+        "stt_provider",
+        "skipped_update_version",
+    ):
+        assert settings[key]["hidden"] is True

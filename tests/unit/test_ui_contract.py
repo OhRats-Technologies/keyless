@@ -62,9 +62,9 @@ def _state(**overrides) -> dict:
         config=asdict(AppConfig()),
         history=[],
         model={
-            "id": "parakeet",
-            "name": "Parakeet Unified EN",
-            "display_name": "Parakeet Unified EN",
+            "id": "parakeet-tdt-0.6b-v3",
+            "name": "Parakeet TDT 0.6B v3 (Multilingual, int8)",
+            "display_name": "Parakeet TDT 0.6B v3 (Multilingual, int8)",
             "ready": True,
             "job": None,
         },
@@ -158,8 +158,8 @@ def test_all_capabilities_absent_omit_rows_never_disable_imitations() -> None:
 
 def test_active_model_job_adds_progress_row() -> None:
     model = {
-        "id": "parakeet",
-        "display_name": "Parakeet Unified EN",
+        "id": "parakeet-tdt-0.6b-v3",
+        "display_name": "Parakeet TDT 0.6B v3 (Multilingual, int8)",
         "ready": False,
         "job": {"state": "downloading", "percent": 42.0},
     }
@@ -223,8 +223,8 @@ def _fixture_inputs(available: bool) -> dict:
         model=(
             {
                 "id": "parakeet",
-                "name": "Parakeet Unified EN",
-                "display_name": "Parakeet Unified EN",
+                "name": "Parakeet TDT 0.6B v3",
+                "display_name": "Parakeet TDT 0.6B v3",
                 "ready": True,
                 "job": None,
             }

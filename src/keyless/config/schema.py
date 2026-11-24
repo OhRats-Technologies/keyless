@@ -10,10 +10,8 @@ from keyless.config.migrations import ensure_migrated
 from keyless.config.paths import current_paths, default_paths
 
 
-DEFAULT_CAM1_ID = "/dev/v4l/by-id/usb-046d_0825_4BEC6610-video-index0"
-DEFAULT_CAM2_ID = (
-    "/dev/v4l/by-id/usb-Sunplus_IT_Co_Live_Streamer_CAM_313_20200529002-video-index0"
-)
+DEFAULT_CAM1_ID = "/dev/v4l/by-id/usb-Ruision_UVC_Camera_20200623-video-index0"
+DEFAULT_CAM2_ID = "/dev/v4l/by-id/usb-Ruision_UVC_Camera_20200623-video-index1"
 
 _PATHS = default_paths()
 
@@ -29,6 +27,22 @@ FACE_LANDMARKER_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
     "face_landmarker/float16/1/face_landmarker.task"
 )
+
+# Retired STT assets (see models.catalog). Their on-disk config values are
+# replaced with the current defaults at load time so the app never points at
+# a model it no longer ships.
+_RETIRED_STT_MODEL_IDS = frozenset(
+    {"parakeet-unified-en-0.6b", "parakeet-tdt-0.6b-v2"}
+)
+
+
+def _normalize_retired_stt(data: dict) -> None:
+    if data.get("stt_model_id") in _RETIRED_STT_MODEL_IDS:
+        data["stt_model_id"] = AppConfig.__dataclass_fields__["stt_model_id"].default
+    if data.get("stt_quantization") not in (None, "int8"):
+        data["stt_quantization"] = "int8"
+    if data.get("stt_provider") not in (None, "auto"):
+        data["stt_provider"] = "auto"
 
 
 @dataclass
@@ -59,14 +73,17 @@ class AppConfig:
     # Phase 2: audio pop-click, speech-to-text, and LLM routing
     ptt_hotkey: str = "KEY_RIGHTCTRL"
     # D10: Parakeet is the only STT engine.
-    stt_model_id: str = "parakeet-unified-en-0.6b"
-    stt_quantization: str = "q8"
-    stt_provider: str = "cpu"
+    stt_model_id: str = "parakeet-tdt-0.6b-v3"
+    # Pinned to the model asset; not user-configurable.
+    stt_quantization: str = "int8"
+    # auto = CUDA when the pinned runtime exposes it, otherwise CPU.
+    stt_provider: str = "auto"
     llm_backend: str = "auto"
     llm_provider: str = "auto"
     llm_preset: str = "openai"
     llm_model: str = ""
     acp_agent_id: str = "opencode"
+    llm_reasoning_effort: str = "low"
     ollama_model: str = "qwen2.5-coder:7b"
     gemini_model: str = "gemini-2.5-flash"
     pop_min_peak: float = 0.25
@@ -129,6 +146,7 @@ class AppConfig:
         if not target.exists():
             return cls()
         data = json.loads(target.read_text())
+        _normalize_retired_stt(data)
         valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         return cls(**valid)
 

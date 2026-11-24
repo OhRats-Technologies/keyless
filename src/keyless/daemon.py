@@ -104,6 +104,21 @@ def create_browser_runtime(
     )
 
 
+def _prune_retired_models() -> None:
+    """Delete model directories for STT assets the app no longer ships."""
+    import logging
+
+    from keyless.models.store import prune_legacy_stt_assets
+
+    try:
+        removed = prune_legacy_stt_assets()
+    except OSError as exc:  # read-only disk must not block startup
+        logging.getLogger(__name__).warning("retired model cleanup failed: %s", exc)
+        return
+    if removed:
+        logging.getLogger(__name__).info("removed retired model directories: %s", ", ".join(removed))
+
+
 def create_control_server(paths: "AppPaths | None" = None):  # type: ignore[name-defined]
     """Engine-owned control plane with the schema-v1 UI contract registered.
 
@@ -115,6 +130,7 @@ def create_control_server(paths: "AppPaths | None" = None):  # type: ignore[name
     from keyless.ipc.control import ControlServer
     from keyless.core.ui_contract import build_ui_state
 
+    _prune_retired_models()
     server = ControlServer(paths=paths)
     server.ui_contract_builder = build_ui_state
     return server
@@ -139,6 +155,7 @@ def run_combined_daemon(
     if not enable_vision and not enable_audio:
         raise ValueError("At least one of vision or audio must be enabled.")
 
+    _prune_retired_models()
     layout = get_display_layout()
     gaze_source = None
     if enable_vision:

@@ -341,7 +341,7 @@ def run_all(
     exp2: int | None = typer.Option(None, help="Cam2 manual exposure"),
     gain2: int | None = typer.Option(None, help="Cam2 sensor gain"),
     hotkey: str | None = typer.Option(None, help="Evdev PTT hotkey (default KEY_RIGHTCTRL)"),
-    stt_provider: str | None = typer.Option(None, help="STT execution provider: cpu | cuda"),
+    stt_provider: str | None = typer.Option(None, help="STT compute: auto | cpu | cuda (auto = CUDA when available)"),
     llm_backend: str | None = typer.Option(None, help="LLM backend: auto | ollama | gemini | acp"),
     llm_provider: str | None = typer.Option(None, help="Provider: auto | ollama | gemini | openai_compat | acp"),
     llm_preset: str | None = typer.Option(None, help="OpenAI-compatible preset (openai, openrouter, groq, ...)"),
@@ -506,7 +506,7 @@ def test_audio(
 @app.command("run-voice")
 def run_voice(
     hotkey: str | None = typer.Option(None, help="Evdev PTT hotkey (default KEY_RIGHTCTRL)"),
-    stt_provider: str | None = typer.Option(None, help="STT execution provider: cpu | cuda"),
+    stt_provider: str | None = typer.Option(None, help="STT compute: auto | cpu | cuda (auto = CUDA when available)"),
     llm_backend: str | None = typer.Option(None, help="LLM backend: auto | ollama | gemini | acp"),
     llm_provider: str | None = typer.Option(None, help="Provider: auto | ollama | gemini | openai_compat | acp"),
     llm_preset: str | None = typer.Option(None, help="OpenAI-compatible preset (openai, openrouter, groq, ...)"),

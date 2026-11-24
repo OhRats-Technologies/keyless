@@ -10,9 +10,12 @@ from dataclasses import dataclass
 
 HF_BASE = "https://huggingface.co"
 
-PARAKEET_UNIFIED_EN_ID = "parakeet-unified-en-0.6b"
-PARAKEET_TDT_V2_ID = "parakeet-tdt-0.6b-v2"
+PARAKEET_TDT_V3_ID = "parakeet-tdt-0.6b-v3"
 UNDERDOG_WOOF_ID = "underdog-woof"
+
+# Retired STT assets. Listed so config migration and the model store can
+# recognise and remove them; they are not downloadable.
+LEGACY_STT_ASSET_IDS = ("parakeet-unified-en-0.6b", "parakeet-tdt-0.6b-v2")
 
 
 @dataclass(frozen=True)
@@ -50,55 +53,15 @@ class ModelAsset:
         raise KeyError(name)
 
 
-PARAKEET_UNIFIED_EN_0_6B = ModelAsset(
-    id=PARAKEET_UNIFIED_EN_ID,
-    display_name="Parakeet Unified English 0.6B (q8)",
-    engine="onnx-asr",
-    quantization="q8",
-    revision="a34b30ffd9dc312a4012ec0305d28f92a1c86c66",
-    repo="mrfakename/parakeet-unified-ONNX",
-    license="nvidia-open-model-license",
-    attribution="NVIDIA Parakeet Unified EN 0.6B (NVIDIA Open Model License), ONNX export by mrfakename / eschmidbauer",
-    files=(
-        ModelFile(
-            name="config.json",
-            bytes=273,
-            sha256="636c9edf61757ad4e711335999fc920a1c7e9943b4acf5df12769cc3422f63bd",
-        ),
-        ModelFile(
-            name="vocab.txt",
-            bytes=8952,
-            sha256="dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff",
-        ),
-        ModelFile(
-            name="nemo128.onnx",
-            remote_name="preprocessor.onnx",
-            bytes=136430,
-            sha256="e931b8a8361bfbda004ef8b21378049f7199faea6f99320058f89983eda05bfe",
-        ),
-        ModelFile(
-            name="encoder-model.q8.onnx",
-            bytes=702012418,
-            sha256="3a40148d74fc8643ff8f4a8f34683862ca19066746cb73100d7134659cde4ec8",
-        ),
-        ModelFile(
-            name="decoder_joint-model.q8.onnx",
-            remote_name="decoder_joint-model.int8.onnx",
-            bytes=8995073,
-            sha256="26a9f0ffb682cf2a712ac86e2e11b6da932f9860f70dc996841cba6392010b55",
-        ),
-    ),
-)
-
-PARAKEET_TDT_0_6B_V2 = ModelAsset(
-    id=PARAKEET_TDT_V2_ID,
-    display_name="Parakeet TDT 0.6B v2 (English, int8)",
+PARAKEET_TDT_0_6B_V3 = ModelAsset(
+    id=PARAKEET_TDT_V3_ID,
+    display_name="Parakeet TDT 0.6B v3 (Multilingual, int8)",
     engine="onnx-asr",
     quantization="int8",
-    revision="0bbb45a3365852604aef28b538a8f066f4ccaa85",
-    repo="istupakov/parakeet-tdt-0.6b-v2-onnx",
+    revision="8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
+    repo="istupakov/parakeet-tdt-0.6b-v3-onnx",
     license="CC-BY-4.0",
-    attribution="NVIDIA Parakeet TDT 0.6B v2 (CC-BY-4.0), ONNX export by istupakov",
+    attribution="NVIDIA Parakeet TDT 0.6B v3 (CC-BY-4.0), ONNX export by istupakov",
     files=(
         ModelFile(
             name="config.json",
@@ -107,8 +70,8 @@ PARAKEET_TDT_0_6B_V2 = ModelAsset(
         ),
         ModelFile(
             name="vocab.txt",
-            bytes=9384,
-            sha256="ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d",
+            bytes=93939,
+            sha256="d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
         ),
         ModelFile(
             name="nemo128.onnx",
@@ -117,13 +80,13 @@ PARAKEET_TDT_0_6B_V2 = ModelAsset(
         ),
         ModelFile(
             name="encoder-model.int8.onnx",
-            bytes=652184014,
-            sha256="3e0581fda6ab843888b51e56d7ee78b6d5bc3237ec113af1f732d1d5286aa155",
+            bytes=652183999,
+            sha256="6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09",
         ),
         ModelFile(
             name="decoder_joint-model.int8.onnx",
-            bytes=8998286,
-            sha256="a449f49acd68979d418651dd2dcb737cc0f1bf0225e009e29ee326354edbf7d3",
+            bytes=18202004,
+            sha256="eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70",
         ),
     ),
 )
@@ -192,12 +155,11 @@ UNDERDOG_WOOF = ModelAsset(
 )
 
 ASSETS: dict[str, ModelAsset] = {
-    PARAKEET_UNIFIED_EN_0_6B.id: PARAKEET_UNIFIED_EN_0_6B,
-    PARAKEET_TDT_0_6B_V2.id: PARAKEET_TDT_0_6B_V2,
+    PARAKEET_TDT_0_6B_V3.id: PARAKEET_TDT_0_6B_V3,
     UNDERDOG_WOOF.id: UNDERDOG_WOOF,
 }
 
-DEFAULT_STT_ASSET_ID = PARAKEET_UNIFIED_EN_0_6B.id
+DEFAULT_STT_ASSET_ID = PARAKEET_TDT_0_6B_V3.id
 DEFAULT_TTS_ASSET_ID = UNDERDOG_WOOF.id
 
 

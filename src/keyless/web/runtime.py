@@ -54,6 +54,14 @@ class WebGazeManager:
         self._cached_cameras: list[dict[str, Any]] = []
         self._cached_layout: Any = None
         self._rig_version: int = 1
+        self._llm_options_cache: dict[str, dict[str, Any]] = {}
+        # One probe per preset at a time: concurrent option requests wait for
+        # the in-flight probe instead of each starting their own agent spawn.
+        self._llm_options_locks: dict[str, threading.Lock] = {}
+
+    def _llm_options_lock(self, preset_id: str) -> threading.Lock:
+        with self._lock:
+            return self._llm_options_locks.setdefault(preset_id, threading.Lock())
 
     @property
     def sessions_dir(self) -> Path:
@@ -615,14 +623,6 @@ class WebGazeManager:
         has_npx = resolve_agent_binary("npx") is not None
         candidates = [
             {
-                "id": "acp:agy",
-                "name": "Gemini (agy)",
-                "kind": "ACP Agent",
-                "description": "Local Gemini / Antigravity ACP agent",
-                "ready": resolve_agent_binary("agy") is not None,
-                "patch": {"llm_provider": "acp", "llm_backend": "acp", "acp_agent_id": "agy"},
-            },
-            {
                 "id": "acp:opencode",
                 "name": "OpenCode",
                 "kind": "ACP Agent",
@@ -645,14 +645,6 @@ class WebGazeManager:
                 "description": "OpenAI Codex via ACP adapter",
                 "ready": resolve_agent_binary("codex") is not None or has_npx,
                 "patch": {"llm_provider": "acp", "llm_backend": "acp", "acp_agent_id": "codex-acp"},
-            },
-            {
-                "id": "acp:gemini",
-                "name": "Gemini CLI",
-                "kind": "ACP Agent",
-                "description": "Official Google Gemini CLI via ACP",
-                "ready": resolve_agent_binary("gemini") is not None or has_npx,
-                "patch": {"llm_provider": "acp", "llm_backend": "acp", "acp_agent_id": "gemini"},
             },
             {
                 "id": "ollama",
@@ -689,10 +681,78 @@ class WebGazeManager:
             active_id = prov
 
         recommended = next((c["id"] for c in candidates if c["ready"]), "ollama")
+        active_model = (
+            cfg.ollama_model if active_id == "ollama"
+            else cfg.gemini_model if active_id == "gemini"
+            else (cfg.llm_model or "")
+        )
         return {
             "active_id": active_id,
+            "active_model": active_model,
+            "active_effort": cfg.llm_reasoning_effort or "low",
             "recommended_id": recommended,
             "providers": candidates,
+        }
+
+    def audio_input_devices(self) -> dict[str, Any]:
+        """Microphone inputs enumerated from the host runtime (PortAudio).
+
+        Never raises: enumeration failures return an empty list plus an error
+        string so the picker can show an explicit error state.
+        """
+        devices: list[dict[str, Any]] = []
+        error = ""
+        default_index: int | None = None
+        try:
+            import sounddevice as sd
+
+            raw_default = sd.default.device
+            if isinstance(raw_default, (list, tuple)) and raw_default:
+                candidate = raw_default[0]
+                if isinstance(candidate, int) and candidate >= 0:
+                    default_index = candidate
+            for index, device in enumerate(sd.query_devices()):
+                channels = int(device.get("max_input_channels", 0))
+                if channels > 0:
+                    devices.append(
+                        {
+                            "id": index,
+                            "name": str(device.get("name", "")),
+                            "channels": channels,
+                            "default": index == default_index,
+                        }
+                    )
+        except Exception as exc:
+            error = f"Audio device enumeration failed: {exc}"
+        cfg = AppConfig.load(self.paths.settings_path)
+        return {
+            "devices": devices,
+            "selected": cfg.audio_device,
+            "default_index": default_index,
+            "error": error,
+        }
+
+    def camera_devices(self) -> dict[str, Any]:
+        """Cameras enumerated from the host platform layer (stable by-id paths).
+
+        Never raises: enumeration failures return an empty list plus an error
+        string so the picker can show an explicit error state.
+        """
+        devices: list[dict[str, Any]] = []
+        error = ""
+        try:
+            from keyless.platform.router import list_cameras
+
+            for cam in list_cameras():
+                devices.append({"id": str(cam.path), "name": str(cam.name)})
+        except Exception as exc:
+            error = f"Camera enumeration failed: {exc}"
+        cfg = AppConfig.load(self.paths.settings_path)
+        return {
+            "devices": devices,
+            "selected": {"cam1_by_id": cfg.cam1_by_id, "cam2_by_id": cfg.cam2_by_id},
+            "camera_mode": cfg.camera_mode,
+            "error": error,
         }
 
     def select_llm_provider(self, preset_id: str) -> dict[str, Any]:
@@ -704,6 +764,143 @@ class WebGazeManager:
         cfg = AppConfig.load(self.paths.settings_path)
         for k, v in match["patch"].items():
             setattr(cfg, k, v)
+        cfg.save(self.paths.settings_path)
+        out = self.llm_providers_summary()
+        out["config"] = asdict(cfg)
+        return out
+
+    def llm_provider_options(self, preset_id: str, *, force: bool = False) -> dict[str, Any]:
+        """Probe available models and reasoning effort levels for the selected provider.
+
+        Always returns a JSON-serialisable options document; probe failures
+        land in ``error`` with empty option lists, never as a raised exception.
+        Concurrent requests for the same preset share one probe.
+        """
+        if not force:
+            cached = self._llm_options_cache.get(preset_id)
+            if cached is not None:
+                return dict(cached)
+        with self._llm_options_lock(preset_id):
+            # Another request may have completed the probe while we waited.
+            if not force:
+                cached = self._llm_options_cache.get(preset_id)
+                if cached is not None:
+                    return dict(cached)
+            return self._probe_llm_options(preset_id)
+
+    def _probe_llm_options(self, preset_id: str) -> dict[str, Any]:
+        models: list[dict[str, str]] = []
+        efforts: list[dict[str, str]] = []
+        current_model = ""
+        current_effort = ""
+        error = ""
+
+        if preset_id.startswith("acp:"):
+            agent_id = preset_id.split(":", 1)[1]
+            try:
+                from keyless.models.providers.acp import AcpClient
+                from keyless.models.providers.acp_registry import OFFLINE_AGENTS, resolve_agent_binary
+
+                spec = next((s for s in OFFLINE_AGENTS if s.id == agent_id), None)
+                if spec is None or not spec.command:
+                    error = f"Unknown ACP agent {agent_id}"
+                elif resolve_agent_binary(spec.command[0]) is None:
+                    error = f"{spec.command[0]} is not installed on this machine."
+                else:
+                    client = AcpClient(spec.command, timeout=12.0)
+                    try:
+                        client.start()
+                        client.initialize()
+                        client.new_session()
+                        for co in client.config_options:
+                            cid = str(co.get("id", ""))
+                            cat = str(co.get("category", ""))
+                            raw_opts = [o for o in (co.get("options") or []) if isinstance(o, dict)]
+                            if cat == "model" or cid == "model":
+                                current_model = str(co.get("currentValue", ""))
+                                models = [
+                                    {"value": str(o.get("value", "")), "name": str(o.get("name", o.get("value", "")))}
+                                    for o in raw_opts
+                                    if o.get("value")
+                                ]
+                            elif cat == "thought_level" or cid in ("thought_level", "effort", "reasoning_effort"):
+                                current_effort = str(co.get("currentValue", ""))
+                                efforts = [
+                                    {"value": str(o.get("value", "")), "name": str(o.get("name", o.get("value", "")))}
+                                    for o in raw_opts
+                                    if o.get("value")
+                                ]
+                        if not models and client.available_models:
+                            models = [
+                                {"value": str(m.get("modelId", "")), "name": str(m.get("name", m.get("modelId", "")))}
+                                for m in client.available_models
+                                if m.get("modelId")
+                            ]
+                    finally:
+                        client.close()
+            except Exception as exc:
+                error = str(exc)
+        elif preset_id == "ollama":
+            try:
+                from keyless.models.providers.ollama import OllamaProvider
+
+                cfg = AppConfig.load(self.paths.settings_path)
+                st = OllamaProvider(cfg.ollama_model).status()
+                avail = list(st.extra.get("models") or [])
+                models = [{"value": str(m), "name": str(m)} for m in avail]
+                current_model = cfg.ollama_model
+            except Exception as exc:
+                error = str(exc)
+        elif preset_id == "gemini":
+            models = [
+                {"value": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"},
+                {"value": "gemini-2.5-pro", "name": "Gemini 2.5 Pro"},
+            ]
+            current_model = AppConfig.load(self.paths.settings_path).gemini_model
+        else:
+            models = [
+                {"value": "gpt-4.1-mini", "name": "GPT-4.1 mini"},
+                {"value": "gpt-4.1", "name": "GPT-4.1"},
+            ]
+            current_model = AppConfig.load(self.paths.settings_path).llm_model
+
+        if not efforts:
+            efforts = [
+                {"value": "low", "name": "Low (Fast)"},
+                {"value": "medium", "name": "Medium"},
+                {"value": "high", "name": "High"},
+            ]
+
+        result = {
+            "id": preset_id,
+            "models": models,
+            "current_model": current_model,
+            "efforts": efforts,
+            "current_effort": current_effort,
+            "error": error,
+        }
+        if not error:
+            self._llm_options_cache[preset_id] = result
+        return result
+
+    def configure_llm(
+        self,
+        *,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> dict[str, Any]:
+        cfg = AppConfig.load(self.paths.settings_path)
+        prov = cfg.llm_provider if cfg.llm_provider != "auto" else cfg.llm_backend
+        if model is not None:
+            clean = str(model).strip()
+            if prov == "ollama":
+                cfg.ollama_model = clean or cfg.ollama_model
+            elif prov == "gemini":
+                cfg.gemini_model = clean or cfg.gemini_model
+            else:
+                cfg.llm_model = clean
+        if reasoning_effort is not None:
+            cfg.llm_reasoning_effort = str(reasoning_effort).strip() or "low"
         cfg.save(self.paths.settings_path)
         out = self.llm_providers_summary()
         out["config"] = asdict(cfg)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -49,6 +50,25 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
         while chunk := handle.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def prune_legacy_stt_assets(paths: AppPaths | None = None) -> list[str]:
+    """Delete model directories for retired STT assets; return removed ids.
+
+    The config layer already rewrites stored ids to the current default, so
+    these directories are dead weight: remove them once on daemon start.
+    """
+    from keyless.models.catalog import LEGACY_STT_ASSET_IDS
+
+    models_dir = (paths or current_paths()).models_dir
+    removed: list[str] = []
+    for asset_id in LEGACY_STT_ASSET_IDS:
+        directory = models_dir / asset_id
+        if directory.is_dir():
+            shutil.rmtree(directory, ignore_errors=True)
+            if not directory.exists():
+                removed.append(asset_id)
+    return removed
 
 
 class ModelStore:
