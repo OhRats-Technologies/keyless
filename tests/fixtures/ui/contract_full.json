@@ -1,0 +1,801 @@
+{
+  "actions": {
+    "allow": {
+      "id": "allow",
+      "method": "POST",
+      "path": "/v1/ui/action"
+    },
+    "diagnostics": {
+      "id": "diagnostics",
+      "method": "POST",
+      "path": "/v1/ui/action"
+    },
+    "models_cancel": {
+      "id": "models_cancel",
+      "method": "POST",
+      "path": "/v1/ui/action"
+    },
+    "models_download": {
+      "id": "models_download",
+      "method": "POST",
+      "path": "/v1/ui/action"
+    },
+    "pause": {
+      "id": "pause",
+      "method": "POST",
+      "path": "/v1/ui/action"
+    },
+    "select_camera": {
+      "id": "select_camera",
+      "method": "POST",
+      "path": "/v1/ui/action"
+    },
+    "set_config": {
+      "id": "set_config",
+      "method": "POST",
+      "path": "/v1/ui/action"
+    },
+    "setup": {
+      "id": "setup",
+      "method": "POST",
+      "path": "/v1/ui/action"
+    },
+    "start": {
+      "id": "start",
+      "method": "POST",
+      "path": "/v1/ui/action"
+    }
+  },
+  "schema_version": 1,
+  "screens": {
+    "activity": {
+      "sections": [
+        {
+          "rows": [
+            {
+              "detail": "button",
+              "kind": "text",
+              "title": "click the red button"
+            }
+          ],
+          "title": "Recent activity"
+        }
+      ],
+      "title": "Activity"
+    },
+    "home": {
+      "sections": [
+        {
+          "rows": [
+            {
+              "kind": "status",
+              "state": "idle",
+              "title": "Engine: Ready"
+            }
+          ],
+          "title": "Status"
+        },
+        {
+          "rows": [
+            {
+              "kind": "status",
+              "state": "ok",
+              "title": "Camera"
+            },
+            {
+              "kind": "status",
+              "state": "ok",
+              "title": "Microphone"
+            },
+            {
+              "detail": "Ready offline",
+              "kind": "status",
+              "state": "ok",
+              "title": "Parakeet Unified EN"
+            },
+            {
+              "detail": "All granted.",
+              "kind": "status",
+              "state": "ok",
+              "title": "Permissions"
+            }
+          ],
+          "title": "Readiness"
+        },
+        {
+          "rows": [
+            {
+              "action": "start",
+              "enabled": true,
+              "kind": "action",
+              "style": "primary",
+              "title": "Start listening"
+            }
+          ],
+          "title": "Action"
+        },
+        {
+          "rows": [
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "Logitech Webcam",
+                  "value": "/dev/video0"
+                },
+                {
+                  "label": "Studio Cam",
+                  "value": "/dev/video1"
+                }
+              ],
+              "selected": "/dev/v4l/by-id/usb-046d_0825_4BEC6610-video-index0",
+              "title": "Camera"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "System default",
+                  "value": null
+                },
+                {
+                  "label": "Razer Seiren Mini",
+                  "value": "Razer Seiren Mini"
+                },
+                {
+                  "label": "Webcam",
+                  "value": "Webcam"
+                }
+              ],
+              "selected": null,
+              "title": "Microphone"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "auto",
+                  "value": "auto"
+                },
+                {
+                  "label": "ollama",
+                  "value": "ollama"
+                },
+                {
+                  "label": "gemini",
+                  "value": "gemini"
+                },
+                {
+                  "label": "openai_compat",
+                  "value": "openai_compat"
+                },
+                {
+                  "label": "acp",
+                  "value": "acp"
+                }
+              ],
+              "selected": "auto",
+              "title": "Provider"
+            }
+          ],
+          "title": "Devices and provider"
+        },
+        {
+          "rows": [
+            {
+              "detail": "button",
+              "kind": "text",
+              "title": "click the red button"
+            }
+          ],
+          "title": "Recent"
+        }
+      ],
+      "title": "Home"
+    },
+    "settings": {
+      "sections": [
+        {
+          "rows": [
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "auto",
+                  "value": "auto"
+                },
+                {
+                  "label": "mono",
+                  "value": "mono"
+                },
+                {
+                  "label": "stereo",
+                  "value": "stereo"
+                }
+              ],
+              "selected": "auto",
+              "title": "Camera setup"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "v4l2",
+                  "value": "v4l2"
+                },
+                {
+                  "label": "pipewire",
+                  "value": "pipewire"
+                }
+              ],
+              "selected": "v4l2",
+              "title": "Camera backend"
+            },
+            {
+              "detail": "/dev/v4l/by-id/usb-046d_0825_4BEC6610-video-index0 (restart required)",
+              "kind": "text",
+              "title": "Primary camera"
+            },
+            {
+              "detail": "/dev/v4l/by-id/usb-Sunplus_IT_Co_Live_Streamer_CAM_313_20200529002-video-index0 (restart required)",
+              "kind": "text",
+              "title": "Secondary camera"
+            },
+            {
+              "detail": "On (restart required)",
+              "kind": "text",
+              "title": "Automatic exposure"
+            }
+          ],
+          "title": "Cameras"
+        },
+        {
+          "rows": [
+            {
+              "detail": "KEY_RIGHTCTRL (applies immediately)",
+              "kind": "text",
+              "title": "Push-to-talk key"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "parakeet-unified-en-0.6b",
+                  "value": "parakeet-unified-en-0.6b"
+                },
+                {
+                  "label": "parakeet-tdt-0.6b-v2",
+                  "value": "parakeet-tdt-0.6b-v2"
+                }
+              ],
+              "selected": "parakeet-unified-en-0.6b",
+              "title": "Speech model"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "q8",
+                  "value": "q8"
+                },
+                {
+                  "label": "int8",
+                  "value": "int8"
+                }
+              ],
+              "selected": "q8",
+              "title": "Speech precision"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "cpu",
+                  "value": "cpu"
+                },
+                {
+                  "label": "cuda",
+                  "value": "cuda"
+                }
+              ],
+              "selected": "cpu",
+              "title": "Speech device"
+            },
+            {
+              "detail": "System default (applies immediately)",
+              "kind": "text",
+              "title": "Microphone"
+            },
+            {
+              "detail": "On (applies immediately)",
+              "kind": "text",
+              "title": "Always-on voice"
+            },
+            {
+              "detail": "Off (applies immediately)",
+              "kind": "text",
+              "title": "Mouth-pop clicks"
+            },
+            {
+              "detail": "On (applies immediately)",
+              "kind": "text",
+              "title": "Require command prefix"
+            },
+            {
+              "detail": "Off (applies immediately)",
+              "kind": "text",
+              "title": "Spoken replies"
+            },
+            {
+              "detail": "juno (applies immediately)",
+              "kind": "text",
+              "title": "Voice"
+            },
+            {
+              "detail": "On (applies immediately)",
+              "kind": "text",
+              "title": "Speak setup hints"
+            },
+            {
+              "detail": "On (applies immediately)",
+              "kind": "text",
+              "title": "Speak every reply"
+            }
+          ],
+          "title": "Voice & audio"
+        },
+        {
+          "rows": [
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "auto",
+                  "value": "auto"
+                },
+                {
+                  "label": "ollama",
+                  "value": "ollama"
+                },
+                {
+                  "label": "gemini",
+                  "value": "gemini"
+                },
+                {
+                  "label": "openai_compat",
+                  "value": "openai_compat"
+                },
+                {
+                  "label": "acp",
+                  "value": "acp"
+                }
+              ],
+              "selected": "auto",
+              "title": "Backend"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "auto",
+                  "value": "auto"
+                },
+                {
+                  "label": "ollama",
+                  "value": "ollama"
+                },
+                {
+                  "label": "gemini",
+                  "value": "gemini"
+                },
+                {
+                  "label": "openai_compat",
+                  "value": "openai_compat"
+                },
+                {
+                  "label": "acp",
+                  "value": "acp"
+                }
+              ],
+              "selected": "auto",
+              "title": "Provider"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "openai",
+                  "value": "openai"
+                },
+                {
+                  "label": "openrouter",
+                  "value": "openrouter"
+                },
+                {
+                  "label": "groq",
+                  "value": "groq"
+                },
+                {
+                  "label": "together",
+                  "value": "together"
+                },
+                {
+                  "label": "gemini",
+                  "value": "gemini"
+                },
+                {
+                  "label": "lmstudio",
+                  "value": "lmstudio"
+                },
+                {
+                  "label": "llama_cpp",
+                  "value": "llama_cpp"
+                },
+                {
+                  "label": "vllm",
+                  "value": "vllm"
+                },
+                {
+                  "label": "ollama_openai",
+                  "value": "ollama_openai"
+                }
+              ],
+              "selected": "openai",
+              "title": "API preset"
+            },
+            {
+              "detail": "Not set (applies immediately)",
+              "kind": "text",
+              "title": "Model"
+            },
+            {
+              "detail": "opencode (applies immediately)",
+              "kind": "text",
+              "title": "ACP agent"
+            },
+            {
+              "detail": "qwen2.5-coder:7b (applies immediately)",
+              "kind": "text",
+              "title": "Ollama model"
+            },
+            {
+              "detail": "gemini-2.5-flash (applies immediately)",
+              "kind": "text",
+              "title": "Gemini model"
+            }
+          ],
+          "title": "Language model"
+        },
+        {
+          "rows": [
+            {
+              "detail": "Off (applies immediately)",
+              "kind": "text",
+              "title": "Gaze cursor control"
+            },
+            {
+              "detail": "Off (restart required)",
+              "kind": "text",
+              "title": "Record gaze sessions"
+            },
+            {
+              "detail": "Off (restart required)",
+              "kind": "text",
+              "title": "Redact recorded text"
+            },
+            {
+              "detail": "On (applies immediately)",
+              "kind": "text",
+              "title": "Visual grounding"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "auto",
+                  "value": "auto"
+                },
+                {
+                  "label": "ollama",
+                  "value": "ollama"
+                },
+                {
+                  "label": "openai_compat",
+                  "value": "openai_compat"
+                },
+                {
+                  "label": "acp",
+                  "value": "acp"
+                }
+              ],
+              "selected": "auto",
+              "title": "Visual provider"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "openai",
+                  "value": "openai"
+                },
+                {
+                  "label": "openrouter",
+                  "value": "openrouter"
+                },
+                {
+                  "label": "groq",
+                  "value": "groq"
+                },
+                {
+                  "label": "together",
+                  "value": "together"
+                },
+                {
+                  "label": "gemini",
+                  "value": "gemini"
+                },
+                {
+                  "label": "lmstudio",
+                  "value": "lmstudio"
+                },
+                {
+                  "label": "llama_cpp",
+                  "value": "llama_cpp"
+                },
+                {
+                  "label": "vllm",
+                  "value": "vllm"
+                },
+                {
+                  "label": "ollama_openai",
+                  "value": "ollama_openai"
+                }
+              ],
+              "selected": "openai",
+              "title": "Visual API preset"
+            },
+            {
+              "detail": "gemma4:e4b (applies immediately)",
+              "kind": "text",
+              "title": "Visual model"
+            },
+            {
+              "detail": "Off (applies immediately)",
+              "kind": "text",
+              "title": "Allow remote screen crops"
+            }
+          ],
+          "title": "Gaze & cursor"
+        },
+        {
+          "rows": [
+            {
+              "detail": "On (applies immediately)",
+              "kind": "text",
+              "title": "Check for updates"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "stable",
+                  "value": "stable"
+                },
+                {
+                  "label": "prerelease",
+                  "value": "prerelease"
+                }
+              ],
+              "selected": "stable",
+              "title": "Update channel"
+            },
+            {
+              "detail": "Not set (applies immediately)",
+              "kind": "text",
+              "title": "Skipped version"
+            }
+          ],
+          "title": "Privacy & updates"
+        },
+        {
+          "rows": [
+            {
+              "detail": "Off (applies immediately)",
+              "kind": "text",
+              "title": "Transcript overlay"
+            },
+            {
+              "kind": "picker",
+              "options": [
+                {
+                  "label": "native",
+                  "value": "native"
+                },
+                {
+                  "label": "cua",
+                  "value": "cua"
+                }
+              ],
+              "selected": "native",
+              "title": "Input backend"
+            },
+            {
+              "detail": "1280 (restart required)",
+              "kind": "text",
+              "title": "Frame width"
+            },
+            {
+              "detail": "720 (restart required)",
+              "kind": "text",
+              "title": "Frame height"
+            },
+            {
+              "detail": "30 (restart required)",
+              "kind": "text",
+              "title": "Capture rate"
+            },
+            {
+              "detail": "300 (restart required)",
+              "kind": "text",
+              "title": "Primary exposure"
+            },
+            {
+              "detail": "180 (restart required)",
+              "kind": "text",
+              "title": "Primary gain"
+            },
+            {
+              "detail": "300 (restart required)",
+              "kind": "text",
+              "title": "Secondary exposure"
+            },
+            {
+              "detail": "160 (restart required)",
+              "kind": "text",
+              "title": "Secondary gain"
+            },
+            {
+              "detail": "0.55 (restart required)",
+              "kind": "text",
+              "title": "Blink threshold"
+            },
+            {
+              "detail": "On (restart required)",
+              "kind": "text",
+              "title": "Use GPU"
+            },
+            {
+              "detail": "0.25 (restart required)",
+              "kind": "text",
+              "title": "Pop peak floor"
+            },
+            {
+              "detail": "0.032 (restart required)",
+              "kind": "text",
+              "title": "Pop RMS floor"
+            },
+            {
+              "detail": "680 (restart required)",
+              "kind": "text",
+              "title": "Gaze crop width"
+            },
+            {
+              "detail": "480 (restart required)",
+              "kind": "text",
+              "title": "Gaze crop height"
+            },
+            {
+              "detail": "82.0 (restart required)",
+              "kind": "text",
+              "title": "Gaze keyword threshold"
+            },
+            {
+              "detail": "On (restart required)",
+              "kind": "text",
+              "title": "Firefox bridge"
+            },
+            {
+              "detail": "8765 (restart required)",
+              "kind": "text",
+              "title": "Firefox bridge port"
+            },
+            {
+              "detail": "On (restart required)",
+              "kind": "text",
+              "title": "Browser agent"
+            },
+            {
+              "detail": "On (applies immediately)",
+              "kind": "text",
+              "title": "Seed browser profile"
+            }
+          ],
+          "title": "Advanced"
+        },
+        {
+          "rows": [
+            {
+              "detail": "Capabilities, cameras, audio, speech, and providers.",
+              "kind": "text",
+              "title": "Full report"
+            },
+            {
+              "action": "diagnostics",
+              "enabled": true,
+              "kind": "action",
+              "style": "link",
+              "title": "Run diagnostics"
+            }
+          ],
+          "title": "Diagnostics"
+        }
+      ],
+      "title": "Settings"
+    },
+    "setup": {
+      "complete": false,
+      "current": "welcome",
+      "sections": [
+        {
+          "rows": [
+            {
+              "detail": "Current step",
+              "kind": "status",
+              "state": "idle",
+              "title": "Welcome"
+            },
+            {
+              "detail": "Not started",
+              "kind": "status",
+              "state": "idle",
+              "title": "Devices"
+            },
+            {
+              "detail": "Not started",
+              "kind": "status",
+              "state": "idle",
+              "title": "Permissions"
+            },
+            {
+              "detail": "Not started",
+              "kind": "status",
+              "state": "idle",
+              "title": "Ready"
+            }
+          ],
+          "title": "Steps"
+        },
+        {
+          "rows": [
+            {
+              "id": "camera",
+              "kind": "permission",
+              "needs_restart": false,
+              "optional": false,
+              "state": "granted",
+              "title": "Camera"
+            }
+          ],
+          "title": "Permissions"
+        },
+        {
+          "rows": [
+            {
+              "detail": "Gaze v2 learns from natural clicks when it ships. No calibration.",
+              "kind": "text",
+              "title": "Voice control is ready"
+            }
+          ],
+          "title": "Gaze engine"
+        }
+      ],
+      "steps": [
+        "welcome",
+        "devices",
+        "permissions",
+        "ready"
+      ],
+      "title": "Set up Keyless"
+    }
+  }
+}

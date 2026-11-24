@@ -529,9 +529,12 @@ def _actions_document() -> dict[str, Any]:
     return {
         "start": {**ui, "id": "start"},
         "pause": {**ui, "id": "pause"},
+        "allow": {**ui, "id": "allow"},
         "set_config": {**ui, "id": "set_config"},
         "setup": {**ui, "id": "setup"},
         "select_camera": {**ui, "id": "select_camera"},
+        "models_download": {**ui, "id": "models_download"},
+        "models_cancel": {**ui, "id": "models_cancel"},
         "diagnostics": {**ui, "id": "diagnostics"},
     }
 

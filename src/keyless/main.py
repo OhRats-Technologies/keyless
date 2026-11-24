@@ -561,11 +561,9 @@ def serve(
     host: str = typer.Option("127.0.0.1", help="Bind address (loopback only)"),
 ) -> None:
     """Run the loopback control plane for native UI hosts (SwiftUI MenuBarExtra)."""
-    from keyless.ipc.control import ControlServer
-    from keyless.ui.contract import build_ui_state
+    from keyless.daemon import create_control_server
 
-    server = ControlServer()
-    server.ui_contract_builder = build_ui_state
+    server = create_control_server()
     bound = server.start(host=host, port=port)
     console.print(
         f"[green]Keyless control plane on http://127.0.0.1:{bound}[/green] "

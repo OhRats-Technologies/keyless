@@ -104,6 +104,22 @@ def create_browser_runtime(
     )
 
 
+def create_control_server(paths: "AppPaths | None" = None):  # type: ignore[name-defined]
+    """Engine-owned control plane with the schema-v1 UI contract registered.
+
+    Every host (headless ``keyless serve``, the Qt shell) gets this factory
+    instead of wiring the builder itself, so no shell can forget the contract
+    and no engine module imports ``keyless.ui``. The ``ControlServer`` itself
+    keeps the builder injectable so tests can exercise the 503 path.
+    """
+    from keyless.ipc.control import ControlServer
+    from keyless.ui.contract import build_ui_state
+
+    server = ControlServer(paths=paths)
+    server.ui_contract_builder = build_ui_state
+    return server
+
+
 def run_combined_daemon(
     config: AppConfig,
     enable_vision: bool = True,

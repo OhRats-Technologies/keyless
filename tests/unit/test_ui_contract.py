@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
+from pathlib import Path
 
 from keyless.config.schema import AppConfig
 from keyless.config.specs import SETTING_SPECS
 from keyless.ui.contract import (
+    ROW_KINDS,
     SCHEMA_VERSION,
     ActionRow,
     PermissionRow,
@@ -16,6 +19,8 @@ from keyless.ui.contract import (
     TextRow,
     build_ui_state,
 )
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ui"
 
 _NAMES = ("cameras", "audio", "stt", "llm_provider", "permissions")
 
@@ -202,3 +207,62 @@ def test_setup_marks_current_and_completed_steps() -> None:
     assert by_title["Welcome"]["state"] == "ok"
     assert by_title["Devices"]["detail"] == "Current step"
     assert by_title["Ready"]["state"] == "idle"
+
+
+# ---------------------------------------------------------------------------
+# Golden contract fixtures (shared with the Swift parity tests).
+# ---------------------------------------------------------------------------
+
+
+def _fixture_inputs(available: bool) -> dict:
+    return dict(
+        capabilities=_capabilities(available),
+        doctor=_doctor() if available else {},
+        config=asdict(AppConfig()),
+        history=[{"transcript": "click the red button", "target": "button"}] if available else [],
+        model=(
+            {
+                "id": "parakeet",
+                "name": "Parakeet Unified EN",
+                "display_name": "Parakeet Unified EN",
+                "ready": True,
+                "job": None,
+            }
+            if available
+            else {}
+        ),
+        setup={
+            "steps": ["welcome", "devices", "permissions", "ready"],
+            "state": {"step": "welcome", "completed": []},
+            "complete": False,
+        },
+        status={"state": "stopped", "detail": ""},
+        specs=[spec.as_dict() for spec in SETTING_SPECS],
+    )
+
+
+def test_golden_fixture_all_capabilities() -> None:
+    golden = json.loads((FIXTURES / "contract_full.json").read_text())
+    assert build_ui_state(**_fixture_inputs(True)) == golden
+
+
+def test_golden_fixture_no_capabilities() -> None:
+    golden = json.loads((FIXTURES / "contract_cold.json").read_text())
+    assert build_ui_state(**_fixture_inputs(False)) == golden
+
+
+def test_golden_fixtures_use_closed_row_kind_set() -> None:
+    allowed = set(ROW_KINDS)
+    for name in ("contract_full.json", "contract_cold.json"):
+        document = json.loads((FIXTURES / name).read_text())
+        for screen in document["screens"].values():
+            for row in _rows(screen):
+                assert row["kind"] in allowed, (name, row["kind"])
+
+
+def test_golden_cold_fixture_omits_capability_gated_rows() -> None:
+    cold = json.loads((FIXTURES / "contract_cold.json").read_text())
+    home_rows = _rows(cold["screens"]["home"])
+    assert not [row for row in home_rows if row["kind"] in ("picker", "permission", "progress")]
+    setup_rows = _rows(cold["screens"]["setup"])
+    assert not [row for row in setup_rows if row["kind"] == "permission"]

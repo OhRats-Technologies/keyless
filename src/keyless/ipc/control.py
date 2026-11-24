@@ -125,6 +125,11 @@ class ControlServer:
         self._thread: threading.Thread | None = None
         self._model_job: _ModelDownloadJob | None = None
         self._model_lock = threading.Lock()
+        # Live change stream (GET /v1/events): bounded subscriber set; each
+        # stream polls its own snapshot on its request thread.
+        self._event_streams: set[BaseHTTPRequestHandler] = set()
+        self._event_lock = threading.Lock()
+        self._events_stop = threading.Event()
         # Injected by a UI host (`keyless serve`, `run_ui`). The engine keeps
         # zero `keyless.ui` imports; see the module docstring for the split.
         self.ui_contract_builder = None
@@ -340,11 +345,108 @@ class ControlServer:
             return self.apply_config_patch(arg)
         if action == "calibrate":
             return self.launch_calibration()
+        if action == "allow":
+            if not isinstance(arg, dict):
+                raise _ActionRejected("allow requires an 'arg' object")
+            permission_id = str(arg.get("permission") or "")
+            if not permission_id:
+                raise _ActionRejected("allow 'arg' requires a permission id")
+            try:
+                return self.request_permission(permission_id)
+            except ValueError as exc:
+                raise _ActionRejected(str(exc)) from exc
+        if action == "models_download":
+            return self.start_model_download()
+        if action == "models_cancel":
+            return self.cancel_model_download()
         if action == "diagnostics":
             from keyless.diagnostics.doctor import collect_doctor
 
             return collect_doctor(paths=self.paths, check_providers=False).as_dict()
         raise _ActionRejected(f"unknown action {action!r}")
+
+    def request_permission(self, permission_id: str) -> dict[str, object]:
+        """Ask the platform to prompt for one permission row's grant.
+
+        Where an OS prompt exists (macOS Accessibility) it is triggered;
+        otherwise the row's remediation text is returned so the shell can
+        show the same guidance the capability probe already carries.
+        """
+        from keyless.platform.capabilities import detect_capabilities
+        from keyless.platform.router import current_host
+
+        report = detect_capabilities(paths=self.paths)
+        info = report.permissions.get(permission_id)
+        if info is None:
+            raise ValueError(f"unknown permission {permission_id!r}")
+        prompted = False
+        if current_host() == "macos":
+            from keyless.platform.macos import permissions as mac_permissions
+
+            if permission_id in ("accessibility", "input_injection"):
+                prompted = mac_permissions.prompt_accessibility_trust() is not None
+        return {
+            "permission": permission_id,
+            "state": info.state.value,
+            "prompted": prompted,
+            "action": info.action,
+            "detail": info.detail,
+        }
+
+    # -- live change stream (GET /v1/events) --------------------------------
+
+    _EVENT_POLL_S = 1.0
+    _MAX_EVENT_STREAMS = 4
+
+    def _event_snapshot(self) -> dict[str, object]:
+        """Compact change-detector payload for SSE; shells refetch full state."""
+        from keyless.platform.capabilities import detect_capabilities
+
+        status = self.controller.status
+        caps = detect_capabilities(paths=self.paths).as_dict()
+        with self._model_lock:
+            job = self._model_job.as_dict() if self._model_job is not None else None
+        recent = self.history.recent(1)
+        return {
+            "status": {"state": status.state.value, "detail": status.detail},
+            "capabilities": caps.get("capabilities", {}),
+            "permissions": caps.get("permissions", {}),
+            "setup": self.setup_snapshot()["state"],
+            "model": {**self.model_snapshot(), "job": job},
+            "history_latest": recent[0] if recent else None,
+        }
+
+    def _serve_events(self, handler: BaseHTTPRequestHandler) -> None:
+        """Push one SSE ``state`` event whenever the snapshot changes.
+
+        Each stream polls its own snapshot once a second on its request
+        thread; the concurrency cap keeps the loopback server bounded. A
+        comment line every ~15 s detects client disconnects.
+        """
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Cache-Control", "no-cache")
+        handler.send_header("Connection", "keep-alive")
+        handler.end_headers()
+        last: dict[str, object] | None = None
+        ticks = 0
+        while not self._events_stop.is_set():
+            try:
+                snapshot = self._event_snapshot()
+            except Exception:
+                snapshot = None
+            if snapshot is not None and snapshot != last:
+                payload = "event: state\ndata: " + json.dumps(
+                    snapshot, default=str
+                ) + "\n\n"
+                handler.wfile.write(payload.encode())
+                handler.wfile.flush()
+                last = snapshot
+            ticks += 1
+            if ticks % 15 == 0:
+                handler.wfile.write(b": ping\n\n")
+                handler.wfile.flush()
+            self._events_stop.wait(self._EVENT_POLL_S)
 
     def _make_handler(self) -> type[BaseHTTPRequestHandler]:
         server = self
@@ -450,6 +552,23 @@ class ControlServer:
                             "result": result,
                         },
                     )
+                elif self.command == "GET" and path == "/v1/events":
+                    with server._event_lock:
+                        if len(server._event_streams) >= server._MAX_EVENT_STREAMS:
+                            _json(
+                                self,
+                                {"error": "too many concurrent event streams"},
+                                status=503,
+                            )
+                            return
+                        server._event_streams.add(self)
+                    try:
+                        server._serve_events(self)
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        pass
+                    finally:
+                        with server._event_lock:
+                            server._event_streams.discard(self)
                 elif self.command == "GET" and path == "/v1/history":
                     qs = parse_qs(parsed.query)
                     try:
@@ -545,6 +664,7 @@ class ControlServer:
         return self.port
 
     def stop(self) -> None:
+        self._events_stop.set()
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()

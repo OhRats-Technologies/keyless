@@ -1,16 +1,16 @@
 # Tasks
 
 ## 1. Sync with origin/main first
-- [ ] 1.1 Commit or stash local WIP (`daemon.py`, `active_listener.py`, `ipc/transcript.py`, `transcript_overlay.py`) on `alt`.
-- [ ] 1.2 Merge `origin/main` into `alt` (n123yz browser agent); resolve conflicts in `daemon.py`/`active_listener.py`.
-- [ ] 1.3 Run the baseline suite per AGENTS.md (pytest minus known ARM/packaging and instance-lock failures; `compileall -q src`).
+- [x] 1.1 Commit or stash local WIP (`daemon.py`, `active_listener.py`, `ipc/transcript.py`, `transcript_overlay.py`) on `alt`.
+- [x] 1.2 Merge `origin/main` into `alt` (n123yz browser agent); resolve conflicts in `daemon.py`/`active_listener.py`.
+- [x] 1.3 Run the baseline suite per AGENTS.md (pytest minus known ARM/packaging and instance-lock failures; `compileall -q src`).
 
 ## 2. Engine owns the contract
-- [ ] 2.1 Register `ui_contract_builder = build_ui_state` in the daemon composition root (`src/keyless/daemon.py`); drop the Qt-app registration.
-- [ ] 2.2 Verify `GET /v1/ui/state` responds under headless `keyless serve` (no shell running).
-- [ ] 2.3 Expand the `POST /v1/ui/action` registry: `start`, `pause`, `allow`, `select_camera`, `set_config`, model download/cancel; structured errors for unknown/invalid actions; outcomes reflected in the next state document.
-- [ ] 2.4 Add contract fixture tests: golden JSON for all-capabilities and no-capabilities variants; assert closed row-kind set and capability-gated omission.
-- [ ] 2.5 Add `GET /v1/events` (SSE): state-change notifications for capability/setup/progress/history; bounded concurrent streams; keep polling fallback.
+- [x] 2.1 Register `ui_contract_builder = build_ui_state` in the daemon composition root (`src/keyless/daemon.py`); drop the Qt-app registration.
+- [x] 2.2 Verify `GET /v1/ui/state` responds under headless `keyless serve` (no shell running).
+- [x] 2.3 Expand the `POST /v1/ui/action` registry: `start`, `pause`, `allow`, `select_camera`, `set_config`, model download/cancel; structured errors for unknown/invalid actions; outcomes reflected in the next state document.
+- [x] 2.4 Add contract fixture tests: golden JSON for all-capabilities and no-capabilities variants; assert closed row-kind set and capability-gated omission.
+- [x] 2.5 Add `GET /v1/events` (SSE): state-change notifications for capability/setup/progress/history; bounded concurrent streams; keep polling fallback.
 
 ## 3. Shared tokens reach every shell
 - [ ] 3.1 Add a codegen script emitting `Tokens.swift` from `design-tokens.json` into `packaging/macos/`.

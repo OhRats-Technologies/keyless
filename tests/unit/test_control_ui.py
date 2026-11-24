@@ -173,3 +173,58 @@ def test_action_diagnostics_returns_doctor(ui_server) -> None:
     assert status == 200
     assert "capabilities" in body["result"]
     assert "cameras" in body["result"]
+
+
+def test_action_allow_unknown_permission_is_rejected(ui_server) -> None:
+    _, _, base = ui_server
+    status, body = _request(
+        "POST", f"{base}/v1/ui/action",
+        {"action": "allow", "arg": {"permission": "no_such_permission"}},
+    )
+    assert status == 400
+    assert body["ok"] is False
+    assert "unknown permission" in body["error"]
+
+    status, body = _request("POST", f"{base}/v1/ui/action", {"action": "allow"})
+    assert status == 400
+    assert "arg" in body["error"]
+
+
+def test_action_models_cancel_without_job_is_inert(ui_server) -> None:
+    _, _, base = ui_server
+    status, body = _request(
+        "POST", f"{base}/v1/ui/action", {"action": "models_cancel"}
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert body["result"]["cancelled"] is False
+
+
+def test_events_stream_pushes_state_events(ui_server) -> None:
+    """GET /v1/events emits an SSE ``state`` event carrying the change snapshot."""
+    _, _, base = ui_server
+    with urllib.request.urlopen(f"{base}/v1/events", timeout=10) as response:
+        assert response.status == 200
+        assert response.headers.get("Content-Type") == "text/event-stream"
+        event_line = response.readline().decode()
+        data_line = response.readline().decode()
+        response.readline()  # blank separator
+    assert event_line.strip() == "event: state"
+    assert data_line.startswith("data: ")
+    payload = json.loads(data_line[len("data: ") :])
+    assert {"status", "capabilities", "permissions", "setup", "model"} <= set(payload)
+
+
+def test_events_streams_are_bounded(ui_server) -> None:
+    """Beyond the cap, new streams get a structured 503 instead of piling up."""
+    srv, _, base = ui_server
+    held = []
+    try:
+        for _ in range(srv._MAX_EVENT_STREAMS):
+            held.append(urllib.request.urlopen(f"{base}/v1/events", timeout=10))
+        status, body = _request("GET", f"{base}/v1/events")
+        assert status == 503
+        assert "event streams" in body["error"]
+    finally:
+        for stream in held:
+            stream.close()
