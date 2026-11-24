@@ -217,7 +217,28 @@ def test_create_gaze_sink_disables_gaze_when_overlay_cannot_start(monkeypatch) -
     assert move is False
 
 
-def test_create_gaze_sink_routes_motion_to_overlay_and_actions_to_pointer(monkeypatch) -> None:
+def _isolate_cursor_lock(monkeypatch, tmp_path) -> None:
+    import keyless.config.paths as paths
+
+    monkeypatch.setattr(paths, "current_paths", lambda: SimpleNamespace(cache_dir=tmp_path))
+
+
+def test_daemon_stays_internal_when_the_publisher_owns_the_eye_cursor(monkeypatch, tmp_path) -> None:
+    from keyless.platform.macos.gaze_cursor import claim_eye_cursor
+
+    _isolate_cursor_lock(monkeypatch, tmp_path)
+    monkeypatch.setattr(agent_cursor.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_cursor, "AgentCursorOverlay", _FakeOverlay)
+    owner = claim_eye_cursor(tmp_path)
+    action = _FakeAction()
+    config = SimpleNamespace(gaze_cursor_control=True, gaze_cursor_overlay=True)
+    pointer, overlay, move = agent_cursor.create_gaze_sink(config, action, dry_run=False)
+    assert (pointer, overlay, move) == (action, None, False)
+    owner.close()
+
+
+def test_create_gaze_sink_routes_motion_to_overlay_and_actions_to_pointer(monkeypatch, tmp_path) -> None:
+    _isolate_cursor_lock(monkeypatch, tmp_path)
     action = _FakeAction()
     config = SimpleNamespace(gaze_cursor_control=True, gaze_cursor_overlay=True)
     monkeypatch.setattr(agent_cursor.sys, "platform", "darwin")
