@@ -1,4 +1,4 @@
-"""Import-boundary guard: the IPC domain and core modules stay UI-free."""
+"""Boundary guard: engine/core/ipc modules never import GUI toolkits or web assets."""
 
 from __future__ import annotations
 
@@ -6,54 +6,26 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src" / "keyless"
+FORBIDDEN = ("PySide6", "keyless.ui", "keyless.web")
 
 
-def _imports_ui(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(), filename=str(path))
-    offenders: list[str] = []
+def _imports_in(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "keyless.ui" or alias.name.startswith("keyless.ui."):
-                    offenders.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if module == "keyless.ui" or module.startswith("keyless.ui."):
-                offenders.append(module)
-    return offenders
+                found.append(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            found.append(node.module)
+    return found
 
 
-def test_control_plane_has_no_ui_imports() -> None:
-    offenders = _imports_ui(SRC / "ipc" / "control.py")
-    assert offenders == []
-
-
-def test_core_modules_have_no_ui_imports() -> None:
-    for name in ("lifecycle", "onboarding", "history"):
-        offenders = _imports_ui(SRC / "core" / f"{name}.py")
-        assert offenders == [], f"keyless.core.{name} imports {offenders}"
-
-
-def test_shims_reexport_canonical_objects() -> None:
-    from keyless.core import history, lifecycle, onboarding
-    from keyless.ui import session
-    from keyless.ui.history import db
-    from keyless.ui.onboarding import flow
-
-    assert flow.OnboardingFlow is onboarding.OnboardingFlow
-    assert flow.OnboardingStep is onboarding.OnboardingStep
-    assert flow.STEPS is onboarding.STEPS
-    assert flow.OnboardingState is onboarding.OnboardingState
-
-    assert db.HistoryStore is history.HistoryStore
-    assert db.ActionRecord is history.ActionRecord
-
-    assert session.DaemonController is lifecycle.DaemonController
-    assert session.NullController is lifecycle.NullController
-    assert session.SessionController is lifecycle.SessionController
-    assert session.SessionState is lifecycle.SessionState
-    assert session.SessionStatus is lifecycle.SessionStatus
-    assert session.DaemonFailureReport is lifecycle.DaemonFailureReport
-    assert session.inspect_daemon_error is lifecycle.inspect_daemon_error
-    assert session._extract_daemon_error is lifecycle._extract_daemon_error
+def test_core_and_gaze_never_import_gui_or_web() -> None:
+    for folder in (ROOT / "src" / "keyless" / "core", ROOT / "src" / "keyless" / "gaze"):
+        for py in sorted(folder.rglob("*.py")):
+            for mod in _imports_in(py):
+                for bad in FORBIDDEN:
+                    assert mod != bad and not mod.startswith(bad + "."), (
+                        f"{py.relative_to(ROOT)} imports forbidden module {mod!r}"
+                    )

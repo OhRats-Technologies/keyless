@@ -93,17 +93,6 @@ Terminal=false
 Categories=Utility;Accessibility;
 EOF
 
-cat > "${DESKTOP_DIR}/keyless-lab.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=Keyless Lab
-Comment=Gaze v2 data curator, recall inspector, and Dream-RSI console
-Exec=${BIN_DIR}/keyless gaze lab
-Icon=keyless
-Terminal=false
-Categories=Development;Utility;
-EOF
-
 cp "${REPO_ROOT}/packaging/linux/keyless.svg" "${ICON_DIR}/scalable/apps/keyless.svg"
 cp "${REPO_ROOT}/packaging/linux/keyless.png" "${ICON_DIR}/256x256/apps/keyless.png"
 

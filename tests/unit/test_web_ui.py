@@ -1,0 +1,138 @@
+"""End-to-end HTTP tests for the unified Keyless local web UI and Gaze/Session API."""
+
+from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+import pytest
+
+from keyless.config.paths import HOME_ENV, AppPaths, default_paths
+from keyless.core.lifecycle import NullController
+from keyless.core.ui_contract import build_ui_state
+from keyless.ipc.control import ControlServer
+
+LOOPBACK = "127.0.0.1"
+
+
+@pytest.fixture
+def web_server(tmp_path: Path):
+    paths: AppPaths = default_paths(env={HOME_ENV: str(tmp_path)}, platform_name="linux")
+    paths.ensure_directories()
+    srv = ControlServer(paths=paths)
+    srv.controller = NullController()
+    srv.ui_contract_builder = build_ui_state
+    port = srv.start(host=LOOPBACK, port=0)
+    try:
+        yield srv, f"http://{LOOPBACK}:{port}", paths
+    finally:
+        srv.stop()
+
+
+def _req(base: str, method: str, path: str, payload: dict | None = None):
+    data = json.dumps(payload).encode() if payload is not None else None
+    headers = {"Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(f"{base}{path}", data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return resp.status, resp.headers.get("Content-Type", ""), resp.read()
+
+
+def test_static_web_app_assets_and_path_traversal_guard(web_server) -> None:
+    _srv, base, _paths = web_server
+    st, ctype, html = _req(base, "GET", "/")
+    assert st == 200
+    assert "text/html" in ctype
+    assert b"Keyless" in html
+    assert b"/assets/app.js" in html
+
+    st, ctype, css = _req(base, "GET", "/assets/styles.css")
+    assert st == 200
+    assert "text/css" in ctype
+    assert b"#efede5" in css and b"#c95b2b" in css and b"#634936" in css
+
+    st, ctype, js = _req(base, "GET", "/assets/app.js")
+    assert st == 200
+    assert "javascript" in ctype
+    assert b"/v1/gaze/stream" in js
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        _req(base, "GET", "/assets/../../pyproject.toml")
+    assert exc_info.value.code in (403, 404)
+
+
+def test_gaze_status_commands_and_session_curation_http_roundtrip(web_server) -> None:
+    _srv, base, _paths = web_server
+
+    st, _, raw = _req(base, "GET", "/v1/gaze/status")
+    assert st == 200
+    gaze = json.loads(raw)
+    assert gaze["running"] is False
+    assert "display" in gaze and "environment" in gaze
+
+    st, _, raw = _req(base, "GET", "/v1/commands")
+    assert st == 200
+    assert len(json.loads(raw)["categories"]) >= 3
+
+    st, _, raw = _req(base, "POST", "/v1/sessions/sample", {})
+    assert st == 200
+    sid = json.loads(raw)["session_id"]
+
+    st, _, raw = _req(base, "GET", "/v1/sessions")
+    assert st == 200
+    sessions = json.loads(raw)["sessions"]
+    assert len(sessions) == 1 and sessions[0]["session_id"] == sid
+
+    st, _, raw = _req(base, "GET", f"/v1/sessions/{sid}")
+    assert st == 200
+    detail = json.loads(raw)
+    assert len(detail["events"]) == 4
+
+    st, _, raw = _req(
+        base,
+        "PATCH",
+        f"/v1/sessions/{sid}/events/3",
+        {"target": "btn-settings", "accepted": True},
+    )
+    assert st == 200
+    patched = json.loads(raw)["event"]
+    assert patched["interaction"]["target"] == "btn-settings"
+    assert patched["interaction"]["accepted"] is True
+
+    st, _, raw = _req(base, "DELETE", f"/v1/sessions/{sid}/events/3")
+    assert st == 200
+    assert json.loads(raw)["remaining"] == 3
+
+    st, _, raw = _req(base, "GET", "/v1/sessions/recall")
+    assert st == 200
+    recall = json.loads(raw)
+    assert recall["clicks"] == 3 and recall["hits"] == 3 and recall["gate_met"] is True
+
+    st, _, raw = _req(base, "POST", "/v1/sessions/export", {"seed": 7})
+    assert st == 200
+    exported = json.loads(raw)
+    assert Path(exported["out_dir"]).exists()
+
+    st, _, raw = _req(base, "DELETE", f"/v1/sessions/{sid}")
+    assert st == 200
+    assert json.loads(raw)["deleted"] == sid
+
+
+def test_open_browser_url_prefers_xdg_open_on_linux(monkeypatch) -> None:
+    from keyless import web
+
+    launched: list[list[str]] = []
+    monkeypatch.setattr(web.sys, "platform", "linux")
+    monkeypatch.setattr(web.shutil, "which", lambda name: "/usr/bin/xdg-open" if name == "xdg-open" else None)
+
+    def _fake_popen(cmd, **_kwargs):
+        launched.append(cmd)
+        return object()
+
+    monkeypatch.setattr(web.subprocess, "Popen", _fake_popen)
+    target = f"http://{LOOPBACK}:8766"
+    assert web.open_browser_url(target) is True
+    assert launched == [["/usr/bin/xdg-open", target]]

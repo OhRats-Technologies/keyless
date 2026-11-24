@@ -8,7 +8,7 @@ from pathlib import Path
 
 from keyless.config.schema import AppConfig
 from keyless.config.specs import SETTING_SPECS
-from keyless.ui.contract import (
+from keyless.core.ui_contract import (
     ROW_KINDS,
     SCHEMA_VERSION,
     ActionRow,

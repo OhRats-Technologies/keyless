@@ -138,7 +138,7 @@ def test_http_session_controller_handles_offline_plane(tmp_path: Path) -> None:
 
 
 def test_client_ui_state_and_ui_action(control) -> None:
-    from keyless.ui.contract import build_ui_state
+    from keyless.core.ui_contract import build_ui_state
 
     srv, _, _, client = control
     srv.ui_contract_builder = build_ui_state

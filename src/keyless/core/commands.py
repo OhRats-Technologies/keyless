@@ -1,25 +1,8 @@
-"""Structured voice command reference and searchable Qt help surface."""
+"""Structured voice command reference (pure Python, shared by CLI and web UI)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QDialog,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
-
-from keyless.ui.components import Card, eyebrow
-from keyless.ui.theme.tokens import load_bundled_fonts
-from keyless.ui.tray import make_icon
+from dataclasses import asdict, dataclass
 
 
 @dataclass(frozen=True)
@@ -253,131 +236,7 @@ def filter_command_categories(query: str = "") -> list[CommandCategory]:
     return filtered
 
 
-class CommandsHelpWidget(QWidget):
-    """Searchable voice commands reference widget (embeddable or used inside CommandsHelpDialog)."""
 
-    def __init__(self, parent: QWidget | None = None, *, scrollable: bool = True) -> None:
-        super().__init__(parent)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(12)
-
-        search_row = QHBoxLayout()
-        search_row.setSpacing(8)
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search voice commands (e.g. click, scroll, terminal, tab, ask)…")
-        self.search_input.setClearButtonEnabled(True)
-        self.search_input.textChanged.connect(self._rebuild_cards)
-        search_row.addWidget(self.search_input, 1)
-        root.addLayout(search_row)
-
-        if scrollable:
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            container = QWidget()
-            self._cards_layout = QVBoxLayout(container)
-            self._cards_layout.setContentsMargins(0, 0, 8, 8)
-            self._cards_layout.setSpacing(12)
-            scroll.setWidget(container)
-            root.addWidget(scroll, 1)
-        else:
-            self._cards_layout = QVBoxLayout()
-            self._cards_layout.setContentsMargins(0, 0, 0, 0)
-            self._cards_layout.setSpacing(12)
-            root.addLayout(self._cards_layout)
-
-        self._rebuild_cards("")
-
-    def _rebuild_cards(self, query: str) -> None:
-        while self._cards_layout.count():
-            item = self._cards_layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
-
-        categories = filter_command_categories(query)
-        if not categories:
-            empty = Card(subtle=True)
-            lbl = QLabel(f"No voice commands matching “{query.strip()}”.")
-            lbl.setObjectName("Muted")
-            empty.layout.addWidget(lbl)
-            self._cards_layout.addWidget(empty)
-            self._cards_layout.addStretch(1)
-            return
-
-        for cat in categories:
-            card = Card()
-            card.layout.addWidget(eyebrow(cat.title))
-            summary = QLabel(cat.summary)
-            summary.setObjectName("Muted")
-            summary.setWordWrap(True)
-            card.layout.addWidget(summary)
-
-            grid = QGridLayout()
-            grid.setHorizontalSpacing(16)
-            grid.setVerticalSpacing(8)
-            grid.setColumnStretch(0, 2)
-            grid.setColumnStretch(1, 3)
-
-            for row_idx, cmd in enumerate(cat.commands):
-                phrase_lbl = QLabel(f"“{cmd.phrase}”")
-                phrase_lbl.setObjectName("Heading")
-                phrase_lbl.setWordWrap(True)
-                phrase_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-
-                desc_text = cmd.description
-                if cmd.example:
-                    desc_text = f"{desc_text}  ({cmd.example})"
-                desc_lbl = QLabel(desc_text)
-                desc_lbl.setObjectName("Muted")
-                desc_lbl.setWordWrap(True)
-                desc_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-
-                grid.addWidget(phrase_lbl, row_idx, 0, Qt.AlignmentFlag.AlignTop)
-                grid.addWidget(desc_lbl, row_idx, 1, Qt.AlignmentFlag.AlignTop)
-
-            card.layout.addLayout(grid)
-            self._cards_layout.addWidget(card)
-
-        self._cards_layout.addStretch(1)
-
-
-class CommandsHelpDialog(QDialog):
-    """Standalone searchable Voice Commands Help dialog."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        load_bundled_fonts()
-        self.setWindowTitle("Keyless Voice Commands")
-        self.setWindowIcon(make_icon())
-        self.resize(760, 620)
-        self.setMinimumSize(580, 440)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 22, 24, 18)
-        layout.setSpacing(14)
-
-        header = QHBoxLayout()
-        titles = QVBoxLayout()
-        titles.setSpacing(2)
-        title = QLabel("Voice commands")
-        title.setObjectName("Title")
-        subtitle = QLabel(
-            "Look at a target and speak naturally. Chain trailing actions like “… and press enter” in one breath."
-        )
-        subtitle.setObjectName("Muted")
-        subtitle.setWordWrap(True)
-        titles.addWidget(title)
-        titles.addWidget(subtitle)
-        header.addLayout(titles, 1)
-        layout.addLayout(header)
-
-        self.help_widget = CommandsHelpWidget(self, scrollable=True)
-        layout.addWidget(self.help_widget, 1)
-
-        footer = QHBoxLayout()
-        footer.addStretch(1)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.close)
-        footer.addWidget(close_btn)
-        layout.addLayout(footer)
+def commands_as_dicts() -> list[dict]:
+    """Serialize all command categories for the HTTP web UI."""
+    return [asdict(cat) for cat in COMMAND_CATEGORIES]

@@ -113,7 +113,7 @@ def create_control_server(paths: "AppPaths | None" = None):  # type: ignore[name
     keeps the builder injectable so tests can exercise the 503 path.
     """
     from keyless.ipc.control import ControlServer
-    from keyless.ui.contract import build_ui_state
+    from keyless.core.ui_contract import build_ui_state
 
     server = ControlServer(paths=paths)
     server.ui_contract_builder = build_ui_state

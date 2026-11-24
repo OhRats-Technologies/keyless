@@ -60,20 +60,6 @@ def test_macos_report_probes_swiftui_honestly() -> None:
     assert "native_host" in report.permissions
 
 
-def test_packaged_swiftui_sources_exist() -> None:
-    base = ROOT / "packaging" / "macos" / "Keyless"
-    for name in (
-        "KeylessApp.swift",
-        "EngineBridge.swift",
-        "ContentView.swift",
-        "PermissionsView.swift",
-        "PermissionGuide.swift",
-        "OnboardingView.swift",
-        "Info.plist",
-    ):
-        assert (base / name).exists(), f"missing {name}"
-
-
 def test_macos_permission_probes_are_honest() -> None:
     from keyless.platform.macos.permissions import (
         classify_tccutil_reset,

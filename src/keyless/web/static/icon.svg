@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Keyless">
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#19191A" stroke="#2E2E32" stroke-width="6"/>
+  <!-- Outer precision focus ring -->
+  <circle cx="256" cy="256" r="136" fill="none" stroke="#F4F2EC" stroke-width="20"/>
+  <!-- Cardinal gaze ticks -->
+  <line x1="256" y1="84" x2="256" y2="148" stroke="#F4F2EC" stroke-width="20" stroke-linecap="round"/>
+  <line x1="256" y1="364" x2="256" y2="428" stroke="#F4F2EC" stroke-width="20" stroke-linecap="round"/>
+  <line x1="84" y1="256" x2="148" y2="256" stroke="#F4F2EC" stroke-width="20" stroke-linecap="round"/>
+  <line x1="364" y1="256" x2="428" y2="256" stroke="#F4F2EC" stroke-width="20" stroke-linecap="round"/>
+  <!-- Gaze-lock pupil -->
+  <circle cx="256" cy="256" r="50" fill="#C95B2B"/>
+  <circle cx="256" cy="256" r="18" fill="#F4F2EC"/>
+</svg>

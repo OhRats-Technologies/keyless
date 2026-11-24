@@ -13,7 +13,7 @@ from keyless.config.paths import HOME_ENV, default_paths
 from keyless.config.schema import AppConfig
 from keyless.core.lifecycle import NullController
 from keyless.ipc.control import ControlServer
-from keyless.ui.contract import build_ui_state
+from keyless.core.ui_contract import build_ui_state
 
 
 def _paths(tmp_path: Path):

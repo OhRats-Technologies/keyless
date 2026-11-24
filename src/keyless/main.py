@@ -544,15 +544,36 @@ def run_voice(
 
 @app.command("ui")
 def ui(
-    theme: str = typer.Option("system", help="Theme: system | light | dark"),
-    no_previews: bool = typer.Option(False, help="Disable live camera previews (headless/screenshots)"),
+    port: int = typer.Option(8766, help="Loopback port for the unified Keyless web UI"),
+    host: str = typer.Option("127.0.0.1", help="Bind address (loopback only)"),
+    no_open: bool = typer.Option(False, "--no-open", help="Start the server without launching a browser"),
 ) -> None:
-    """Open the main window, tray, setup, settings, history, and diagnostics."""
-    from keyless.ui.app import run_ui
+    """Start the local Keyless HTTP server and open the unified web UI in your browser."""
+    from keyless.daemon import build_control_server
+    from keyless.ipc.client import ControlClient
+    from keyless.web import open_browser_url
 
-    raise typer.Exit(
-        run_ui(theme=None if theme == "system" else theme, enable_previews=not no_previews)
-    )
+    url = f"http://{host}:{port}"
+    client = ControlClient(url, timeout=1.0)
+    if client.ping():
+        console.print(f"[green]Keyless is already running at {url}[/green]")
+        if not no_open:
+            open_browser_url(url)
+        return
+
+    server = build_control_server()
+    bound = server.start(host=host, port=port)
+    url = f"http://{host}:{bound}"
+    console.print(f"[green]Keyless web UI listening at {url}[/green] (Ctrl+C to stop)")
+    if not no_open:
+        open_browser_url(url)
+    try:
+        while True:
+            time.sleep(3600.0)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
 
 
 @app.command("serve")
@@ -722,27 +743,6 @@ _GAZE_METRIC_ROWS = (
     ("actions_per_correction", "actions/correction"),
     ("baseline_top1", "baseline_top1"),
 )
-
-
-@gaze_app.command("lab")
-def gaze_lab(
-    theme: str = typer.Option("system", help="Theme: system | light | dark"),
-    sessions_dir: Path | None = typer.Option(
-        None,
-        "--sessions-dir",
-        file_okay=False,
-        help="Optional directory of recorded sessions (defaults to <data_dir>/sessions).",
-    ),
-) -> None:
-    """Open the Keyless Lab UI for session curation, recall inspection, and Dream-RSI."""
-    from keyless.ui.lab import run_lab_ui
-
-    raise typer.Exit(
-        run_lab_ui(
-            theme=None if theme == "system" else theme,
-            sessions_dir=sessions_dir,
-        )
-    )
 
 
 @gaze_app.command("run")
@@ -1282,7 +1282,7 @@ def commands_cmd(
     search: str = typer.Option("", "--search", "-s", help="Filter voice commands by keyword"),
 ) -> None:
     """List all built-in voice commands grouped by category."""
-    from keyless.ui.commands_help import filter_command_categories
+    from keyless.core.commands import filter_command_categories
 
     categories = filter_command_categories(search)
     if not categories:

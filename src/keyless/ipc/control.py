@@ -42,6 +42,7 @@ state (controller, config specs, setup flow, doctor) and must not import
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import subprocess
 import sys
@@ -134,6 +135,7 @@ class ControlServer:
         # zero `keyless.ui` imports; see the module docstring for the split.
         self.ui_contract_builder = None
         self.ui_action_handler = None
+        self._gaze_manager = None
 
     @property
     def port(self) -> int:
@@ -448,6 +450,69 @@ class ControlServer:
                 handler.wfile.flush()
             self._events_stop.wait(self._EVENT_POLL_S)
 
+    @property
+    def gaze_manager(self):
+        if self._gaze_manager is None:
+            from keyless.web.runtime import WebGazeManager
+
+            self._gaze_manager = WebGazeManager(self.paths)
+        return self._gaze_manager
+
+    def _serve_gaze_stream(self, handler: BaseHTTPRequestHandler) -> None:
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Cache-Control", "no-cache")
+        handler.send_header("Connection", "keep-alive")
+        handler.end_headers()
+        while not self._events_stop.is_set():
+            snap = self.gaze_manager.gaze_status()
+            payload = json.dumps(snap, separators=(",", ":"), default=str).encode()
+            handler.wfile.write(b"event: gaze\ndata: " + payload + b"\n\n")
+            handler.wfile.flush()
+            delay = 0.066 if snap.get("running") else 0.75
+            if self._events_stop.wait(delay):
+                break
+
+    @staticmethod
+    def _serve_static(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
+        from keyless.web import STATIC_DIR
+
+        root = STATIC_DIR.resolve()
+        clean = "index.html" if rel_path in ("", "/") else rel_path.lstrip("/")
+        target = (root / clean).resolve()
+        if target != root and root not in target.parents:
+            _json(handler, {"error": "forbidden"}, status=403)
+            return
+        if not target.exists() or not target.is_file():
+            _json(handler, {"error": f"asset not found: {clean}"}, status=404)
+            return
+        body = target.read_bytes()
+        ctype, _ = mimetypes.guess_type(target.name)
+        if not ctype:
+            ctype = "application/octet-stream"
+        if ctype.startswith("text/") or ctype in ("application/javascript", "image/svg+xml"):
+            ctype = f"{ctype}; charset=utf-8"
+        handler.send_response(200)
+        handler.send_header("Content-Type", ctype)
+        handler.send_header("Content-Length", str(len(body)))
+        handler.send_header("Cache-Control", "no-cache")
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    @staticmethod
+    def _read_json_body(handler: BaseHTTPRequestHandler) -> dict | None:
+        length = int(handler.headers.get("Content-Length", "0") or 0)
+        raw = handler.rfile.read(length) if length > 0 else b"{}"
+        try:
+            parsed = json.loads(raw or b"{}")
+        except ValueError:
+            _json(handler, {"error": "invalid JSON"}, status=400)
+            return None
+        if not isinstance(parsed, dict):
+            _json(handler, {"error": "expected a JSON object"}, status=400)
+            return None
+        return parsed
+
     def _make_handler(self) -> type[BaseHTTPRequestHandler]:
         server = self
 
@@ -644,11 +709,142 @@ class ControlServer:
                     if length:
                         self.rfile.read(length)
                     _json(self, server.cancel_model_download())
+                elif self.command == "GET" and path == "/":
+                    server._serve_static(self, "index.html")
+                elif self.command == "GET" and path.startswith("/assets/"):
+                    server._serve_static(self, path[len("/assets/"):])
+                elif self.command == "GET" and path == "/v1/commands":
+                    from keyless.core.commands import commands_as_dicts
+
+                    _json(self, {"categories": commands_as_dicts()})
+                elif self.command == "GET" and path == "/v1/gaze/status":
+                    _json(self, server.gaze_manager.gaze_status())
+                elif self.command == "POST" and path == "/v1/gaze/start":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    try:
+                        _json(
+                            self,
+                            server.gaze_manager.start_gaze(
+                                min_clicks=int(payload.get("min_clicks", 5)),
+                                ridge_alpha=float(payload.get("ridge_alpha", 0.01)),
+                                adapt_clicks=bool(payload.get("adapt_clicks", True)),
+                            ),
+                        )
+                    except Exception as exc:
+                        _json(self, {"error": str(exc)}, status=500)
+                elif self.command == "POST" and path == "/v1/gaze/stop":
+                    server._read_json_body(self)
+                    _json(self, server.gaze_manager.stop_gaze())
+                elif self.command == "POST" and path == "/v1/gaze/reset":
+                    server._read_json_body(self)
+                    _json(self, server.gaze_manager.reset_adaptation())
+                elif self.command == "POST" and path == "/v1/gaze/undo":
+                    server._read_json_body(self)
+                    _json(self, server.gaze_manager.undo_last_click())
+                elif self.command == "GET" and path == "/v1/gaze/stream":
+                    with server._event_lock:
+                        if len(server._event_streams) >= server._MAX_EVENT_STREAMS:
+                            _json(self, {"error": "too many concurrent streams"}, status=503)
+                            return
+                        server._event_streams.add(self)
+                    try:
+                        server._serve_gaze_stream(self)
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        pass
+                    finally:
+                        with server._event_lock:
+                            server._event_streams.discard(self)
+                elif self.command == "GET" and path == "/v1/sessions":
+                    _json(self, server.gaze_manager.list_sessions())
+                elif self.command == "GET" and path == "/v1/sessions/recall":
+                    _json(self, server.gaze_manager.recall_summary())
+                elif self.command == "POST" and path == "/v1/sessions/sample":
+                    server._read_json_body(self)
+                    _json(self, server.gaze_manager.create_sample_session())
+                elif self.command == "POST" and path == "/v1/sessions/record/start":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    try:
+                        _json(
+                            self,
+                            server.gaze_manager.start_recording(
+                                save_screenshots=bool(payload.get("save_screenshots", True)),
+                                redact_text=bool(payload.get("redact_text", False)),
+                                use_ocr=bool(payload.get("use_ocr", True)),
+                            ),
+                        )
+                    except PermissionError as exc:
+                        from keyless.web.runtime import MANUAL_INPUT_CMD
+
+                        _json(
+                            self,
+                            {
+                                "error": str(exc),
+                                "needs_input_permission": True,
+                                "manual_command": MANUAL_INPUT_CMD,
+                            },
+                            status=403,
+                        )
+                    except Exception as exc:
+                        _json(self, {"error": str(exc)}, status=500)
+                elif self.command == "POST" and path == "/v1/sessions/record/stop":
+                    server._read_json_body(self)
+                    _json(self, server.gaze_manager.stop_recording())
+                elif self.command == "POST" and path == "/v1/sessions/export":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    try:
+                        _json(
+                            self,
+                            server.gaze_manager.export_split(
+                                out_dir=payload.get("out_dir"),
+                                seed=int(payload.get("seed", 42)),
+                            ),
+                        )
+                    except Exception as exc:
+                        _json(self, {"error": str(exc)}, status=400)
+                elif self.command == "POST" and path == "/v1/permissions/input":
+                    server._read_json_body(self)
+                    _json(self, server.gaze_manager.grant_input_permission())
+                elif path.startswith("/v1/sessions/"):
+                    parts = [p for p in path[len("/v1/sessions/"):].split("/") if p]
+                    try:
+                        if self.command == "GET" and len(parts) == 1:
+                            _json(self, server.gaze_manager.get_session(parts[0]))
+                        elif self.command == "DELETE" and len(parts) == 1:
+                            _json(self, server.gaze_manager.remove_session(parts[0]))
+                        elif self.command == "GET" and len(parts) == 3 and parts[1] == "blobs":
+                            blob = server.gaze_manager.read_blob(parts[0], parts[2])
+                            ctype, _ = mimetypes.guess_type(parts[2])
+                            self.send_response(200)
+                            self.send_header("Content-Type", ctype or "application/octet-stream")
+                            self.send_header("Content-Length", str(len(blob)))
+                            self.end_headers()
+                            self.wfile.write(blob)
+                        elif self.command == "PATCH" and len(parts) == 3 and parts[1] == "events":
+                            payload = server._read_json_body(self)
+                            if payload is None:
+                                return
+                            _json(self, server.gaze_manager.patch_event(parts[0], int(parts[2]), payload))
+                        elif self.command == "DELETE" and len(parts) == 3 and parts[1] == "events":
+                            _json(self, server.gaze_manager.remove_event(parts[0], int(parts[2])))
+                        else:
+                            _json(self, {"error": f"unknown route {path}"}, status=404)
+                    except FileNotFoundError as exc:
+                        _json(self, {"error": str(exc)}, status=404)
+                    except (ValueError, IndexError) as exc:
+                        _json(self, {"error": str(exc)}, status=400)
                 else:
                     _json(self, {"error": f"unknown route {path}"}, status=404)
 
             do_GET = _route  # type: ignore[assignment]
             do_POST = _route  # type: ignore[assignment]
+            do_PATCH = _route  # type: ignore[assignment]
+            do_DELETE = _route  # type: ignore[assignment]
 
         return Handler
 
@@ -672,6 +868,12 @@ class ControlServer:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
+        if self._gaze_manager is not None:
+            try:
+                self._gaze_manager.shutdown()
+            except Exception:
+                pass
+            self._gaze_manager = None
         try:
             self.controller.quit()
         except Exception:
