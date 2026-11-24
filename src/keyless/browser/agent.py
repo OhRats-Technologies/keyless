@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
@@ -74,9 +75,26 @@ Available tools and examples:
 Rules:
 - For "find a video about X" or "play a video about X": first call `search_youtube` with `text: "X"`, then on the results page call `click` on a matching video link's `ref`, then call `done`!
 - For `click` and `type`, `ref` MUST be a real id like `"e5"` from Interactive Elements (without brackets). Never pass `ref: ""`.
+- After a single `click` or `press_key` succeeds for a direct click/press/toggle request (such as Theater mode, Like, Subscribe, Mute, Captions), immediately call `done` — NEVER click a toggle button twice.
 - Call `inspect_visual` ONLY when the DOM manifest lacks visual cues needed to pick the right element.
 - Before irreversible actions (payments, deleting data, sending messages/emails, posting publicly), call `ask_confirm` with a brief question in `text`.
 - Keep `thought` to 1 short sentence."""
+
+
+_SINGLE_ACTION_GOAL_RE = re.compile(
+    r"^(?:(?:uh|um|please|can you|could you|just)\s+)*"
+    r"(?:click|press|select|tap|toggle)\s+",
+    re.IGNORECASE,
+)
+_MULTI_STEP_CONNECTOR_RE = re.compile(r"\b(?:and|then|after|next)\b", re.IGNORECASE)
+
+
+def _is_single_action_goal(goal: str) -> bool:
+    """Return True when the user asked for one direct click/press/toggle action."""
+    cleaned = (goal or "").strip(" .,!?\"'")
+    if not cleaned or _MULTI_STEP_CONNECTOR_RE.search(cleaned):
+        return False
+    return bool(_SINGLE_ACTION_GOAL_RE.match(cleaned))
 
 
 class VoiceBrowserAgent:
@@ -171,6 +189,8 @@ class VoiceBrowserAgent:
         self._cancelled = False
         history: list[str] = []
         pending_image: bytes | None = None
+        single_action = _is_single_action_goal(goal)
+        recent_sigs: list[tuple[str, str, str]] = []
 
         try:
             await self.session.start()
@@ -208,8 +228,27 @@ class VoiceBrowserAgent:
                     history.append(f"step {step}: user confirmed '{question}'")
                     continue
 
+                # Prevent infinite repeat or A->B->A toggle ping-pong on the same page
+                if action.tool in ("click", "press_key"):
+                    sig = (
+                        obs.url,
+                        action.tool,
+                        (action.ref or action.key or action.text).strip().strip("[]"),
+                    )
+                    if recent_sigs and (
+                        recent_sigs[-1] == sig
+                        or (len(recent_sigs) >= 2 and recent_sigs[-2] == sig)
+                    ):
+                        msg = "Stopped repeating the same browser action."
+                        print(f"  [Browser] loop guard triggered on {sig}; finishing.")
+                        self._say(msg)
+                        return msg
+                    recent_sigs.append(sig)
+
+                succeeded = False
                 try:
                     outcome = await self._execute_tool(action)
+                    succeeded = True
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -218,6 +257,12 @@ class VoiceBrowserAgent:
 
                 print(f"  [Browser] step {step}: {action.tool}({action.ref or action.url or action.text}) -> {outcome}")
                 history.append(f"step {step}: {action.tool} -> {outcome}")
+
+                # Single-action commands ("press theater mode", "click subscribe", "press T once")
+                # finish immediately after the first successful click/press_key so toggles never bounce.
+                if succeeded and single_action and action.tool in ("click", "press_key"):
+                    self._say("Done.")
+                    return outcome
 
             msg = "Reached the maximum number of browser steps."
             self._say(msg)

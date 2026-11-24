@@ -491,6 +491,27 @@ class VoiceCommandRouter:
             self.pointer.key_combo("LEFTALT", "F10")
             return DispatchResult("deterministic", raw, "maximize_window")
 
+        # 0.55. Split / snap / tile active OS window (Super + Arrow keys)
+        m_snap = re.match(
+            r"^(?:(?:move|snap|tile|split)\s+(?:(?:this|the)\s+)?(?:window\s+)?(?:to\s+)?(?:the\s+)?|window\s+)"
+            r"(left|right|up|down)$",
+            norm,
+        )
+        if m_snap:
+            direction = m_snap.group(1)
+            key_map = {
+                "left": ecodes.KEY_LEFT,
+                "right": ecodes.KEY_RIGHT,
+                "up": ecodes.KEY_UP,
+                "down": ecodes.KEY_DOWN,
+            }
+            self.pointer.key_combo(ecodes.KEY_LEFTMETA, key_map[direction])
+            return DispatchResult("deterministic", raw, f"window_snap_{direction}")
+
+        if norm in ("unmaximize", "unmaximize window", "restore window", "restore this window"):
+            self.pointer.key_combo(ecodes.KEY_LEFTMETA, ecodes.KEY_DOWN)
+            return DispatchResult("deterministic", raw, "window_snap_down")
+
         # 0.6. Explicit next/previous window cycling: strip leading fillers ("a", "the", "and",
         # "uh", "go to", "switch to", "move to") AND catch common STT near-homophones
         # ("text window", "net window", "nest window", "ex window") so they NEVER open OS search!
@@ -677,7 +698,11 @@ class VoiceCommandRouter:
                 return DispatchResult("browser_confirm", raw, "Cancelled browser action")
 
         # 2. Immediate barge-in cancellation while the agent is mid-task
-        if br.agent.is_running and (cmd in _BARGE_IN_STOP or norm in _BARGE_IN_STOP):
+        if br.agent.is_running and (
+            cmd in _BARGE_IN_STOP
+            or norm in _BARGE_IN_STOP
+            or norm.startswith(("stop ", "cancel ", "abort "))
+        ):
             br.cancel()
             return DispatchResult("browser_cancel", raw, "Cancelled active browser task")
 
@@ -730,6 +755,33 @@ class VoiceCommandRouter:
             if norm in ("mute video", "unmute video", "toggle mute"):
                 if br.run_fast_action("media_key", "m"):
                     return DispatchResult("browser_fast", raw, "media_key:m")
+            if norm in (
+                "theater mode",
+                "theatre mode",
+                "press theater mode",
+                "press theatre mode",
+                "enter theater mode",
+                "enter theatre mode",
+                "exit theater mode",
+                "exit theatre mode",
+                "toggle theater mode",
+                "toggle theatre mode",
+            ):
+                if br.run_fast_action("media_key", "t"):
+                    return DispatchResult("browser_fast", raw, "media_key:t")
+            if norm in (
+                "captions",
+                "subtitles",
+                "toggle captions",
+                "toggle subtitles",
+                "turn on captions",
+                "turn off captions",
+            ):
+                if br.run_fast_action("media_key", "c"):
+                    return DispatchResult("browser_fast", raw, "media_key:c")
+            if norm in ("miniplayer", "mini player", "toggle miniplayer"):
+                if br.run_fast_action("media_key", "i"):
+                    return DispatchResult("browser_fast", raw, "media_key:i")
 
             m_tab = _TAB_SWITCH_RE.match(norm)
             if m_tab and m_tab.group(1) in _TAB_NUM_MAP:

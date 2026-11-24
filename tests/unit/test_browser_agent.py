@@ -384,3 +384,95 @@ def test_bare_click_with_dom_candidate_and_filler_prefixed_browser_commands() ->
     assert res_uh_type.route == "type"
     assert ptr3.typed_texts[-1] == "hello world"
 
+
+def test_theater_mode_fast_reflex_barge_in_and_loop_guards() -> None:
+    # 1. Single-action goal ("Press subscribe") executes ONCE and stops immediately
+    session1 = _FakeSession()
+    calls1 = {"n": 0}
+
+    async def _always_click(_s: str, _u: str, _i: bytes | None) -> AgentAction:
+        calls1["n"] += 1
+        return AgentAction(thought="click", tool="click", ref="e37")
+
+    agent1 = VoiceBrowserAgent(session1, planner=_always_click, max_steps=10)  # type: ignore[arg-type]
+    asyncio.run(agent1.run_goal("Press subscribe"))
+    assert calls1["n"] == 1
+    assert session1.actions == [("click", "e37")]
+
+    # 2. Multi-step goal with A->B->A toggle oscillation trips loop guard instead of looping 10x
+    session2 = _FakeSession()
+    seq = ["e37", "e17", "e37", "e17", "e37"]
+    idx = {"i": 0}
+
+    async def _oscillate(_s: str, _u: str, _i: bytes | None) -> AgentAction:
+        ref = seq[idx["i"]]
+        idx["i"] += 1
+        return AgentAction(thought="toggle", tool="click", ref=ref)
+
+    agent2 = VoiceBrowserAgent(session2, planner=_oscillate, max_steps=10)  # type: ignore[arg-type]
+    res_msg = asyncio.run(agent2.run_goal("Open settings and toggle view"))
+    assert "Stopped repeating" in res_msg
+    assert len(session2.actions) == 2
+
+    # 3. Theater mode fast reflex + "Uh stop pressing T." barge-in
+    class _FakeAgent:
+        is_running = False
+        awaiting_confirmation = False
+
+    class _FakeBrowserSession:
+        is_running = True
+
+    class _FakeRuntime:
+        def __init__(self) -> None:
+            self.session = _FakeBrowserSession()
+            self.agent = _FakeAgent()
+            self.fast_calls: list[tuple[str, Any]] = []
+            self.cancelled = False
+
+        def run_fast_action(self, action_name: str, arg: Any = None) -> bool:
+            self.fast_calls.append((action_name, arg))
+            return True
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    rt = _FakeRuntime()
+    router = VoiceCommandRouter(
+        pointer=DryRunPointerBackend(1920, 1080),
+        browser_runtime=rt,  # type: ignore[arg-type]
+    )
+    for phrase in ("Press theater mode.", "Enter theatre mode", "theater mode"):
+        res = router.dispatch(phrase)
+        assert res.route == "browser_fast"
+        assert rt.fast_calls[-1] == ("media_key", "t")
+
+    rt.agent.is_running = True
+    res_stop = router.dispatch("Uh stop pressing T.")
+    assert res_stop.route == "browser_cancel"
+    assert rt.cancelled is True
+
+
+def test_window_split_snap_super_arrow_keys() -> None:
+    from evdev import ecodes
+    from keyless.audio.active_listener import _VALID_COMMAND_PREFIXES
+
+    ptr = DryRunPointerBackend(1920, 1080)
+    router = VoiceCommandRouter(pointer=ptr)
+
+    cases = [
+        ("Move window left", (ecodes.KEY_LEFTMETA, ecodes.KEY_LEFT), "window_snap_left"),
+        ("Move the window to the right.", (ecodes.KEY_LEFTMETA, ecodes.KEY_RIGHT), "window_snap_right"),
+        ("Snap window left", (ecodes.KEY_LEFTMETA, ecodes.KEY_LEFT), "window_snap_left"),
+        ("Split right", (ecodes.KEY_LEFTMETA, ecodes.KEY_RIGHT), "window_snap_right"),
+        ("Tile window left", (ecodes.KEY_LEFTMETA, ecodes.KEY_LEFT), "window_snap_left"),
+        ("Move window up", (ecodes.KEY_LEFTMETA, ecodes.KEY_UP), "window_snap_up"),
+        ("Restore window", (ecodes.KEY_LEFTMETA, ecodes.KEY_DOWN), "window_snap_down"),
+    ]
+    for phrase, expected_combo, expected_detail in cases:
+        assert phrase.lower().rstrip(".").startswith(_VALID_COMMAND_PREFIXES)
+        res = router.dispatch(phrase)
+        assert res.route == "deterministic"
+        assert res.detail == expected_detail
+        assert ptr.combos[-1] == expected_combo
+
+
