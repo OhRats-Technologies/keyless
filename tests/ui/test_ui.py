@@ -91,12 +91,12 @@ def test_onboarding_flow_persists_and_resumes(tmp_path: Path) -> None:
     flow.advance()
     assert flow.step is OnboardingStep.DEVICES
     flow.advance(unresolved=True)
-    assert flow.step is OnboardingStep.CALIBRATION
+    assert flow.step is OnboardingStep.PERMISSIONS
     assert "welcome" in flow.state.completed
     assert "devices" in flow.state.unresolved
 
     resumed = OnboardingFlow(paths)
-    assert resumed.step is OnboardingStep.CALIBRATION
+    assert resumed.step is OnboardingStep.PERMISSIONS
     assert "devices" in resumed.state.unresolved
     resumed.back()
     assert resumed.step is OnboardingStep.DEVICES
@@ -132,7 +132,7 @@ def test_onboarding_window_resumes_and_reaches_ready(qapp, tmp_path: Path, monke
         window.next()  # welcome -> devices
         assert flow.step is OnboardingStep.DEVICES
         window.next()  # devices -> permissions
-        assert flow.step is OnboardingStep.CALIBRATION
+        assert flow.step is OnboardingStep.PERMISSIONS
         window.next()  # permissions -> ready
         assert flow.step is OnboardingStep.READY
         window.next()  # finish

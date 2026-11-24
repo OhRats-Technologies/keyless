@@ -126,8 +126,8 @@ final class EngineBridge: ObservableObject {
         runtime = (try? await get("runtime")) ?? runtime
     }
 
-    func start() async { await post("start") }
-    func pause() async { await post("pause") }
+    func start() async { await uiAction(["action": "start"]) }
+    func pause() async { await uiAction(["action": "pause"]) }
 
     // MARK: Contract document and actions
 
@@ -140,7 +140,7 @@ final class EngineBridge: ObservableObject {
     /// Post a contract action (`POST /v1/ui/action`) and refetch. The payload
     /// is built by the row renderer from the row's own action/key/id fields,
     /// so new contract rows need no shell code.
-    func uiAction(_ payload: [String: String]) async {
+    func uiAction(_ payload: [String: Any]) async {
         _ = try? await postJSON("ui/action", payload)
         await refreshUI()
     }
@@ -183,32 +183,29 @@ final class EngineBridge: ObservableObject {
         } catch {}
     }
 
-    /// Advance/restart the engine-owned setup state machine.
+    /// Advance/restart the engine-owned setup state machine through the
+    /// contract action registry (no compatibility route call).
     func setupAction(_ action: String, step: String? = nil) async {
-        var payload: [String: String] = ["action": action]
-        if let step { payload["step"] = step }
-        _ = try? await postJSON("setup", payload)
+        var arg: [String: String] = ["action": action]
+        if let step { arg["step"] = step }
+        _ = try? await postJSON("ui/action", ["action": "setup", "arg": arg])
         await refresh()
     }
 
     /// The engine owns one verified background download; this only starts or
     /// stops it and renders the progress it publishes.
     func downloadModel() async {
-        _ = try? await postJSON("models/download", [:])
+        _ = try? await postJSON("ui/action", ["action": "models_download"])
         await refresh()
     }
 
     func cancelModelDownload() async {
-        _ = try? await postJSON("models/cancel", [:])
+        _ = try? await postJSON("ui/action", ["action": "models_cancel"])
         await refresh()
     }
 
     func saveConfig(_ patch: [String: Any]) async {
-        var req = URLRequest(url: baseURL.appending(path: "/v1/config"))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: patch)
-        _ = try? await URLSession.shared.data(for: req)
+        _ = try? await postJSON("ui/action", ["action": "set_config", "arg": patch])
         await refresh()
     }
 
@@ -238,7 +235,7 @@ final class EngineBridge: ObservableObject {
         await refresh()
     }
 
-    private func postJSON(_ route: String, _ payload: [String: String]) async throws -> Data {
+    private func postJSON(_ route: String, _ payload: [String: Any]) async throws -> Data {
         var req = URLRequest(url: baseURL.appending(path: "/v1/\(route)"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
