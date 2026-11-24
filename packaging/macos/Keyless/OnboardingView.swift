@@ -1,21 +1,20 @@
 // OnboardingView: immersive first-run setup rendered from the engine-owned
-// setup document. The step order is the canonical Welcome → Devices →
-// Calibration → Ready used by the Linux shell and `keyless.ui.onboarding.flow`.
+// setup document. The step order comes from the engine's `steps` list — the
+// same canonical Welcome → Devices → Permissions → Ready the Linux shell and
+// `keyless.ui.onboarding.flow` drive. Nothing here hardcodes a step order.
 //
 // macOS owns only the OS interaction: TCC prompts, deep links, and relaunch.
-// Eye alignment is voice-guided inside this window; nothing here opens a
-// full-screen calibration overlay.
 
 import SwiftUI
 
 enum SetupStep: String, CaseIterable {
-    case welcome, devices, calibration, ready
+    case welcome, devices, permissions, ready
 
     var title: String {
         switch self {
         case .welcome: return "Welcome"
         case .devices: return "Devices"
-        case .calibration: return "Eye cursor"
+        case .permissions: return "Permissions"
         case .ready: return "Ready"
         }
     }
@@ -79,6 +78,14 @@ final class OnboardingFlow: ObservableObject {
         return SetupStep(rawValue: raw) ?? .welcome
     }
 
+    /// The canonical ordered steps come from the engine's setup document; the
+    /// shell never keeps its own step list. Unknown ids fall back to the
+    /// engine's canonical order so a mid-upgrade engine still renders.
+    var orderedSteps: [SetupStep] {
+        let mapped = (engine.setup?.steps ?? []).compactMap { SetupStep(rawValue: $0) }
+        return mapped.isEmpty ? SetupStep.allCases : mapped
+    }
+
     func go(to step: SetupStep) {
         Task { await engine.setupAction("go_to", step: step.rawValue) }
     }
@@ -120,8 +127,6 @@ final class OnboardingFlow: ObservableObject {
     var allReady: Bool {
         (required + optional).allSatisfy { grants[$0] == .granted }
     }
-
-    var calibrationReady: Bool { engine.calibrationReady }
 
     func refresh() {
         let guide = PermissionGuideController.shared
@@ -240,7 +245,7 @@ struct OnboardingView: View {
                     case .devices:
                         ScrollView { devicesStep }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    case .calibration: calibrationStep
+                    case .permissions: permissionsStep
                     case .ready: readyStep
                     }
                 }
@@ -306,7 +311,7 @@ struct OnboardingView: View {
     }
 
     private var currentStepIndex: Int {
-        SetupStep.allCases.firstIndex(of: flow.step) ?? 0
+        flow.orderedSteps.firstIndex(of: flow.step) ?? 0
     }
 
     private var stepper: some View {
@@ -332,7 +337,7 @@ struct OnboardingView: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(item.step == flow.step ? .white : .white.opacity(0.42))
                 }
-                if item.step != SetupStep.allCases.last {
+                if item.step != flow.orderedSteps.last {
                     Rectangle()
                         .fill(item.index < currentStepIndex
                               ? Tokens.Dark.accent.opacity(0.6) : Tokens.Dark.text.opacity(0.12))
@@ -367,7 +372,7 @@ struct OnboardingView: View {
                 Button("Continue") { flow.next() }
                     .buttonStyle(.borderedProminent).controlSize(.large)
                     .disabled(!flow.requiredReady || !engine.modelReady)
-            case .calibration:
+            case .permissions:
                 Button("Continue") { flow.next() }
                     .buttonStyle(.borderedProminent).controlSize(.large)
             case .ready:
@@ -462,10 +467,13 @@ struct OnboardingView: View {
         }
     }
 
-    private var calibrationStep: some View {
+    // The Permissions step renders the engine's setup screen (Steps /
+    // Permissions / Gaze engine sections); the cards below are the macOS TCC
+    // adapter that drives the same grants the contract reports.
+    private var permissionsStep: some View {
         VStack(spacing: 0) {
-            stepTitle("Gaze engine v2",
-                      "No calibration grid. Voice control is ready now; the target-level model is in development.")
+            stepTitle("Grant access",
+                      "Voice control is ready now; the target-level gaze model is in development.")
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 12) {
                     ZStack {
@@ -534,7 +542,7 @@ struct OnboardingView: View {
     // MARK: Components
 
     private var stepItems: [StepItem] {
-        SetupStep.allCases.enumerated().map { StepItem(index: $0.offset, step: $0.element) }
+        flow.orderedSteps.enumerated().map { StepItem(index: $0.offset, step: $0.element) }
     }
 
     private func stepTitle(_ title: String, _ subtitle: String) -> some View {

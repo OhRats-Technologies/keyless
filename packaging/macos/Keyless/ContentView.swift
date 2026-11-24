@@ -57,10 +57,7 @@ struct ContentView: View {
         window.center()
     }
 
-    private func openSetup(_ step: SetupStep?) {
-        if let step {
-            Task { await engine.setupAction("go_to", step: step.rawValue) }
-        }
+    private func openSetup() {
         showingOnboarding = true
     }
 }
@@ -70,7 +67,7 @@ struct ContentView: View {
 private struct SidebarView: View {
     @ObservedObject var engine: EngineBridge
     @Binding var selection: ContentView.AppTab
-    let openSetup: (SetupStep?) -> Void
+    let openSetup: () -> Void
     @Environment(\.colorScheme) private var scheme
 
     private var theme: Theme { Theme(scheme) }
@@ -103,11 +100,10 @@ private struct SidebarView: View {
                 .padding(.vertical, 4)
             }
 
-            if !engine.setupComplete || !engine.calibrationReady {
+            if !engine.setupComplete {
                 Section("Setup") {
-                    Button { openSetup(nil) } label: {
-                        Label(engine.setupComplete ? "Calibrate" : "Finish setup",
-                              systemImage: "sparkles")
+                    Button { openSetup() } label: {
+                        Label("Finish setup", systemImage: "sparkles")
                     }
                     .buttonStyle(.plain)
                 }
@@ -138,7 +134,7 @@ struct HomeView: View {
     @ObservedObject var engine: EngineBridge
     @ObservedObject var audio: AudioLevelMonitor
     @Environment(\.colorScheme) private var scheme
-    let openSetup: (SetupStep?) -> Void
+    let openSetup: () -> Void
 
     private var theme: Theme { Theme(scheme) }
 
@@ -146,6 +142,18 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 hero
+                // The engine contract document drives Readiness, Devices and
+                // Recent; the hero stays shell chrome and covers Status/Action.
+                if let home = engine.ui?.home {
+                    SectionListView(
+                        sections: home.sections.filter {
+                            $0.title != "Status" && $0.title != "Action"
+                        },
+                        onAction: { row in
+                            Task { await engine.uiAction(contractActionPayload(for: row)) }
+                        }
+                    )
+                }
                 microphone
             }
             .padding(28)
@@ -159,7 +167,7 @@ struct HomeView: View {
     }
 
     private var needsSetup: Bool {
-        !engine.setupComplete || !engine.calibrationReady
+        !engine.setupComplete
     }
 
     private var hero: some View {
@@ -257,7 +265,6 @@ struct HomeView: View {
         if engine.detail.contains("Not connected") { return "Engine offline" }
         if engine.state == "listening" { return "Listening." }
         if !engine.setupComplete { return "Finish setup" }
-        if !engine.calibrationReady { return "Gaze model v2 pending" }
         return "Ready when you are."
     }
 
@@ -269,10 +276,7 @@ struct HomeView: View {
             return "Keyless is active. Look at something and say “click”."
         }
         if !engine.setupComplete {
-            return "A short setup connects your devices and aligns the eye cursor."
-        }
-        if !engine.calibrationReady {
-            return "The target-level gaze model is in development; voice control is ready."
+            return "A short setup connects your devices and permissions."
         }
         return "Start listening whenever you like. Pause here or from the menu bar."
     }
@@ -284,11 +288,12 @@ struct HomeView: View {
 
     private func primaryAction() {
         if needsSetup {
-            openSetup(engine.calibrationReady ? nil : .calibration)
-        } else if engine.state == "listening" {
-            Task { await engine.pause() }
+            openSetup()
         } else {
-            Task { await engine.start() }
+            // The engine's action registry owns start/pause; the shell only
+            // posts the contract action for the current state.
+            let action = engine.state == "listening" ? "pause" : "start"
+            Task { await engine.uiAction(["action": action]) }
         }
     }
 }
@@ -300,28 +305,23 @@ struct ActivityView: View {
 
     var body: some View {
         Group {
-            if engine.recent.isEmpty {
+            if let activity = engine.ui?.activity,
+               activity.sections.contains(where: { !$0.rows.isEmpty }) {
+                // Rows come from the engine contract; the shell adds layout only.
+                List {
+                    SectionListView(
+                        sections: activity.sections,
+                        onAction: { row in
+                            Task { await engine.uiAction(contractActionPayload(for: row)) }
+                        }
+                    )
+                }
+            } else {
                 ContentUnavailableView(
                     "No activity yet",
                     systemImage: "clock.arrow.circlepath",
                     description: Text("Actions you take with Keyless will appear here.")
                 )
-            } else {
-                List(engine.recent) { item in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(item.transcript).font(.body.weight(.medium))
-                        HStack(spacing: 8) {
-                            Text(item.route)
-                            Text("·")
-                            Text(item.target.isEmpty ? "No target" : item.target)
-                            Text("·")
-                            Text(item.result)
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                }
             }
         }
         .navigationTitle("Activity")
@@ -332,97 +332,25 @@ struct ActivityView: View {
 
 struct SettingsView: View {
     @ObservedObject var engine: EngineBridge
-    let openSetup: (SetupStep?) -> Void
+    let openSetup: () -> Void
     let showOnboarding: () -> Void
     @State private var confirmingReset = false
-    @State private var applyingBackend = false
     @Environment(\.colorScheme) private var scheme
 
     private var theme: Theme { Theme(scheme) }
 
     var body: some View {
         Form {
-            Section {
-                LabeledContent {
-                    HStack(spacing: 7) {
-                        Circle().fill(stateColor).frame(width: 8, height: 8)
-                        Text(engine.state.capitalized)
+            // All configurable rows come from the engine contract document;
+            // the shell contributes only macOS-specific chrome (TCC adapter
+            // and diagnostics).
+            if let settings = engine.ui?.settings {
+                SectionListView(
+                    sections: settings.sections,
+                    onAction: { row in
+                        Task { await engine.uiAction(contractActionPayload(for: row)) }
                     }
-                } label: {
-                    Label("Status", systemImage: "bolt.fill")
-                }
-                LabeledContent("Connection") {
-                    Text(engine.baseURL.absoluteString).foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("Engine")
-            }
-
-            Section {
-                Toggle("Always listen for voice commands", isOn: boolBinding("always_on_voice"))
-                Toggle("Only act on command phrases", isOn: boolBinding("require_command_prefix"))
-                Toggle("Pop-click (lip pop triggers a click)", isOn: boolBinding("enable_pop_click"))
-                LabeledContent("Push-to-talk key") {
-                    let key = stringBinding("ptt_hotkey").wrappedValue
-                    Text(key.isEmpty ? "—" : key).foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("Voice")
-            }
-
-            Section {
-                LabeledContent("Speech model") {
-                    Text(((engine.doctor["stt"] as? [String: Any])?["selected"] as? String) ?? "Unknown")
-                        .foregroundStyle(.secondary)
-                }
-                if cuaDriverReady {
-                    Picker("Click & key driver", selection: actionBackendBinding) {
-                        Text("Built-in").tag("native")
-                        Text("cua-driver").tag("cua")
-                    }
-                    .disabled(applyingBackend)
-                } else {
-                    LabeledContent("Click & key driver") {
-                        Text("Built-in").foregroundStyle(.secondary)
-                    }
-                }
-                LabeledContent("Driver runtime") {
-                    HStack(spacing: 6) {
-                        if applyingBackend {
-                            ProgressView().controlSize(.mini)
-                            Text("Restarting…").foregroundStyle(.secondary)
-                        } else {
-                            Circle().fill(cuaDriverReady ? theme.success : theme.warning)
-                                .frame(width: 7, height: 7)
-                            Text(cuaDriverReady ? "Ready · \(cuaDriverVersion)" : "Not downloaded")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            } header: {
-                Text("Speech & actions")
-            } footer: {
-                Text(cuaDriverReady
-                     ? "cua-driver draws the eye cursor in its own click-through overlay and delivers clicks, typing and hotkeys through the app's accessibility tree. Your mouse pointer is never warped. Changing this restarts listening."
-                     : "To switch drivers, install the pinned runtime: keyless models download cua-driver")
-            }
-
-            Section {
-                Picker("Camera setup", selection: stringBinding("camera_mode")) {
-                    Text("Automatic").tag("auto")
-                    Text("One camera").tag("mono")
-                    Text("Two cameras").tag("stereo")
-                }
-                Toggle("Show eye cursor (doesn't move your mouse)", isOn: eyeCursorBinding)
-                Text("The target-level gaze model v2 is in development. It will learn from your own clicks and corrections; voice control works now.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                LabeledContent("Gaze model") {
-                    Text("v2 pending").foregroundStyle(.secondary)
-                }
-                Button("Run setup…") { showOnboarding() }
-            } header: {
-                Text("Camera & gaze")
+                )
             }
 
             Section {
@@ -431,30 +359,12 @@ struct SettingsView: View {
                 Button("Reset all permissions…", role: .destructive) {
                     confirmingReset = true
                 }
+                Button("Run setup…") { showOnboarding() }
             } header: {
-                Text("Permissions")
+                Text("Permissions (macOS)")
             }
 
             Section {
-                Picker("Backend", selection: stringBinding("llm_provider")) {
-                    Text("Automatic").tag("auto")
-                    Text("Ollama (local)").tag("ollama")
-                    Text("API provider").tag("openai_compat")
-                    Text("ACP agent").tag("acp")
-                }
-                TextField("Model", text: stringBinding("llm_model"))
-                TextField("ACP agent", text: stringBinding("acp_agent_id"))
-                Toggle("Allow screen crops to remote AI", isOn: boolBinding("gaze_vlm_remote_consent"))
-            } header: {
-                Text("AI assistant (optional)")
-            }
-
-            Section {
-                ForEach(capabilityRows) { row in
-                    LabeledContent(row.name) {
-                        Text(row.status).foregroundStyle(.secondary)
-                    }
-                }
                 Button("Copy doctor report") { copyDoctor() }
             } header: {
                 Text("Diagnostics")
@@ -469,95 +379,6 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Keyless will lose Camera, Microphone, Accessibility, and Screen Recording access. You'll be asked again after the restart.")
-        }
-    }
-
-    private func boolBinding(_ key: String) -> Binding<Bool> {
-        Binding(
-            get: { engine.config[key] as? Bool ?? false },
-            set: { value in Task { await engine.saveConfig([key: value]) } }
-        )
-    }
-
-    private func stringBinding(_ key: String) -> Binding<String> {
-        Binding(
-            get: { engine.config[key] as? String ?? "" },
-            set: { value in Task { await engine.saveConfig([key: value]) } }
-        )
-    }
-
-    private var cuaDriver: [String: Any] {
-        engine.doctor["cua_driver"] as? [String: Any] ?? [:]
-    }
-
-    private var cuaDriverReady: Bool { cuaDriver["ready"] as? Bool ?? false }
-
-    private var cuaDriverVersion: String { cuaDriver["version"] as? String ?? "—" }
-
-    /// The daemon builds its pointer backend at spawn time, so a config write
-    /// alone leaves the running session on the old driver.
-    private var actionBackendBinding: Binding<String> {
-        Binding(
-            get: { engine.config["action_backend"] as? String ?? "native" },
-            set: { value in
-                guard value != (engine.config["action_backend"] as? String ?? "native") else { return }
-                Task {
-                    applyingBackend = true
-                    let wasListening = engine.state == "listening"
-                    await engine.saveConfig(["action_backend": value])
-                    if wasListening {
-                        await engine.pause()
-                        await engine.start()
-                    }
-                    applyingBackend = false
-                }
-            }
-        )
-    }
-
-    /// The eye overlay is created when the engine daemon spawns, so toggling
-    /// it while listening needs the same restart as a driver change.
-    private var eyeCursorBinding: Binding<Bool> {
-        Binding(
-            get: { engine.config["gaze_cursor_control"] as? Bool ?? false },
-            set: { value in
-                Task {
-                    let wasListening = engine.state == "listening"
-                    await engine.saveConfig(["gaze_cursor_control": value])
-                    if wasListening {
-                        await engine.pause()
-                        await engine.start()
-                    }
-                }
-            }
-        )
-    }
-
-    private var stateColor: Color {
-        switch engine.state {
-        case "listening": return theme.success
-        case "error": return theme.danger
-        case "paused": return theme.warning
-        default: return theme.muted
-        }
-    }
-
-    private struct CapabilityRow: Identifiable {
-        let id: String
-        let name: String
-        let status: String
-    }
-
-    private var capabilityRows: [CapabilityRow] {
-        guard let caps = (engine.doctor["capabilities"] as? [String: Any])?["capabilities"] as? [String: Any]
-        else { return [] }
-        return [
-            ("Pointer", "pointer"), ("Cameras", "cameras"),
-            ("Screen", "screen_capture"), ("Overlay", "overlay"),
-        ].compactMap { label, key in
-            guard let info = caps[key] as? [String: Any],
-                  let status = info["status"] as? String else { return nil }
-            return CapabilityRow(id: key, name: label, status: status.capitalized)
         }
     }
 
@@ -584,16 +405,13 @@ struct MenuBarView: View {
     var body: some View {
         Text(engine.state == "listening" ? "Keyless — Listening" : "Keyless")
         Button(engine.state == "listening" ? "Pause" : "Start listening") {
-            Task {
-                if engine.state == "listening" { await engine.pause() }
-                else { await engine.start() }
-            }
+            // The engine's action registry owns start/pause; the menu bar only
+            // posts the contract action for the current state.
+            let action = engine.state == "listening" ? "pause" : "start"
+            Task { await engine.uiAction(["action": action]) }
         }
         Divider()
-        Button("Calibrate…") {
-            Task { await engine.setupAction("go_to", step: "calibration") }
-            showingOnboarding = true
-        }
+        Button("Finish setup…") { showingOnboarding = true }
         Button("Open Keyless…") { NSApp.activate(ignoringOtherApps: true) }
         Button("Quit") { NSApp.terminate(nil) }
     }

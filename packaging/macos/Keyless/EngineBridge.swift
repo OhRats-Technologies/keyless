@@ -27,7 +27,6 @@ struct SetupState: Decodable {
     var steps: [String]
     var state: SetupStepState
     var complete: Bool
-    var calibration: CalibrationState
     var model: ModelState
 }
 
@@ -37,12 +36,6 @@ struct SetupStepState: Decodable {
     var skipped: [String]
     var unresolved: [String]
     var updatedAt: String
-}
-
-struct CalibrationState: Decodable {
-    var path: String
-    var ready: Bool
-    var running: Bool
 }
 
 struct ModelState: Decodable {
@@ -84,10 +77,10 @@ final class EngineBridge: ObservableObject {
     @Published var setup: SetupState?
     @Published var model: ModelState?
     @Published var runtime: RuntimeInfo?
+    @Published var ui: UIStateDocument?
 
     var setupComplete: Bool { setup?.complete ?? false }
-    var calibrationReady: Bool { setup?.calibration.ready ?? false }
-    var modelReady: Bool { model?.ready ?? false }
+    var modelReady: Bool { setup?.model.ready ?? false }
 
     var menuIcon: String {
         switch state {
@@ -99,13 +92,23 @@ final class EngineBridge: ObservableObject {
     }
 
     private var timer: Timer?
+    private var eventsTask: Task<Void, Never>?
+    private var eventsLive = false
 
     init(baseURL: URL) {
         self.baseURL = baseURL
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh() }
+            Task { @MainActor in
+                guard let self, !self.eventsLive else { return }
+                await self.refresh()
+                await self.refreshUI()
+            }
         }
-        Task { await refresh() }
+        Task {
+            await refresh()
+            await refreshUI()
+        }
+        startEventStream()
     }
 
     func refresh() async {
@@ -125,6 +128,60 @@ final class EngineBridge: ObservableObject {
 
     func start() async { await post("start") }
     func pause() async { await post("pause") }
+
+    // MARK: Contract document and actions
+
+    /// Refetch the engine-owned UI contract (`GET /v1/ui/state`). Every shell
+    /// screen renders from this document; unknown row kinds fail to decode.
+    func refreshUI() async {
+        ui = (try? await get("ui/state")) ?? ui
+    }
+
+    /// Post a contract action (`POST /v1/ui/action`) and refetch. The payload
+    /// is built by the row renderer from the row's own action/key/id fields,
+    /// so new contract rows need no shell code.
+    func uiAction(_ payload: [String: String]) async {
+        _ = try? await postJSON("ui/action", payload)
+        await refreshUI()
+    }
+
+    // MARK: Live events (SSE with polling fallback)
+
+    private var eventsTask: Task<Void, Never>?
+    private var eventsLive = false
+
+    /// Consume ``GET /v1/events`` and refetch on every ``state`` event. While
+    /// the stream is healthy the 1 s poll timer is skipped; on any break the
+    /// flag flips back and polling covers until the stream reconnects.
+    func startEventStream() {
+        guard eventsTask == nil else { return }
+        eventsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.consumeEvents()
+                if Task.isCancelled { return }
+                self.eventsLive = false
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+
+    private func consumeEvents() async {
+        let url = baseURL.appending(path: "/v1/events")
+        var req = URLRequest(url: url)
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        guard let (bytes, _) = try? await URLSession.shared.bytes(for: req) else { return }
+        eventsLive = true
+        do {
+            for try await line in bytes.lines {
+                if Task.isCancelled { return }
+                if line.hasPrefix("data:") {
+                    await refresh()
+                    await refreshUI()
+                }
+            }
+        } catch {}
+    }
 
     /// Advance/restart the engine-owned setup state machine.
     func setupAction(_ action: String, step: String? = nil) async {

@@ -10,5 +10,10 @@ let package = Package(
             path: "Keyless",
             exclude: ["Info.plist"]
         ),
+        .testTarget(
+            name: "KeylessTests",
+            dependencies: ["Keyless"],
+            path: "Tests/KeylessTests"
+        ),
     ]
 )
