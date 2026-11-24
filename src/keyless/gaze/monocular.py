@@ -220,7 +220,8 @@ class MonocularGazeEstimator:
             yaw = float(feat[4])
             pitch = float(feat[5])
 
-        nx = max(-1.0, min(1.0, 2.2 * iris_dx + 1.4 * yaw))
+        # Negate horizontal terms: in unflipped MediaPipe camera space, +iris_dx/+yaw = user's LEFT (-X).
+        nx = max(-1.0, min(1.0, -(2.2 * iris_dx + 1.4 * yaw)))
         ny = max(-1.0, min(1.0, 2.6 * iris_dy + 1.4 * pitch))
 
         min_az, max_az, min_el, max_el = self.rig.angular_bounds()

@@ -464,6 +464,7 @@ class WebGazeManager:
             with self._lock:
                 pub = self._publisher
             if pub is not None:
+                pub.estimator.reset()
                 pub.set_display_rig(rig, auto_rig=True)
             return self.get_display_rig()
         if preset == "swap":

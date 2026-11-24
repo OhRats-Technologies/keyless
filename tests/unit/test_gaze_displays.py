@@ -109,6 +109,7 @@ def test_3d_angular_ridge_generalizes_across_angled_gapped_displays() -> None:
         3840,
         1080,
         rig=rig,
+        auto_rig=False,
         min_clicks=5,
         blend_clicks=5,
         ridge_alpha=1e-4,
@@ -185,17 +186,17 @@ def test_auto_infer_rig_detects_swapped_monitors_and_gap_from_passive_clicks() -
         ]
     )
 
-    # Physically, user looks RIGHT (+yaw) to click DP-2 and LEFT (-yaw) to click HDMI-A-1
+    # Physically, user looks RIGHT (negative MediaPipe yaw) to click DP-2 and LEFT (positive MediaPipe yaw) to click HDMI-A-1
     samples = []
     for u in (0.2, 0.5, 0.8):
-        # Click on DP-2 (OS left), user looks right (+0.45 rad center)
+        # Click on DP-2 (OS left), user looks right (screen az = +0.45 rad -> MediaPipe yaw = -0.45/0.85)
         f_dp = np.zeros(FEATURE_DIM, dtype=np.float64)
-        f_dp[4] = (0.45 + (u - 0.5) * 0.55) / 0.85
+        f_dp[4] = -(0.45 + (u - 0.5) * 0.55) / 0.85
         samples.append((f_dp, u * 1920.0, 540.0))
 
-        # Click on HDMI-A-1 (OS right), user looks left (-0.50 rad center)
+        # Click on HDMI-A-1 (OS right), user looks left (screen az = -0.50 rad -> MediaPipe yaw = +0.50/0.85)
         f_hd = np.zeros(FEATURE_DIM, dtype=np.float64)
-        f_hd[4] = (-0.50 + (u - 0.5) * 0.60) / 0.85
+        f_hd[4] = -(-0.50 + (u - 0.5) * 0.60) / 0.85
         samples.append((f_hd, 1920.0 + u * 1920.0, 540.0))
 
     inferred, meta = infer_rig_from_clicks(os_rig, samples)

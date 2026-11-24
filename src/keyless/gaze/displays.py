@@ -434,9 +434,12 @@ class DisplayRig:
 def anatomical_ray_angles(feat: np.ndarray) -> tuple[float, float]:
     """Estimate rough 3D gaze ray (az_rad, el_rad) directly from anatomical head+iris features.
 
-    Works for both 10D monocular and 20D binocular feature vectors and is
-    independent of OS display pixel coordinates, allowing automatic inference
-    of swapped monitors, physical bezel gaps, distances, and angles.
+    Sign convention (matching ``keyless.vision.landmarks.FaceFeatureExtractor``):
+    - In unflipped webcam/MediaPipe space, ``iris_dx > 0`` and ``yaw > 0`` mean
+      the user is looking to the **user's LEFT** (screen ``-X``).
+    - Negating horizontal terms converts to user-facing screen space where
+      ``az > 0`` is **user's RIGHT** (screen ``+X``) and ``el > 0`` is **DOWN**
+      (screen ``+Y``).
     """
     arr = np.asarray(feat, dtype=np.float64).reshape(-1)
     if arr.shape[0] >= 20:
@@ -449,7 +452,7 @@ def anatomical_ray_angles(feat: np.ndarray) -> tuple[float, float]:
         iris_dy = 0.5 * (float(arr[1]) + float(arr[3]))
         yaw = float(arr[4])
         pitch = float(arr[5])
-    az = max(-1.25, min(1.25, 0.85 * yaw + 0.55 * iris_dx))
+    az = max(-1.25, min(1.25, -(0.85 * yaw + 0.55 * iris_dx)))
     el = max(-0.85, min(0.85, 0.85 * pitch + 0.45 * iris_dy))
     return az, el
 
@@ -522,15 +525,39 @@ def infer_rig_from_clicks(
 
         az_center = max(-1.15, min(1.15, az_center))
         el_center = max(-0.65, min(0.65, el_center))
+        dist_mm = max(450.0, min(850.0, dist_mm))
 
-        cx_mm = dist_mm * math.sin(az_center)
-        cz_mm = max(250.0, dist_mm * math.cos(az_center))
-        cy_mm = dist_mm * math.sin(el_center)
-        # Natural ergonomic toe-in toward user eye origin when off-center
-        yaw_deg = max(-45.0, min(45.0, math.degrees(az_center) * 0.65))
-        pitch_deg = max(-25.0, min(25.0, -math.degrees(el_center) * 0.35))
+        new_planes.append((plane, n, az_center, el_center, dist_mm))
 
-        new_planes.append(
+    # Subtract shared webcam mounting yaw/pitch offset so off-center webcams
+    # don't push the entire multi-display rig to one side of the user.
+    observed = [item for item in new_planes if item[1] >= 2]
+    if len(observed) >= 2:
+        az_vals = [item[2] for item in observed]
+        el_vals = [item[3] for item in observed]
+        az_bias = 0.5 * (min(az_vals) + max(az_vals))
+        el_bias = float(np.mean(el_vals))
+    elif len(observed) == 1 and len(new_planes) == 1:
+        az_bias = observed[0][2]
+        el_bias = observed[0][3]
+    else:
+        az_bias = 0.0
+        el_bias = 0.0
+
+    final_planes: list[DisplayPlane] = []
+    for item in new_planes:
+        if isinstance(item, DisplayPlane):
+            final_planes.append(item)
+            continue
+        plane, n, raw_az, raw_el, dist_mm = item
+        az_c = max(-1.05, min(1.05, raw_az - az_bias))
+        el_c = max(-0.55, min(0.55, raw_el - el_bias))
+        cx_mm = dist_mm * math.sin(az_c)
+        cz_mm = max(300.0, dist_mm * math.cos(az_c))
+        cy_mm = dist_mm * math.sin(el_c)
+        yaw_deg = max(-35.0, min(35.0, math.degrees(az_c) * 0.55))
+        pitch_deg = max(-20.0, min(20.0, -math.degrees(el_c) * 0.30))
+        final_planes.append(
             DisplayPlane(
                 connector=plane.connector,
                 x=plane.x,
@@ -550,9 +577,10 @@ def infer_rig_from_clicks(
             )
         )
 
-    # Detect if physical X ordering differs from OS logical X ordering (swapped displays)
+    new_planes = final_planes
+    # Only flag swapped when >=2 displays each have >=3 clicks and clear horizontal separation
     swapped = False
-    if len(new_planes) >= 2:
+    if len(new_planes) >= 2 and all(clicks_per_display.get(p.connector, 0) >= 3 for p in new_planes):
         os_order = [p.connector for p in sorted(new_planes, key=lambda p: (p.x, p.y))]
         phys_order = [p.connector for p in sorted(new_planes, key=lambda p: p.cx_mm)]
         swapped = os_order != phys_order

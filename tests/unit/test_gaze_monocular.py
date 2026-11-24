@@ -58,7 +58,8 @@ def test_cold_start_prior_stays_within_display_bounds_and_moves_monotonically() 
     assert cx == pytest.approx(960.0)
     assert cy == pytest.approx(540.0)
 
-    look_right = np.array([0.3, 0.0, 0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.6])
+    # In MediaPipe camera space, looking to the user's right produces negative iris_dx and yaw
+    look_right = np.array([-0.3, 0.0, -0.3, 0.0, -0.2, 0.0, 0.0, 0.0, 0.0, 0.6])
     rx, ry, _, _, _ = est.predict(look_right)
     assert rx > cx
     assert 0.0 <= rx < 1920.0 and 0.0 <= ry < 1080.0

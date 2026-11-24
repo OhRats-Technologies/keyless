@@ -398,7 +398,7 @@ html[data-sidebar="closed"] .footer-row { flex-direction: column; gap: 4px; }
 }
 
 .deck-gaze {
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 310px);
 }
 
 .deck-main {
