@@ -7,6 +7,45 @@
 
 > Read `AGENTS.md` first, then `docs/GREENFIELD.md`, then this file.
 
+## 000. macOS parity session (2026-11-24, MacBook Air M5 13.6in, macOS 26, one display)
+
+Commits on `alt`: c0e07ab, f945bc4, 5216165, 2f85b43, 8a0a84c, f1fbe0f, cde29e8, bd52ad9.
+Tests: 407 pass + 2 skip (both evdev-only) excluding packaging/release/instance-lock.
+
+**Tested on real hardware**
+- Camera: OpenCV AVFoundation index = devices sorted by `uniqueID` (verified by grabbing a
+  frame per index). Old code picked the OBS virtual camera and paired it into "binocular".
+  Auto is now mono on the built-in (`transport == bltn`); 208/208 and 230/230 face frames at 30 fps,
+  MediaPipe on Metal (Apple M5).
+- Display: CG global coords (top-left, y down); `CGDisplayScreenSize` = 290.6 x 189.0 mm.
+- Step 1, onboarding warm-up, **browser fallback** full screen, 1 display:
+  grade **great**, accuracy **1.85 deg / 81 px**, precision 0.36 deg, distance 488 mm,
+  253/424 labels, 14.2 s. Latency **320 ms = the old search-window edge** (conf 0.53), i.e. not
+  measured; window is now 600 ms and an edge minimum reports confidence 0.
+- Step 2, click capture (listen-only CGEventTap, Input Monitoring): 4 real clicks captured,
+  3 paired to a fixation, 1 rejected by the look gate, 2 labels. `stats.clicks_captured` is new.
+- Step 3, eye cursor: synthetic shm path drove the cua agent cursor (screenshot); calibration
+  hold hid it and returned the hardware pointer; stop exits cua-driver. Live overlay active
+  on real gaze.
+- Step 4, native stage: synthetic sweep drew dim + stimulus on the display (screenshots),
+  start 0.37 s / stop 0.02 s.
+
+**Not tested yet (needs a person at the Mac)**
+- A full warm-up through the **native stage** (grade/latency vs the browser run above).
+- Live eye-cursor quality. While typing (looking at the keyboard) predictions pinned to
+  screen edges, with looking *down* mapping to the *top* (y=0): check with eyes on screen
+  whether vertical sign is right or this is just off-screen extrapolation.
+- Multi-display (only one display here): stage windows per screen, rig solve.
+- Allow screens in onboarding (all grants already present, so they never showed).
+- Browser full-screen guard (`not_fullscreen` pause) in a real browser.
+- Fresh-user TCC: grants attach to the *responsible app* (Terminal/IDE when run from a
+  shell), so "Turn on Keyless" copy is only accurate for a packaged app.
+
+**Known issues**
+- Opening the iPhone Continuity Camera rings the phone: never probe all camera indexes.
+  `_opencv_cameras()` (last-resort fallback when AVFoundation is missing) still probes 0..3.
+- A suspended built-in camera (lid closed) gives 0 frames silently; onboarding should say so.
+
 ## 00. NEXT SESSION: macOS parity (written 2026-11-24, on Linux, before moving to the Mac)
 
 **Branch:** `alt` (pushed). Last Linux commit: onboarding + pursuit warm-up + learner + rig solver (D12).

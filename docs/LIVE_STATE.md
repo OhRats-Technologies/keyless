@@ -24,8 +24,12 @@
          auto = mono built-in; panel mm via CGDisplayScreenSize; layout in CG global coords.
    - [x] Step 1 onboarding, browser fallback, 1 display: grade great, 1.85 deg / 81 px, precision 0.36 deg,
          latency 320 ms = search-window edge (conf 0.53) -> window widened to 600 ms, edge => conf 0.
-   - [ ] Step 2 click capture (CGEventTap listen-only, Input Monitoring) - code in, waiting on real clicks.
-   - [ ] Step 3 eye cursor via cua agent_cursor.  - [ ] Step 4 native stage.  - [ ] Step 5 permissions step.
+   - [x] Step 2 click capture: real clicks verified (4 captured / 3 seen / 1 ignored / 2 labels).
+   - [x] Step 3 eye cursor (cua, shm-fed, single owner via flock): synthetic + live overlay verified.
+   - [x] Step 4 native stage: synthetic sweep verified; full warm-up through it NOT yet run.
+   - [x] Step 5 permission screens: code + tests; not visually checked (all grants present).
+   - [ ] Next: warm-up through the native stage; check vertical sign while looking at screen;
+         D12 falsifier on real sessions. See HANDOFF section 000.
 1. [x] **Run onboarding on real hardware** - done on macOS, see above.
 
 1. [ ] **Record 2 to 3 real desktop sessions** using `keyless ui` (**Record session**) or `keyless gaze record --save-screenshots` while clicking normally across Firefox, terminal, and IDE.
