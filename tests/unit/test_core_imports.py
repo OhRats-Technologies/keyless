@@ -29,3 +29,27 @@ def test_core_and_gaze_never_import_gui_or_web() -> None:
                     assert mod != bad and not mod.startswith(bad + "."), (
                         f"{py.relative_to(ROOT)} imports forbidden module {mod!r}"
                     )
+
+
+def test_all_internal_keyless_imports_resolve() -> None:
+    import importlib
+
+    errors: list[str] = []
+    for py in sorted((ROOT / "src" / "keyless").rglob("*.py")):
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("keyless"):
+                if node.module.startswith(("keyless.platform.macos", "keyless.platform.windows")):
+                    continue
+                mod = importlib.import_module(node.module)
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    if not hasattr(mod, alias.name):
+                        try:
+                            importlib.import_module(f"{node.module}.{alias.name}")
+                        except Exception:
+                            errors.append(
+                                f"{py.relative_to(ROOT)}:{node.lineno}: missing {alias.name!r} in {node.module!r}"
+                            )
+    assert errors == [], "\n".join(errors)

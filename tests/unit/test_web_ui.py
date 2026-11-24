@@ -136,3 +136,18 @@ def test_open_browser_url_prefers_xdg_open_on_linux(monkeypatch) -> None:
     target = f"http://{LOOPBACK}:8766"
     assert web.open_browser_url(target) is True
     assert launched == [["/usr/bin/xdg-open", target]]
+
+
+def test_keyless_ui_cli_starts_and_stops_cleanly(monkeypatch) -> None:
+    from typer.testing import CliRunner
+
+    from keyless.main import app
+
+    def _interrupt_immediately(_secs: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("keyless.main.time.sleep", _interrupt_immediately)
+    runner = CliRunner()
+    res = runner.invoke(app, ["ui", "--port", "0", "--no-open"])
+    assert res.exit_code == 0, res.output
+    assert "Keyless web UI listening at" in res.output

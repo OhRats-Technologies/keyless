@@ -549,7 +549,7 @@ def ui(
     no_open: bool = typer.Option(False, "--no-open", help="Start the server without launching a browser"),
 ) -> None:
     """Start the local Keyless HTTP server and open the unified web UI in your browser."""
-    from keyless.daemon import build_control_server
+    from keyless.daemon import create_control_server
     from keyless.ipc.client import ControlClient
     from keyless.web import open_browser_url
 
@@ -561,7 +561,7 @@ def ui(
             open_browser_url(url)
         return
 
-    server = build_control_server()
+    server = create_control_server()
     bound = server.start(host=host, port=port)
     url = f"http://{host}:{bound}"
     console.print(f"[green]Keyless web UI listening at {url}[/green] (Ctrl+C to stop)")
@@ -578,10 +578,10 @@ def ui(
 
 @app.command("serve")
 def serve(
-    port: int = typer.Option(8766, help="Loopback port for the SwiftUI/Qt control plane"),
+    port: int = typer.Option(8766, help="Loopback port for the Keyless HTTP control plane and web UI"),
     host: str = typer.Option("127.0.0.1", help="Bind address (loopback only)"),
 ) -> None:
-    """Run the loopback control plane for native UI hosts (SwiftUI MenuBarExtra)."""
+    """Run the loopback HTTP control plane and unified web UI server."""
     from keyless.daemon import create_control_server
 
     server = create_control_server()
