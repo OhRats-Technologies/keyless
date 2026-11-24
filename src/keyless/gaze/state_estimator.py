@@ -95,6 +95,30 @@ class GazeStateEstimator:
         self.blinks_suppressed: int = 0
         self.outliers_suppressed: int = 0
 
+    def tune(
+        self,
+        *,
+        blink_enter: float | None = None,
+        blink_exit: float | None = None,
+        precision_deg: float | None = None,
+    ) -> None:
+        """Adopt per-user thresholds measured during the pursuit warm-up.
+
+        Blink thresholds come from the user's open-eye baseline. Movement
+        thresholds scale with measured fixation noise: the deadband covers
+        ~1.5 sigma of jitter and a saccade must exceed ~4 sigma, so a noisy
+        camera never reads as motion and a clean one is not over-damped.
+        """
+        if blink_enter is not None and blink_exit is not None and blink_exit < blink_enter:
+            self.blink_enter = float(blink_enter)
+            self.blink_exit = float(blink_exit)
+            self.blink_vel_min_score = max(0.08, 0.55 * self.blink_enter)
+        if precision_deg is not None and math.isfinite(precision_deg) and precision_deg > 0:
+            self.fixation_deadband_rad = math.radians(min(1.2, max(0.3, 1.5 * precision_deg)))
+            jump = min(5.0, max(2.0, 4.0 * precision_deg))
+            self.saccade_jump_rad = math.radians(jump)
+            self.saccade_confirm_rad = math.radians(1.45 * jump)
+
     def reset(self) -> None:
         self._x = None
         self._P = np.eye(4, dtype=np.float64) * 1e-3

@@ -233,3 +233,20 @@ ACP is an editor↔coding-agent protocol. Keyless acts as the **client**: it spa
 **Revisit if:** a V-JEPA screen tower beats the candidate model by >10% top-1 on held-out sessions, or LeJEPA/SIGReg pretraining improves target accuracy by >5% with equivariant augmentations.
 
 See [GREENFIELD.md](GREENFIELD.md) for the full plan, theory, proofs, procedures, and references.
+
+## D12 — Pursuit warm-up, gated click labels, no-overlap rig (2026-11-24)
+
+- **Warm-up:** onboarding runs a ~10 s/display smooth-pursuit "follow the light" pass on the
+  native Wayland stage (other content dimmed). It is a training set and the learner prior,
+  never a gate (GREENFIELD §6.3 cold start). Skippable; app runs without it.
+- **Latency:** the lag that best aligns features with the known target path is the
+  eye-to-sensor latency; it is shown to the user and stored in the profile.
+- **Clicks:** a click is a label with weight P(looked at | prediction) and is paired with the
+  stable fixation around it, not the newest frame. Weights follow a random walk (drift).
+  Rationale: users click without looking; plain ridge on every click was brittle.
+- **Rig:** display offsets are fitted jointly with shared gaze weights, then projected onto
+  the no-overlap set (PAVA; Lean-proved feasibility). OS order is the prior; a swap needs
+  12 log-likelihood units of evidence.
+- **Falsifier:** if, on session-held-out real clicks, hit@50px with the warm-up profile is not
+  better than the cold-start prior after 10 clicks, drop the warm-up from onboarding.
+

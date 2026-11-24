@@ -1,0 +1,6 @@
+name = "KeylessProofs"
+version = "0.1.0"
+defaultTargets = ["KeylessProofs"]
+
+[[lean_lib]]
+name = "KeylessProofs"

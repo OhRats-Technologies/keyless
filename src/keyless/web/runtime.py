@@ -58,6 +58,7 @@ class WebGazeManager:
         # One probe per preset at a time: concurrent option requests wait for
         # the in-flight probe instead of each starting their own agent spawn.
         self._llm_options_locks: dict[str, threading.Lock] = {}
+        self._calibration: Any = None
 
     def _llm_options_lock(self, preset_id: str) -> threading.Lock:
         with self._lock:
@@ -173,6 +174,10 @@ class WebGazeManager:
             "measured_fps": st.get("measured_fps", 0.0),
             "blinks_suppressed": st.get("blinks_suppressed", 0),
             "outliers_suppressed": st.get("outliers_suppressed", 0),
+            "clicks_ignored": st.get("clicks_ignored", 0),
+            "latency_ms": st.get("latency_ms"),
+            "profile": st.get("profile"),
+            "calibrating": st.get("calibrating", False),
         }
         payload: dict[str, Any] = {
             "running": True,
@@ -246,6 +251,68 @@ class WebGazeManager:
         if pub is not None:
             pub.estimator.undo_last()
         return self.gaze_status()
+
+    # --- Pursuit warm-up (onboarding calibration) -------------------------
+
+    def calibration_profile(self) -> dict[str, Any]:
+        from keyless.gaze.profile import GazeProfile, profile_path
+
+        prof = GazeProfile.load(profile_path(self.paths.config_dir))
+        return {"has_profile": prof is not None, "profile": prof.public() if prof else None}
+
+    def start_calibration(self, *, connector: str | None = None, use_overlay: bool = True) -> dict[str, Any]:
+        from keyless.gaze.calibration import CalibrationSession
+
+        with self._lock:
+            sess = self._calibration
+        if sess is not None and not sess.finished:
+            return sess.status()
+        with self._lock:
+            pub = self._publisher
+        if pub is None:
+            self.start_gaze()
+            with self._lock:
+                pub = self._publisher
+        if pub is None:
+            raise RuntimeError(self._last_error or "Camera is not available.")
+        sess = CalibrationSession(pub, connector=connector, use_overlay=use_overlay)
+        with self._lock:
+            self._calibration = sess
+        sess.start()
+        return sess.status()
+
+    def calibration_status(self) -> dict[str, Any]:
+        with self._lock:
+            sess = self._calibration
+        if sess is None:
+            return {"state": "idle", **self.calibration_profile()}
+        out = sess.status()
+        if sess.finished:
+            out.update(self.calibration_profile())
+        return out
+
+    def cancel_calibration(self) -> dict[str, Any]:
+        with self._lock:
+            sess = self._calibration
+        if sess is not None:
+            sess.cancel()
+        return self.calibration_status()
+
+    def forget_calibration(self) -> dict[str, Any]:
+        """Delete the warm-up profile; tracking falls back to the cold-start prior."""
+        from keyless.gaze.profile import profile_path
+
+        try:
+            profile_path(self.paths.config_dir).unlink(missing_ok=True)
+        except OSError:
+            pass
+        with self._lock:
+            pub = self._publisher
+        if pub is not None:
+            pub.estimator.profile = None
+            pub.estimator.learner = pub.estimator._cold_start_learner()
+            pub.estimator.reset()
+        return self.calibration_profile()
 
     # --- Live session recording -----------------------------------------
 
@@ -907,5 +974,9 @@ class WebGazeManager:
         return out
 
     def shutdown(self) -> None:
+        with self._lock:
+            sess = self._calibration
+        if sess is not None:
+            sess.cancel()
         self.stop_recording()
         self.stop_gaze()

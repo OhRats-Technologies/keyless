@@ -476,6 +476,22 @@ class ControlServer:
             if self._events_stop.wait(delay):
                 break
 
+    def _serve_calibration_stream(self, handler: BaseHTTPRequestHandler) -> None:
+        """60 Hz while a warm-up runs (browser stage renders from it), 2 Hz otherwise."""
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Cache-Control", "no-cache")
+        handler.send_header("Connection", "keep-alive")
+        handler.end_headers()
+        while not self._events_stop.is_set():
+            snap = self.gaze_manager.calibration_status()
+            payload = json.dumps(snap, separators=(",", ":"), default=str).encode()
+            handler.wfile.write(b"event: calibration\ndata: " + payload + b"\n\n")
+            handler.wfile.flush()
+            active = snap.get("state") in ("starting", "intro", "running", "paused", "solving")
+            if self._events_stop.wait(1 / 60 if active else 0.5):
+                break
+
     @staticmethod
     def _serve_static(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
         from keyless.web import STATIC_DIR
@@ -825,6 +841,41 @@ class ControlServer:
                             distance_mm=float(payload.get("distance_mm", 600.0)),
                         ),
                     )
+                elif self.command == "GET" and path == "/v1/calibration":
+                    _json(self, server.gaze_manager.calibration_status())
+                elif self.command == "POST" and path == "/v1/calibration/start":
+                    payload = server._read_json_body(self)
+                    if payload is None:
+                        return
+                    try:
+                        _json(
+                            self,
+                            server.gaze_manager.start_calibration(
+                                connector=payload.get("connector") or None,
+                                use_overlay=bool(payload.get("use_overlay", True)),
+                            ),
+                        )
+                    except Exception as exc:
+                        _json(self, {"error": str(exc)}, status=500)
+                elif self.command == "POST" and path == "/v1/calibration/cancel":
+                    server._read_json_body(self)
+                    _json(self, server.gaze_manager.cancel_calibration())
+                elif self.command == "POST" and path == "/v1/calibration/forget":
+                    server._read_json_body(self)
+                    _json(self, server.gaze_manager.forget_calibration())
+                elif self.command == "GET" and path == "/v1/calibration/stream":
+                    with server._event_lock:
+                        if len(server._event_streams) >= server._MAX_EVENT_STREAMS:
+                            _json(self, {"error": "too many concurrent streams"}, status=503)
+                            return
+                        server._event_streams.add(self)
+                    try:
+                        server._serve_calibration_stream(self)
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        pass
+                    finally:
+                        with server._event_lock:
+                            server._event_streams.discard(self)
                 elif self.command == "GET" and path == "/v1/gaze/stream":
                     with server._event_lock:
                         if len(server._event_streams) >= server._MAX_EVENT_STREAMS:

@@ -70,47 +70,68 @@ def test_cold_start_prior_stays_within_display_bounds_and_moves_monotonically() 
     assert 0.0 <= ey <= 1079.0
 
 
-def test_passive_click_ridge_adaptation_converges_and_is_reversible() -> None:
+def _angle_truth(est: MonocularGazeEstimator, true_w: np.ndarray, bias: np.ndarray, f: np.ndarray) -> tuple[float, float]:
+    """Ground truth that is linear in eye rotation angles (physically realistic)."""
+    a = f @ true_w + bias
+    hit = est.rig.ray_angles_to_pixel(float(a[0]), float(a[1]))
+    return hit.x, hit.y
+
+
+def test_passive_click_adaptation_converges_and_is_reversible() -> None:
     rng = np.random.default_rng(42)
-    est = MonocularGazeEstimator(
-        1920,
-        1080,
-        min_clicks=5,
-        blend_clicks=5,
-        ridge_alpha=1e-4,
-        smooth=False,
-    )
+    est = MonocularGazeEstimator(1920, 1080, auto_rig=False, smooth=False)
     true_w = np.zeros((FEATURE_DIM, 2), dtype=np.float64)
-    true_w[0, 0] = 1400.0
-    true_w[2, 0] = 1400.0
-    true_w[4, 0] = 700.0
-    true_w[1, 1] = 900.0
-    true_w[3, 1] = 900.0
-    true_w[5, 1] = 500.0
-    bias = np.array([960.0, 540.0], dtype=np.float64)
+    true_w[0, 0] = 1.1
+    true_w[2, 0] = 1.1
+    true_w[4, 0] = 0.6
+    true_w[1, 1] = 0.7
+    true_w[3, 1] = 0.7
+    true_w[5, 1] = 0.4
+    bias = np.array([0.03, -0.02], dtype=np.float64)
 
     for _ in range(20):
         f = rng.uniform(-0.2, 0.2, size=FEATURE_DIM)
-        xy = f @ true_w + bias
-        est.add_click(f, float(xy[0]), float(xy[1]))
+        est.add_click(f, *_angle_truth(est, true_w, bias, f))
 
     assert est.is_adapted is True
     assert est.sample_count == 20
 
-    test_f = np.array([0.1, -0.05, 0.1, -0.05, 0.05, -0.04, 0.0, 0.0, 0.0, 0.5])
-    expected = test_f @ true_w + bias
-    px, py, _, _, using_ridge = est.predict(test_f)
-    assert using_ridge is True
-    assert abs(px - expected[0]) < 15.0
-    assert abs(py - expected[1]) < 15.0
+    # In-distribution probe. Tolerance ~0.6 deg: clicks are modelled as ~1.5 deg
+    # noisy labels, so 20 of them cannot (and should not) interpolate exactly.
+    test_f = np.array([0.1, -0.05, 0.1, -0.05, 0.05, -0.04, 0.0, 0.0, 0.0, 0.1])
+    expected = _angle_truth(est, true_w, bias, test_f)
+    px, py, _, _, adapted = est.predict(test_f)
+    assert adapted is True
+    assert abs(px - expected[0]) < 25.0
+    assert abs(py - expected[1]) < 25.0
 
-    # Reversibility: undo_last and reset cleanly return to cold-start prior
+    # Reversibility: undo_last and reset cleanly return to the cold-start prior
     assert est.undo_last() == 19
     est.reset()
     assert est.sample_count == 0
     assert est.is_adapted is False
-    _, _, _, _, using_ridge_after = est.predict(test_f)
-    assert using_ridge_after is False
+    _, _, _, _, adapted_after = est.predict(test_f)
+    assert adapted_after is False
+
+
+def test_clicks_without_looking_are_ignored_once_confident() -> None:
+    """A confident model must not learn from a click far from where the user looks."""
+    rng = np.random.default_rng(3)
+    est = MonocularGazeEstimator(1920, 1080, auto_rig=False, smooth=False)
+    true_w = np.zeros((FEATURE_DIM, 2), dtype=np.float64)
+    true_w[0, 0] = true_w[2, 0] = 1.1
+    true_w[1, 1] = true_w[3, 1] = 0.7
+    bias = np.zeros(2)
+    for _ in range(25):
+        f = rng.uniform(-0.2, 0.2, size=FEATURE_DIM)
+        est.add_click(f, *_angle_truth(est, true_w, bias, f))
+    before = est.learner.M.copy()
+    # User looks at the left edge but clicks a remembered button on the far right.
+    f = np.zeros(FEATURE_DIM)
+    f[0] = f[2] = -0.2
+    est.add_click(f, 1880.0, 60.0)
+    assert est.clicks_ignored == 1
+    np.testing.assert_allclose(est.learner.M, before)
 
 
 def test_observation_to_frame_section_validates_in_session_recorder(tmp_path: Path) -> None:
@@ -167,27 +188,24 @@ def test_binocular_20d_cold_start_and_ridge_adaptation() -> None:
         3840,
         1080,
         feature_dim=BINOCULAR_FEATURE_DIM,
-        min_clicks=5,
-        blend_clicks=5,
-        ridge_alpha=1e-4,
+        auto_rig=False,
         smooth=False,
     )
-    cx, cy, _, _, using_ridge = est.predict(np.zeros(BINOCULAR_FEATURE_DIM))
-    assert using_ridge is False
+    cx, cy, _, _, adapted = est.predict(np.zeros(BINOCULAR_FEATURE_DIM))
+    assert adapted is False
     assert cx == pytest.approx(1920.0)
     assert cy == pytest.approx(540.0)
 
     true_w = np.zeros((BINOCULAR_FEATURE_DIM, 2), dtype=np.float64)
-    true_w[0, 0] = 1600.0
-    true_w[10, 0] = 1600.0
-    true_w[1, 1] = 800.0
-    true_w[11, 1] = 800.0
-    bias = np.array([1920.0, 540.0], dtype=np.float64)
+    true_w[0, 0] = 1.2
+    true_w[10, 0] = 1.2
+    true_w[1, 1] = 0.6
+    true_w[11, 1] = 0.6
+    bias = np.zeros(2)
 
     for _ in range(30):
         f = rng.uniform(-0.2, 0.2, size=BINOCULAR_FEATURE_DIM)
-        xy = f @ true_w + bias
-        est.add_click(f, float(xy[0]), float(xy[1]))
+        est.add_click(f, *_angle_truth(est, true_w, bias, f))
 
     assert est.is_adapted is True
     assert len(est.sample_points()) == 30
@@ -196,9 +214,9 @@ def test_binocular_20d_cold_start_and_ridge_adaptation() -> None:
     test_f[10] = 0.1
     test_f[1] = -0.05
     test_f[11] = -0.05
-    expected = test_f @ true_w + bias
-    px, py, _, _, using_ridge = est.predict(test_f)
-    assert using_ridge is True
+    expected = _angle_truth(est, true_w, bias, test_f)
+    px, py, _, _, adapted = est.predict(test_f)
+    assert adapted is True
     assert abs(px - expected[0]) < 20.0
     assert abs(py - expected[1]) < 20.0
 

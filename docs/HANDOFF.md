@@ -7,6 +7,22 @@
 
 > Read `AGENTS.md` first, then `docs/GREENFIELD.md`, then this file.
 
+## 0. Latest: onboarding + pursuit warm-up (2026-11-24, D12)
+
+- Web onboarding (`web/static/onboarding.{js,css}`): hello -> camera (live face guide) ->
+  "Follow the light" -> result (accuracy, eye-to-cursor latency, solved screen map). Opens
+  once when `gaze_profile.json` is absent; skippable; Home "Set up eye tracking", Gaze
+  "Follow the light".
+- Warm-up: `gaze/pursuit.py` (plan, latency, joint fit, thresholds), `gaze/calibration.py`
+  (session, face-loss pause), `gaze/stage.py` + `overlay_wayland.c` stage mode (dim + spiral).
+- Learner: `gaze/learner.py` replaces ridge + min_clicks blend; click pairing is fixation-aware.
+- Rig: `gaze/layout_solver.py` + `displays.place_displays` (fixes overlapping displays and a
+  crash when a display had zero clicks).
+- Proofs: `cd proofs/lean && lake build` (core Lean 4.25.1, no Mathlib).
+- Verified: synthetic sims (latency within 10 ms, 0.4 deg held-out, swap detected), live
+  stage launch on KDE Wayland. **Not yet done:** a full warm-up on real camera data; the
+  D12 falsifier comparison on real sessions.
+
 ## 1. Current Architecture & Priority (2026-11-24)
 
 Both native UI toolkits (Qt / `PySide6` in `src/keyless/ui/` and macOS SwiftUI in `packaging/macos/`) and the separate Lab window have been removed and replaced by **one unified local HTTP web app** served directly by `ControlServer` (`src/keyless/ipc/control.py` + `src/keyless/web/`).

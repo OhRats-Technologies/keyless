@@ -14,7 +14,11 @@
   - `keyless ui` opens the local URL via `xdg-open` on Linux.
 - [x] Gaze v2 flywheel (`collect`, `replay`, `metrics`, `candidates`, `candidate_generator`, `recorder`, `curate`, `experiment` / `gaze probe`) and synthetic 3D Blender lab (`experiments/synth_lab/`).
 
+- [x] Onboarding + pursuit warm-up + gated click learner + no-overlap rig solver + Lean proofs (D12).
+
 ## Immediate Next Steps (In Order)
+
+0. [ ] **Run onboarding on real hardware** (`keyless ui`, restart server first); record grade, latency, accuracy in HANDOFF.
 
 1. [ ] **Record 2 to 3 real desktop sessions** using `keyless ui` (**Record session**) or `keyless gaze record --save-screenshots` while clicking normally across Firefox, terminal, and IDE.
 2. [ ] **Verify Phase 1 recall gate (>95%):** inspect in **Sessions** or run `keyless gaze eval-candidates --regenerate`. If < 95%, inspect missed clicks and fix perception (AX/OCR/DOM/visual) before modeling.

@@ -22,10 +22,15 @@ from typing import Any
 
 import numpy as np
 
+from keyless.gaze.layout_solver import angular_half_width, os_rows, solve_chain, solve_row
+
 DEFAULT_DISTANCE_MM = 600.0
 DEFAULT_GAP_MM = 25.0
 DEFAULT_WIDTH_MM = 531.0   # ~24" 16:9
 DEFAULT_HEIGHT_MM = 299.0
+# Log-likelihood units (cost = sum w (x-c)^2 with w = 1/sigma^2): a different
+# physical order must beat the OS order by this much before we believe it.
+CLICK_SWAP_PENALTY = 12.0
 
 
 def _rotation_matrix(yaw_deg: float, pitch_deg: float, roll_deg: float) -> np.ndarray:
@@ -531,7 +536,7 @@ def infer_rig_from_clicks(
 
     # Subtract shared webcam mounting yaw/pitch offset so off-center webcams
     # don't push the entire multi-display rig to one side of the user.
-    observed = [item for item in new_planes if item[1] >= 2]
+    observed = [item for item in new_planes if not isinstance(item, DisplayPlane) and item[1] >= 2]
     if len(observed) >= 2:
         az_vals = [item[2] for item in observed]
         el_vals = [item[3] for item in observed]
@@ -544,55 +549,149 @@ def infer_rig_from_clicks(
         az_bias = 0.0
         el_bias = 0.0
 
-    final_planes: list[DisplayPlane] = []
+    estimates: dict[str, tuple[float, float, float]] = {}
+    dists: list[float] = []
     for item in new_planes:
         if isinstance(item, DisplayPlane):
-            final_planes.append(item)
             continue
         plane, n, raw_az, raw_el, dist_mm = item
-        az_c = max(-1.05, min(1.05, raw_az - az_bias))
-        el_c = max(-0.55, min(0.55, raw_el - el_bias))
-        cx_mm = dist_mm * math.sin(az_c)
-        cz_mm = max(300.0, dist_mm * math.cos(az_c))
-        cy_mm = dist_mm * math.sin(el_c)
-        yaw_deg = max(-35.0, min(35.0, math.degrees(az_c) * 0.55))
-        pitch_deg = max(-20.0, min(20.0, -math.degrees(el_c) * 0.30))
-        final_planes.append(
-            DisplayPlane(
-                connector=plane.connector,
-                x=plane.x,
-                y=plane.y,
-                width=plane.width,
-                height=plane.height,
-                scale=plane.scale,
-                is_primary=plane.is_primary,
-                width_mm=plane.width_mm,
-                height_mm=plane.height_mm,
-                cx_mm=cx_mm,
-                cy_mm=cy_mm,
-                cz_mm=cz_mm,
-                yaw_deg=yaw_deg,
-                pitch_deg=pitch_deg,
-                roll_deg=plane.roll_deg,
-            )
-        )
-
-    new_planes = final_planes
-    # Only flag swapped when >=2 displays each have >=3 clicks and clear horizontal separation
-    swapped = False
-    if len(new_planes) >= 2 and all(clicks_per_display.get(p.connector, 0) >= 3 for p in new_planes):
-        os_order = [p.connector for p in sorted(new_planes, key=lambda p: (p.x, p.y))]
-        phys_order = [p.connector for p in sorted(new_planes, key=lambda p: p.cx_mm)]
-        swapped = os_order != phys_order
-
-    return DisplayRig(new_planes), {
+        # Anatomical-prior rays are coarse (~6 deg per click): weight = n / sigma^2.
+        estimates[plane.connector] = (raw_az - az_bias, raw_el - el_bias, n / (0.10 ** 2))
+        dists.append(dist_mm)
+    distance = float(np.median(dists)) if dists else DEFAULT_DISTANCE_MM
+    placed, place_meta = place_displays(
+        base_rig, estimates, distance_mm=distance, swap_penalty=CLICK_SWAP_PENALTY
+    )
+    return placed, {
         "inferred": True,
         "clicks_per_display": clicks_per_display,
-        "swapped": swapped,
+        "swapped": bool(place_meta["reordered"]),
+        "order": place_meta["order"],
     }
 
 
+def _facing_plane(src: DisplayPlane, az: float, el: float, distance_mm: float) -> DisplayPlane:
+    """Place ``src`` with its centre at angles (az, el), facing the eye."""
+    ce = math.cos(el)
+    return DisplayPlane(
+        connector=src.connector,
+        x=src.x,
+        y=src.y,
+        width=src.width,
+        height=src.height,
+        scale=src.scale,
+        is_primary=src.is_primary,
+        width_mm=src.width_mm,
+        height_mm=src.height_mm,
+        cx_mm=distance_mm * math.sin(az) * ce,
+        cy_mm=distance_mm * math.sin(el),
+        cz_mm=max(200.0, distance_mm * math.cos(az) * ce),
+        yaw_deg=max(-75.0, min(75.0, math.degrees(az))),
+        pitch_deg=max(-60.0, min(60.0, -math.degrees(el))),
+        roll_deg=src.roll_deg,
+    )
+
+
+def place_displays(
+    base_rig: DisplayRig,
+    estimates: dict[str, tuple[float, float, float]],
+    *,
+    distance_mm: float = DEFAULT_DISTANCE_MM,
+    gap_mm: float = 8.0,
+    swap_penalty: float = CLICK_SWAP_PENALTY,
+) -> tuple[DisplayRig, dict[str, Any]]:
+    """Place displays from noisy angular centres with a no-overlap guarantee.
+
+    ``estimates`` maps connector -> ``(az_rad, el_rad, weight)`` where weight is
+    an inverse variance. Rows come from the OS layout; within a row, azimuth
+    centres are projected onto the spaced-chain constraint set (see
+    ``layout_solver``). Rows are then stacked on elevation the same way.
+    Displays without evidence keep their OS-relative slot next to neighbours.
+    """
+    planes = list(base_rig.planes)
+    n = len(planes)
+    d = max(300.0, float(distance_mm))
+    rects = [(p.x, p.y, p.width, p.height) for p in planes]
+    hw = [angular_half_width(p.width_mm, d) for p in planes]
+    hh = [angular_half_width(p.height_mm, d) for p in planes]
+    gap = math.atan2(gap_mm, d)
+
+    # Default angular targets from the OS-ordered flat layout (zero weight).
+    flat = DisplayRig.from_layout(_LayoutShim(planes), distance_mm=d)
+    default_ang = {}
+    for p in flat.planes:
+        default_ang[p.connector] = angles_from_ray(p.uv_to_3d(0.5, 0.5))
+
+    az_t = [0.0] * n
+    el_t = [0.0] * n
+    w = [0.0] * n
+    for i, p in enumerate(planes):
+        est = estimates.get(p.connector)
+        if est is not None and est[2] > 0.0:
+            az_t[i], el_t[i], w[i] = float(est[0]), float(est[1]), float(est[2])
+        else:
+            az_t[i], el_t[i] = default_ang.get(p.connector, (0.0, 0.0))
+
+    rows = os_rows(rects)
+    az_out = list(az_t)
+    reordered = False
+    order_out: list[list[str]] = []
+    for row in rows:
+        sol = solve_row(
+            [az_t[i] for i in row],
+            [w[i] for i in row],
+            [hw[i] for i in row],
+            gap_min=gap,
+            swap_penalty=swap_penalty,
+        )
+        for k, i in enumerate(row):
+            az_out[i] = sol.centers[k]
+        reordered = reordered or sol.reordered
+        order_out.append([planes[row[k]].connector for k in sol.order])
+
+    # Stack rows vertically (top to bottom in OS order) on elevation.
+    el_out = list(el_t)
+    if len(rows) >= 2:
+        row_w = [sum(w[i] for i in row) for row in rows]
+        row_t = [
+            (sum(w[i] * el_t[i] for i in row) / rw) if rw > 0 else sum(el_t[i] for i in row) / len(row)
+            for row, rw in zip(rows, row_w)
+        ]
+        row_h = [max(hh[i] for i in row) for row in rows]
+        gaps_v = [row_h[k] + row_h[k + 1] + gap for k in range(len(rows) - 1)]
+        solved = solve_chain(row_t, row_w, gaps_v)
+        for row, t, s in zip(rows, row_t, solved):
+            for i in row:
+                el_out[i] = el_t[i] + (s - t)
+
+    placed = [_facing_plane(p, az_out[i], el_out[i], d) for i, p in enumerate(planes)]
+    return DisplayRig(placed), {"reordered": reordered, "order": order_out}
+
+
+class _LayoutShim:
+    """Adapter so ``DisplayRig.from_layout`` can rebuild a flat default rig."""
+
+    def __init__(self, planes: list[DisplayPlane]) -> None:
+        self.monitors = [
+            _MonitorShim(p) for p in planes
+        ]
+        self.total_width = max(p.x + p.width for p in planes)
+        self.total_height = max(p.y + p.height for p in planes)
+
+
+class _MonitorShim:
+    def __init__(self, p: DisplayPlane) -> None:
+        self.connector = p.connector
+        self.x, self.y, self.width, self.height = p.x, p.y, p.width, p.height
+        self.scale = p.scale
+        self.is_primary = p.is_primary
+        self.width_mm = p.width_mm
+        self.height_mm = p.height_mm
+
+
 __all__ = [
+    "CLICK_SWAP_PENALTY",
+    "place_displays",
     "anatomical_ray_angles",
     "infer_rig_from_clicks",
     "DEFAULT_DISTANCE_MM",

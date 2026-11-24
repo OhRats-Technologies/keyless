@@ -381,6 +381,248 @@ static bool read_gaze_shm(const volatile struct gaze_shm_layout *shm, double *x,
     return false;
 }
 
+/* ===================================================================== */
+/* Calibration stage ("follow the light")                                */
+/* ===================================================================== */
+/*
+ * Stage mode: `keyless-overlay <gaze_shm> <pid> <stage_shm>`.
+ * Dims every output like a theatre and renders one hypnotic stimulus that
+ * travels across displays. Python owns all timing (positions are labels), so
+ * this loop only draws the latest committed state.
+ *
+ * Stimulus anatomy (outside -> in):
+ *   halo   - soft amber gaussian glow: peripheral saliency, findable anywhere;
+ *   spiral - 3-arm sqrt-compressed spiral rotating inward: a motion-energy
+ *            "pull" toward the centre that holds pursuit without effort;
+ *   pip    - crisp ivory point with a dark ring: the exact label location.
+ * During holds Python shrinks `size`; the contracting spiral funnels attention
+ * onto the pip. `burst` draws an expanding ring as confirmation.
+ */
+#define STAGE_ACTIVE (1u << 0)
+#define STAGE_TARGET (1u << 1)
+#define STAGE_PAUSED (1u << 2)
+#define STAGE_DONE   (1u << 3)
+
+struct __attribute__((packed)) stage_shm_layout {
+    uint64_t seq;
+    double x;
+    double y;
+    float size;
+    float phase;
+    float dim;
+    float burst;
+    uint32_t flags;
+    uint32_t reserved;
+};
+
+static bool read_stage_shm(const volatile struct stage_shm_layout *shm, struct stage_shm_layout *out) {
+    for (int i = 0; i < 8; ++i) {
+        uint64_t s1 = __atomic_load_n(&shm->seq, __ATOMIC_ACQUIRE);
+        if (s1 & 1u) continue;
+        struct stage_shm_layout tmp;
+        tmp.x = shm->x; tmp.y = shm->y; tmp.size = shm->size; tmp.phase = shm->phase;
+        tmp.dim = shm->dim; tmp.burst = shm->burst; tmp.flags = shm->flags;
+        uint64_t s2 = __atomic_load_n(&shm->seq, __ATOMIC_ACQUIRE);
+        if (s1 == s2) { tmp.seq = s1; *out = tmp; return s1 > 0; }
+    }
+    return false;
+}
+
+static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static inline float smooth(float e0, float e1, float x) {
+    float t = clampf((x - e0) / (e1 - e0), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+/* Premultiplied source-over: dst = src + dst * (1 - src_a). Colours 0..1. */
+static inline void over_px(uint32_t *dst, float r, float g, float b, float a) {
+    if (a <= 0.002f) return;
+    if (a > 1.0f) a = 1.0f;
+    uint32_t c = *dst;
+    float da = (float)((c >> 24) & 0xffu), dr = (float)((c >> 16) & 0xffu);
+    float dg = (float)((c >> 8) & 0xffu), db = (float)(c & 0xffu);
+    float k = 1.0f - a;
+    uint32_t oa = (uint32_t)clampf(a * 255.0f + da * k, 0.0f, 255.0f);
+    uint32_t orr = (uint32_t)clampf(r * a * 255.0f + dr * k, 0.0f, 255.0f);
+    uint32_t og = (uint32_t)clampf(g * a * 255.0f + dg * k, 0.0f, 255.0f);
+    uint32_t ob = (uint32_t)clampf(b * a * 255.0f + db * k, 0.0f, 255.0f);
+    *dst = (oa << 24) | (orr << 16) | (og << 8) | ob;
+}
+
+static inline uint32_t dim_color(float dim) {
+    uint32_t a = (uint32_t)(clampf(dim, 0.0f, 1.0f) * 0.90f * 255.0f + 0.5f);
+    /* Premultiplied near-black with a warm tint (#0b0806). */
+    uint32_t r = (a * 11u) / 255u, g = (a * 8u) / 255u, b = (a * 6u) / 255u;
+    return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+static void fill_rect(struct output_overlay *ov, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t c) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > ov->buf_w) x1 = ov->buf_w;
+    if (y1 > ov->buf_h) y1 = ov->buf_h;
+    if (x0 >= x1 || y0 >= y1) return;
+    for (int32_t y = y0; y < y1; ++y) {
+        uint32_t *row = &ov->pixels[y * ov->buf_w];
+        for (int32_t x = x0; x < x1; ++x) row[x] = c;
+    }
+    wl_surface_damage_buffer(ov->surface, x0, y0, x1 - x0, y1 - y0);
+}
+
+static void draw_stimulus(struct output_overlay *ov, float cx, float cy, float R,
+                          float phase, float burst, bool paused, int32_t *bx0, int32_t *by0,
+                          int32_t *bx1, int32_t *by1) {
+    const float reach = R * 2.4f + 6.0f;
+    int32_t x0 = (int32_t)floorf(cx - reach), y0 = (int32_t)floorf(cy - reach);
+    int32_t x1 = (int32_t)ceilf(cx + reach), y1 = (int32_t)ceilf(cy + reach);
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > ov->buf_w) x1 = ov->buf_w;
+    if (y1 > ov->buf_h) y1 = ov->buf_h;
+    *bx0 = x0; *by0 = y0; *bx1 = x1; *by1 = y1;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    const float master = paused ? 0.38f : 1.0f;
+    const float spin = paused ? 0.0f : phase;
+    /* Palette: OhRats amber, ivory, deep terracotta. */
+    const float ar = 0.886f, ag = 0.478f, ab = 0.231f;
+    const float ir = 0.957f, ig = 0.953f, ib = 0.875f;
+    const float tr = 0.42f, tg = 0.16f, tb = 0.07f;
+    const float breathe = 1.0f + 0.04f * sinf(phase * 2.1f);
+    const float Rb = R * breathe;
+    const float pip = fmaxf(2.4f, R * 0.045f);
+
+    for (int32_t y = y0; y < y1; ++y) {
+        float dy = (float)y + 0.5f - cy;
+        uint32_t *row = &ov->pixels[y * ov->buf_w];
+        for (int32_t x = x0; x < x1; ++x) {
+            float dx = (float)x + 0.5f - cx;
+            float d = sqrtf(dx * dx + dy * dy);
+            if (d > reach) continue;
+            uint32_t *px = &row[x];
+            float rho = d / Rb;
+
+            /* 1. halo */
+            float halo = expf(-rho * rho * 1.6f) * 0.42f;
+            over_px(px, ar, ag, ab, halo * master);
+
+            /* 2. spiral disc */
+            if (rho < 1.05f) {
+                float th = atan2f(dy, dx);
+                float s = sinf(3.0f * th + 17.0f * sqrtf(rho) - 5.5f * spin);
+                float band = smooth(-0.25f, 0.25f, s);
+                float edge = smooth(1.03f, 0.80f, rho);
+                float core = 1.0f - rho;
+                float br = ar + (ir - ar) * core * core, bg = ag + (ig - ag) * core * core, bb = ab + (ib - ab) * core * core;
+                over_px(px, tr, tg, tb, 0.55f * edge * master);
+                over_px(px, br, bg, bb, band * edge * 0.92f * master);
+            }
+
+            /* 3. burst ring */
+            if (burst > 0.0f && burst < 1.0f) {
+                float rr = Rb * (1.0f + 1.3f * burst);
+                float w = 2.0f + 3.0f * (1.0f - burst);
+                float ring = smooth(w, 0.0f, fabsf(d - rr)) * (1.0f - burst) * (1.0f - burst);
+                over_px(px, ir, ig, ib, ring * 0.9f);
+            }
+
+            /* 4. pip: dark ring then ivory point (always full strength) */
+            if (d < pip + 2.6f) {
+                float ringa = smooth(pip + 2.6f, pip + 1.2f, d);
+                over_px(px, 0.05f, 0.03f, 0.02f, 0.85f * ringa);
+                float dot = smooth(pip + 0.6f, pip - 0.6f, d);
+                over_px(px, ir, ig, ib, dot);
+            }
+        }
+    }
+    wl_surface_damage_buffer(ov->surface, x0, y0, x1 - x0, y1 - y0);
+}
+
+static int stage_loop(const char *stage_name, pid_t watch_pid) {
+    char path[128];
+    if (stage_name[0] == '/') snprintf(path, sizeof(path), "%s", stage_name);
+    else snprintf(path, sizeof(path), "/%s", stage_name);
+    int fd = -1;
+    for (int tries = 0; tries < 40 && g_running; ++tries) {
+        fd = shm_open(path, O_RDONLY, 0);
+        if (fd >= 0) break;
+        usleep(25000);
+    }
+    if (fd < 0) { fprintf(stderr, "keyless-stage: no stage shm %s\n", path); return 3; }
+    void *mapped = mmap(NULL, sizeof(struct stage_shm_layout), PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);
+    if (mapped == MAP_FAILED) return 3;
+    const volatile struct stage_shm_layout *shm = (const volatile struct stage_shm_layout *)mapped;
+
+    float applied_dim[MAX_OUTPUTS];
+    int32_t prev_box[MAX_OUTPUTS][4];
+    for (int i = 0; i < MAX_OUTPUTS; ++i) { applied_dim[i] = -1.0f; prev_box[i][0] = -1; }
+
+    int wl_fd = wl_display_get_fd(g_display);
+    unsigned int tick = 0;
+    uint64_t last_seq = 0;
+    while (g_running) {
+        if (watch_pid > 1 && (++tick % 30u) == 0u) {
+            if (kill(watch_pid, 0) != 0 && errno == ESRCH) break;
+        }
+        while (wl_display_prepare_read(g_display) != 0) wl_display_dispatch_pending(g_display);
+        wl_display_flush(g_display);
+        struct pollfd pfd = { .fd = wl_fd, .events = POLLIN };
+        if (poll(&pfd, 1, 8) > 0) {
+            wl_display_read_events(g_display);
+            wl_display_dispatch_pending(g_display);
+        } else {
+            wl_display_cancel_read(g_display);
+        }
+
+        struct stage_shm_layout st;
+        if (!read_stage_shm(shm, &st)) continue;
+        if (st.flags & STAGE_DONE) break;
+        if (st.seq == last_seq) continue;
+        last_seq = st.seq;
+        float dim = (st.flags & STAGE_ACTIVE) ? clampf(st.dim, 0.0f, 1.0f) : 0.0f;
+        float qdim = floorf(dim * 64.0f + 0.5f) / 64.0f;
+        uint32_t bg = dim_color(qdim);
+
+        for (int i = 0; i < g_output_count; ++i) {
+            struct output_overlay *ov = &g_outputs[i];
+            if (!ov->configured || !ov->pixels) continue;
+            bool dirty = false;
+            if (qdim != applied_dim[i]) {
+                fill_rect(ov, 0, 0, ov->buf_w, ov->buf_h, bg);
+                applied_dim[i] = qdim;
+                prev_box[i][0] = -1;
+                dirty = true;
+            } else if (prev_box[i][0] >= 0) {
+                fill_rect(ov, prev_box[i][0], prev_box[i][1], prev_box[i][2], prev_box[i][3], bg);
+                prev_box[i][0] = -1;
+                dirty = true;
+            }
+            bool on_this = (st.flags & STAGE_TARGET) &&
+                st.x >= (double)ov->log_x && st.x < (double)(ov->log_x + ov->log_w) &&
+                st.y >= (double)ov->log_y && st.y < (double)(ov->log_y + ov->log_h);
+            if (on_this && st.size > 0.01f) {
+                double sx = (double)ov->buf_w / (double)(ov->log_w > 0 ? ov->log_w : ov->buf_w);
+                double sy = (double)ov->buf_h / (double)(ov->log_h > 0 ? ov->log_h : ov->buf_h);
+                float lx = (float)((st.x - (double)ov->log_x) * sx);
+                float ly = (float)((st.y - (double)ov->log_y) * sy);
+                float R = 120.0f * st.size * (float)sx;
+                int32_t b0, b1, b2, b3;
+                draw_stimulus(ov, lx, ly, R, st.phase, st.burst, (st.flags & STAGE_PAUSED) != 0, &b0, &b1, &b2, &b3);
+                prev_box[i][0] = b0; prev_box[i][1] = b1; prev_box[i][2] = b2; prev_box[i][3] = b3;
+                dirty = true;
+            }
+            if (dirty) {
+                wl_surface_attach(ov->surface, ov->buffer, 0, 0);
+                wl_surface_commit(ov->surface);
+            }
+        }
+        wl_display_flush(g_display);
+    }
+    munmap((void *)shm, sizeof(struct stage_shm_layout));
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *shm_name = (argc > 1 && argv[1][0]) ? argv[1] : "keyless_gaze_v1";
     pid_t watch_pid = (argc > 2) ? (pid_t)atoi(argv[2]) : 0;
@@ -439,6 +681,19 @@ int main(int argc, char **argv) {
     }
     wl_region_destroy(empty_region);
     wl_display_roundtrip(g_display);
+
+    if (argc > 3 && argv[3][0]) {
+        int rc = stage_loop(argv[3], watch_pid);
+        for (int i = 0; i < g_output_count; ++i) {
+            struct output_overlay *ov = &g_outputs[i];
+            if (ov->buffer) wl_buffer_destroy(ov->buffer);
+            if (ov->pixels) munmap(ov->pixels, ov->shm_size);
+            if (ov->layer_surface) wl_proxy_marshal((struct wl_proxy *)ov->layer_surface, 7);
+            if (ov->surface) wl_surface_destroy(ov->surface);
+        }
+        wl_display_disconnect(g_display);
+        return rc;
+    }
 
     /* Open shared gaze memory (retry briefly if writer is still initializing) */
     int shm_fd = -1;

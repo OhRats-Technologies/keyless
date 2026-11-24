@@ -1,0 +1,350 @@
+/* Keyless onboarding — a calm dark stage that flows straight into the dimmed
+   calibration theatre. Motion vocabulary: things spring in from slightly below
+   (420 ms, gentle overshoot), leave faster (200 ms), and every success gets a
+   physical "pop". Reduced motion swaps all of it for fades. */
+
+.ob {
+  --ob-bg: #0c0907;
+  --ob-ink: #f4f3df;
+  --ob-dim: rgba(244, 243, 223, 0.62);
+  --ob-faint: rgba(244, 243, 223, 0.14);
+  --ob-amber: #e27a3b;
+  --ob-amber-hi: #f09a5c;
+  --ob-ok: #5fd08f;
+  --ob-spring: cubic-bezier(0.2, 0.9, 0.25, 1.12);
+  --ob-out: cubic-bezier(0.4, 0, 1, 1);
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: var(--ob-bg);
+  color: var(--ob-ink);
+  font-family: var(--or-font-sans, 'Inter', system-ui, sans-serif);
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  transition: opacity 320ms ease;
+  overflow: hidden;
+}
+.ob.in { opacity: 1; }
+.ob.out { opacity: 0; transition-duration: 220ms; }
+
+.ob-glow {
+  position: absolute;
+  inset: -20%;
+  background:
+    radial-gradient(40% 35% at 50% 42%, rgba(226, 122, 59, 0.16), transparent 70%),
+    radial-gradient(30% 30% at 50% 60%, rgba(244, 243, 223, 0.05), transparent 70%);
+  animation: ob-breathe 7s ease-in-out infinite;
+  pointer-events: none;
+}
+.ob[data-step='run'] .ob-glow { animation: none; opacity: 0; transition: opacity 600ms ease; }
+@keyframes ob-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.06); opacity: 1; }
+}
+
+/* --- top bar ------------------------------------------------------------- */
+.ob-top {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 22px 24px 0;
+  min-height: 56px;
+  transition: opacity 300ms ease;
+}
+.ob[data-step='run'] .ob-top { opacity: 0; pointer-events: none; }
+.ob-pips { display: flex; gap: 8px; }
+.ob-pips i {
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  background: var(--ob-faint);
+  transition: width 380ms var(--ob-spring), background-color 300ms ease;
+}
+.ob-pips i.past { background: rgba(244, 243, 223, 0.42); }
+.ob-pips i.on { width: 26px; background: var(--ob-amber); }
+.ob-close {
+  position: absolute;
+  right: 20px;
+  top: 16px;
+  border: 0;
+  background: none;
+  color: var(--ob-dim);
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: 99px;
+  cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease;
+}
+.ob-close:hover { color: var(--ob-ink); background: var(--ob-faint); }
+
+/* --- stage + card transitions --------------------------------------------- */
+.ob-stage {
+  position: relative;
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  overflow-y: auto;
+}
+.ob[data-step='done'] .ob-hero,
+.ob[data-step='retry'] .ob-hero { height: 150px; margin-bottom: 10px; }
+.ob[data-step='done'] .ob-actions { margin-top: 24px; }
+.ob-card {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 560px;
+  width: 100%;
+  opacity: 0;
+  transform: translateY(14px) scale(0.985);
+}
+.ob-card.enter {
+  opacity: 1;
+  transform: none;
+  transition: opacity 360ms ease, transform 460ms var(--ob-spring);
+}
+.ob-card.leave {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.99);
+  transition: opacity 180ms var(--ob-out), transform 200ms var(--ob-out);
+  pointer-events: none;
+}
+.ob-card > * { transition-delay: 0ms; }
+.ob-card.enter .ob-title { animation: ob-rise 520ms var(--ob-spring) 60ms both; }
+.ob-card.enter .ob-sub { animation: ob-rise 520ms var(--ob-spring) 110ms both; }
+.ob-card.enter .ob-actions,
+.ob-card.enter .ob-stats,
+.ob-card.enter .ob-tips { animation: ob-rise 520ms var(--ob-spring) 170ms both; }
+@keyframes ob-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+.ob-hero {
+  height: 240px;
+  width: 100%;
+  display: grid;
+  place-items: center;
+  margin-bottom: 18px;
+}
+.ob-orb { width: 240px; height: 240px; display: block; }
+
+.ob-title {
+  margin: 0;
+  font-size: clamp(30px, 5vw, 44px);
+  line-height: 1.08;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+.ob-title.pop { animation: ob-pop 360ms var(--ob-spring); }
+@keyframes ob-pop {
+  0% { transform: scale(0.96); opacity: 0.4; }
+  100% { transform: none; opacity: 1; }
+}
+.ob-sub {
+  margin: 14px 0 0;
+  font-size: 17px;
+  line-height: 1.5;
+  color: var(--ob-dim);
+}
+.ob-foot { margin: 18px 0 0; font-size: 14px; color: var(--ob-dim); }
+
+/* --- buttons -------------------------------------------------------------- */
+.ob-actions { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 34px; }
+.ob-btn {
+  min-width: 220px;
+  height: 56px;
+  padding: 0 32px;
+  border-radius: 99px;
+  border: 0;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: transform 160ms var(--ob-spring), background-color 150ms ease, box-shadow 200ms ease;
+}
+.ob-btn:active { transform: scale(0.96); }
+.ob-btn:focus-visible { outline: 3px solid rgba(240, 154, 92, 0.55); outline-offset: 3px; }
+.ob-primary {
+  background: var(--ob-amber);
+  color: #170c05;
+  box-shadow: 0 10px 30px -10px rgba(226, 122, 59, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.ob-primary:hover { background: var(--ob-amber-hi); box-shadow: 0 14px 36px -10px rgba(226, 122, 59, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.3); }
+.ob-ghost { background: transparent; color: var(--ob-dim); height: 44px; min-width: 0; font-weight: 500; font-size: 15px; }
+.ob-ghost:hover { color: var(--ob-ink); background: var(--ob-faint); }
+
+/* --- camera: face guide --------------------------------------------------- */
+.ob-face { position: relative; width: 220px; height: 220px; --fill: 0; }
+.ob-face-ring { position: absolute; inset: 0; transform: rotate(-90deg); }
+.ob-face-ring circle { fill: none; stroke-width: 5; }
+.ob-face-ring .track { stroke: var(--ob-faint); }
+.ob-face-ring .fill {
+  stroke: var(--ob-ok);
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: calc(1 - var(--fill));
+  transition: stroke-dashoffset 160ms linear;
+}
+.ob-face.err .ob-face-ring .track { stroke: rgba(226, 100, 100, 0.5); }
+.ob-face-puck {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 96px;
+  height: 120px;
+  margin: -60px 0 0 -48px;
+  border-radius: 48% 48% 46% 46%;
+  background: radial-gradient(70% 70% at 50% 35%, rgba(244, 243, 223, 0.2), rgba(244, 243, 223, 0.06));
+  border: 1.5px solid rgba(244, 243, 223, 0.35);
+  opacity: 0.25;
+  transition: transform 140ms ease-out, opacity 300ms ease, border-color 300ms ease;
+}
+.ob-face-puck.seen { opacity: 1; }
+.ob-face-puck i {
+  position: absolute;
+  top: 46px;
+  width: 16px;
+  height: 9px;
+  border-radius: 99px;
+  background: var(--ob-ink);
+  transition: transform 90ms ease;
+}
+.ob-face-puck i:first-child { left: 22px; }
+.ob-face-puck i:last-child { right: 22px; }
+.ob-face-puck.blink i { transform: scaleY(0.15); }
+.ob-face.ok .ob-face-puck { border-color: var(--ob-ok); }
+.ob-check {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 52px;
+  height: 52px;
+  border-radius: 99px;
+  background: var(--ob-ok);
+  transform: scale(0);
+  transition: transform 420ms var(--ob-spring);
+}
+.ob-check path { fill: none; stroke: #0c2416; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; }
+.ob-face.ok .ob-check { transform: scale(1); }
+.ob-face.ok .ob-check path { stroke-dashoffset: 0; transition: stroke-dashoffset 360ms ease 160ms; }
+
+/* --- ready: display preview ------------------------------------------------ */
+.ob-map svg { display: block; max-width: 100%; height: auto; }
+.ob-map .mon { fill: rgba(244, 243, 223, 0.04); stroke: rgba(244, 243, 223, 0.28); stroke-width: 1.5; }
+.ob-map .spark { fill: var(--ob-ink); }
+.ob-map .spark-halo { fill: rgba(226, 122, 59, 0.45); filter: blur(4px); }
+
+.ob-count {
+  grid-area: 1 / 1;
+  font-size: 120px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  color: var(--ob-ink);
+}
+.ob-count span { display: block; animation: ob-count 640ms var(--ob-spring) both; }
+@keyframes ob-count {
+  0% { transform: scale(0.4); opacity: 0; }
+  35% { transform: scale(1.06); opacity: 1; }
+  75% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0; }
+}
+
+/* --- run ------------------------------------------------------------------- */
+.ob[data-step='run'] .ob-card { max-width: none; position: fixed; inset: 0; }
+.ob-run { position: fixed; inset: 0; }
+.ob-run-orb { position: absolute; left: 0; top: 0; width: 0; height: 0; will-change: transform; }
+.ob[data-mode='overlay'] .ob-run-orb { display: none; }
+.ob-run-hud {
+  position: absolute;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 22px 12px 14px;
+  border-radius: 99px;
+  background: rgba(244, 243, 223, 0.06);
+  backdrop-filter: blur(10px);
+  white-space: nowrap;
+  transition: background-color 300ms ease;
+}
+.ob[data-mode='overlay'] .ob-run-hud { bottom: 50%; transform: translate(-50%, 50%) scale(1.15); }
+.ob-run-hud strong { display: block; font-size: 16px; font-weight: 600; }
+.ob-run-hud span { display: block; font-size: 13px; color: var(--ob-dim); }
+.ob-card.paused .ob-run-hud { background: rgba(226, 122, 59, 0.24); animation: ob-pulse 1.6s ease-in-out infinite; }
+@keyframes ob-pulse { 0%, 100% { opacity: 0.78; } 50% { opacity: 1; } }
+.ob-progress { width: 44px; height: 44px; transform: rotate(-90deg); }
+.ob-progress circle { fill: none; stroke-width: 4; }
+.ob-progress .track { stroke: var(--ob-faint); }
+.ob-progress .fill {
+  stroke: var(--ob-amber);
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: calc(1 - var(--p));
+  transition: stroke-dashoffset 120ms linear;
+}
+
+/* --- done ------------------------------------------------------------------ */
+.ob-burst { position: relative; width: 140px; height: 140px; }
+.ob-burst svg { width: 100%; height: 100%; }
+.ob-burst .disc { fill: var(--ob-ok); transform-origin: 60px 60px; animation: ob-disc 620ms var(--ob-spring) both; }
+.ob-burst .tick { fill: none; stroke: #0c2416; stroke-width: 8; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: ob-tick 380ms ease 380ms forwards; }
+@keyframes ob-disc { from { transform: scale(0); } to { transform: scale(1); } }
+@keyframes ob-tick { to { stroke-dashoffset: 0; } }
+.ob-burst i {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin: -4px;
+  border-radius: 99px;
+  background: var(--ob-amber);
+  opacity: 0;
+  animation: ob-spark 700ms cubic-bezier(0.1, 0.8, 0.3, 1) 260ms both;
+}
+.ob-burst i:nth-child(odd) { background: var(--ob-ink); width: 6px; height: 6px; margin: -3px; }
+@keyframes ob-spark {
+  0% { opacity: 1; transform: rotate(var(--a)) translateY(-40px) scale(1); }
+  100% { opacity: 0; transform: rotate(var(--a)) translateY(-98px) scale(0.3); }
+}
+.ob-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: 100%; margin-top: 30px; }
+.ob-stat { padding: 14px 10px; border-radius: 18px; background: rgba(244, 243, 223, 0.05); }
+.ob-stat b { display: block; font-size: 15px; font-weight: 600; line-height: 1.25; }
+.ob-stat span { display: block; margin-top: 4px; font-size: 12.5px; color: var(--ob-dim); }
+.ob-rig { margin-top: 14px; }
+.ob-rig svg { display: block; max-width: 100%; height: auto; overflow: visible; }
+.ob-rig .seg { stroke: var(--ob-ink); stroke-width: 5; stroke-linecap: round; animation: ob-rise 500ms var(--ob-spring) calc(300ms + var(--d)) both; }
+.ob-rig .ray { stroke: rgba(226, 122, 59, 0.35); stroke-width: 1.5; stroke-dasharray: 3 4; animation: ob-rise 500ms ease calc(240ms + var(--d)) both; }
+.ob-rig text { fill: var(--ob-dim); font-size: 11px; text-anchor: middle; font-family: var(--or-font-mono, monospace); paint-order: stroke; stroke: var(--ob-bg); stroke-width: 4px; }
+.ob-rig .you { fill: var(--ob-amber); }
+
+/* --- retry ----------------------------------------------------------------- */
+.ob-hmm { position: relative; width: 120px; height: 120px; border-radius: 50%; background: rgba(244, 243, 223, 0.08); animation: ob-wobble 1.8s ease-in-out infinite; }
+.ob-hmm i { position: absolute; top: 46px; width: 12px; height: 12px; border-radius: 99px; background: var(--ob-ink); }
+.ob-hmm i:first-child { left: 36px; }
+.ob-hmm i:nth-child(2) { right: 36px; }
+.ob-hmm b { position: absolute; left: 44px; top: 78px; width: 32px; height: 4px; border-radius: 4px; background: var(--ob-ink); transform: rotate(-8deg); }
+@keyframes ob-wobble { 0%, 100% { transform: rotate(-4deg); } 50% { transform: rotate(4deg); } }
+.ob-tips { list-style: none; margin: 22px 0 0; padding: 0; display: grid; gap: 8px; }
+.ob-tips li { font-size: 15px; color: var(--ob-dim); }
+.ob-tips li::before { content: ''; display: inline-block; width: 6px; height: 6px; margin: 0 10px 2px 0; border-radius: 99px; background: var(--ob-amber); }
+
+@media (max-width: 560px) {
+  .ob-stats { grid-template-columns: 1fr; }
+  .ob-hero { height: 190px; }
+  .ob-orb { width: 190px; height: 190px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob *, .ob *::before, .ob *::after { animation-duration: 1ms !important; animation-delay: 0ms !important; transition-duration: 1ms !important; }
+  .ob-glow { animation: none; }
+}

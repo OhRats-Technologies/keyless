@@ -1,6 +1,8 @@
 import { Viewport3D } from '/assets/viewport3d.js';
+import { Onboarding } from '/assets/onboarding.js';
 
 const viewport3d = new Viewport3D();
+const onboarding = new Onboarding({ onClose: () => { refreshCore().then(() => renderView()); } });
 let rafId = null;
 
 // Keyless Precision Instrument UI - Unified Multi-Display 3D Monocular + Binocular Gaze & Voice
@@ -269,6 +271,7 @@ function renderHome(root) {
           <button id="home-primary" class="btn btn-primary" type="button">
             ${st === 'listening' ? 'Pause listening' : st === 'paused' ? 'Resume listening' : 'Start listening'}
           </button>
+          <button id="home-setup-eyes" class="btn" type="button">${g.stats && g.stats.profile ? 'Recalibrate eyes' : 'Set up eye tracking'}</button>
           <button id="home-open-gaze" class="btn" type="button">Open 3D gaze deck</button>
           <button id="home-open-llm" class="btn" type="button">AI Assistant setup</button>
         </div>
@@ -328,6 +331,7 @@ function renderHome(root) {
 
   document.getElementById('home-primary').addEventListener('click', toggleListening);
   document.getElementById('home-open-gaze').addEventListener('click', () => setView('gaze'));
+  document.getElementById('home-setup-eyes').addEventListener('click', () => onboarding.open(g.stats && g.stats.profile ? 'ready' : 'hello'));
   document.getElementById('home-open-llm').addEventListener('click', () => setView('settings', { settingsTab: 'llm' }));
   root.querySelectorAll('[data-cmd-cat]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -457,7 +461,7 @@ function renderGaze(root) {
           <div class="telemetry-cell">
             <span class="eyebrow">3D Ray Model</span>
             <span class="big-readout" id="gaze-adapt-state">${usingRidge ? 'RIDGE' : 'PRIOR'}</span>
-            <span class="telemetry" id="gaze-adapt-count">${samples} / ${minClicks} clicks</span>
+            <span class="telemetry" id="gaze-adapt-count">${samples} clicks learned</span>
           </div>
           <div class="telemetry-cell">
             <span class="eyebrow">Eye Overlay</span>
@@ -555,8 +559,9 @@ function renderGaze(root) {
             <label class="telemetry">Alpha <input id="gaze-ridge-alpha" type="number" step="0.005" min="0.0001" max="10" value="0.01" style="width:68px;" ${running ? 'disabled' : ''}></label>
           </div>
           <div class="row-gap">
+            <button id="gaze-calibrate-btn" class="btn btn-sm" type="button">Follow the light</button>
             <button id="gaze-undo-btn" class="btn btn-sm" type="button" ${!running || samples === 0 ? 'disabled' : ''}>Undo click</button>
-            <button id="gaze-reset-btn" class="btn btn-sm" type="button" ${!running || samples === 0 ? 'disabled' : ''}>Reset prior</button>
+            <button id="gaze-reset-btn" class="btn btn-sm" type="button" ${!running || samples === 0 ? 'disabled' : ''}>Forget clicks</button>
           </div>
         </section>
 
@@ -642,6 +647,7 @@ function renderGaze(root) {
       } catch (err) { showError('Could not save 3D rig', err.message); }
     });
   }
+  document.getElementById('gaze-calibrate-btn').addEventListener('click', () => onboarding.open('ready'));
   document.getElementById('gaze-undo-btn').addEventListener('click', async () => {
     state.gaze = await api('/v1/gaze/undo', { method: 'POST', body: '{}' });
     renderGaze(root);
@@ -1809,8 +1815,8 @@ function connectStreams() {
           setTxt('gaze-coords', pred && pred.face_detected ? `X ${String(Math.round(pred.x)).padStart(4, '0')}  Y ${String(Math.round(pred.y)).padStart(4, '0')}` : 'X ----  Y ----');
           setTxt('gaze-fps', st.measured_fps ? String(st.measured_fps) : '--');
           setTxt('gaze-frame-counts', `${st.frames_read || 0} frames / ${st.faces_detected || 0} faces`);
-          setTxt('gaze-adapt-state', st.using_ridge ? 'RIDGE' : 'PRIOR');
-          setTxt('gaze-adapt-count', `${st.samples || 0} / ${st.min_clicks || 5} clicks`);
+          setTxt('gaze-adapt-state', st.using_ridge ? 'LEARNED' : 'PRIOR');
+          setTxt('gaze-adapt-count', `${st.samples || 0} clicks learned`);
           setTxt('gaze-overlay-readout', state.gaze.overlay_active ? 'ACTIVE' : 'OFF');
           setTxt('gaze-kin', pred ? String(pred.kinematics || 'fixation').toUpperCase().replace('_', ' ') : 'IDLE');
           setTxt('gaze-suppressed', `${st.blinks_suppressed || 0} blinks / ${st.outliers_suppressed || 0} REM gated`);
@@ -1856,4 +1862,5 @@ function initEvents() {
   await refreshCore();
   await setView('home');
   connectStreams();
+  if (await Onboarding.shouldAutoOpen()) onboarding.open('hello');
 })();

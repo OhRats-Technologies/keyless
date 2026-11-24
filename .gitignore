@@ -18,3 +18,6 @@ wheels/
 # Local secrets / environment overrides
 .env
 .tmp-synth-lab/
+
+# Lean build output
+proofs/lean/.lake/
