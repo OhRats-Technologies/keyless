@@ -139,6 +139,44 @@ class ControlClient:
     def models(self) -> dict[str, Any]:
         return self._request("GET", "/v1/models")
 
+    def events(self):
+        """Yield parsed ``state`` change payloads from ``GET /v1/events`` (SSE).
+
+        The stream is long-lived; callers iterate it on a worker thread and
+        refetch full state on each event. Raises ``ControlError`` when the
+        stream cannot be opened or breaks, so callers can fall back to polling.
+        """
+        url = f"{self.base_url}/v1/events"
+        request = urllib.request.Request(
+            url, headers={"Accept": "text/event-stream"}, method="GET"
+        )
+        try:
+            response = urllib.request.urlopen(request, timeout=self.timeout)
+        except urllib.error.HTTPError as exc:
+            raise ControlError(f"events stream failed: HTTP {exc.code}", status=exc.code, url=url) from exc
+        except (urllib.error.URLError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise ControlError(f"events stream unreachable: {reason}", url=url) from exc
+        data_lines: list[str] = []
+        try:
+            for raw in response:
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if line.startswith("data:"):
+                    data_lines.append(line[5:].strip())
+                elif line == "":
+                    if data_lines:
+                        try:
+                            value = json.loads("\n".join(data_lines))
+                        except json.JSONDecodeError:
+                            value = None
+                        data_lines = []
+                        if isinstance(value, dict):
+                            yield value
+        except (OSError, ValueError) as exc:
+            raise ControlError(f"events stream closed: {exc}", url=url) from exc
+        finally:
+            response.close()
+
     def history(self, limit: int = 50) -> list[dict[str, Any]]:
         query = urllib.parse.urlencode({"limit": max(1, min(200, int(limit)))})
         body = self._request("GET", f"/v1/history?{query}")
