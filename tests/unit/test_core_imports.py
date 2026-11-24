@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,6 +32,12 @@ def test_core_and_gaze_never_import_gui_or_web() -> None:
                     )
 
 
+# Platform packages import OS-only deps (pyobjc, pywin32, evdev); only resolve the host's own.
+_FOREIGN_PLATFORM_PREFIXES = ("keyless.platform.macos", "keyless.platform.windows") + (
+    () if sys.platform.startswith("linux") else ("keyless.platform.linux",)
+)
+
+
 def test_all_internal_keyless_imports_resolve() -> None:
     import importlib
 
@@ -39,7 +46,7 @@ def test_all_internal_keyless_imports_resolve() -> None:
         tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("keyless"):
-                if node.module.startswith(("keyless.platform.macos", "keyless.platform.windows")):
+                if node.module.startswith(_FOREIGN_PLATFORM_PREFIXES):
                     continue
                 mod = importlib.import_module(node.module)
                 for alias in node.names:

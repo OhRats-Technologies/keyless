@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from evdev import ecodes
 
 from keyless.input.keys import BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT
 
@@ -501,16 +500,16 @@ class VoiceCommandRouter:
         if m_snap:
             direction = m_snap.group(1)
             key_map = {
-                "left": ecodes.KEY_LEFT,
-                "right": ecodes.KEY_RIGHT,
-                "up": ecodes.KEY_UP,
-                "down": ecodes.KEY_DOWN,
+                "left": "LEFT",
+                "right": "RIGHT",
+                "up": "UP",
+                "down": "DOWN",
             }
-            self.pointer.key_combo(ecodes.KEY_LEFTMETA, key_map[direction])
+            self.pointer.key_combo("LEFTMETA", key_map[direction])
             return DispatchResult("deterministic", raw, f"window_snap_{direction}")
 
         if norm in ("unmaximize", "unmaximize window", "restore window", "restore this window"):
-            self.pointer.key_combo(ecodes.KEY_LEFTMETA, ecodes.KEY_DOWN)
+            self.pointer.key_combo("LEFTMETA", "DOWN")
             return DispatchResult("deterministic", raw, "window_snap_down")
 
         # 0.6. Explicit next/previous window cycling: strip leading fillers ("a", "the", "and",

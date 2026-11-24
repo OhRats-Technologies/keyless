@@ -453,20 +453,19 @@ def test_theater_mode_fast_reflex_barge_in_and_loop_guards() -> None:
 
 
 def test_window_split_snap_super_arrow_keys() -> None:
-    from evdev import ecodes
     from keyless.audio.active_listener import _VALID_COMMAND_PREFIXES
 
     ptr = DryRunPointerBackend(1920, 1080)
     router = VoiceCommandRouter(pointer=ptr)
 
     cases = [
-        ("Move window left", (ecodes.KEY_LEFTMETA, ecodes.KEY_LEFT), "window_snap_left"),
-        ("Move the window to the right.", (ecodes.KEY_LEFTMETA, ecodes.KEY_RIGHT), "window_snap_right"),
-        ("Snap window left", (ecodes.KEY_LEFTMETA, ecodes.KEY_LEFT), "window_snap_left"),
-        ("Split right", (ecodes.KEY_LEFTMETA, ecodes.KEY_RIGHT), "window_snap_right"),
-        ("Tile window left", (ecodes.KEY_LEFTMETA, ecodes.KEY_LEFT), "window_snap_left"),
-        ("Move window up", (ecodes.KEY_LEFTMETA, ecodes.KEY_UP), "window_snap_up"),
-        ("Restore window", (ecodes.KEY_LEFTMETA, ecodes.KEY_DOWN), "window_snap_down"),
+        ("Move window left", ("LEFTMETA", "LEFT"), "window_snap_left"),
+        ("Move the window to the right.", ("LEFTMETA", "RIGHT"), "window_snap_right"),
+        ("Snap window left", ("LEFTMETA", "LEFT"), "window_snap_left"),
+        ("Split right", ("LEFTMETA", "RIGHT"), "window_snap_right"),
+        ("Tile window left", ("LEFTMETA", "LEFT"), "window_snap_left"),
+        ("Move window up", ("LEFTMETA", "UP"), "window_snap_up"),
+        ("Restore window", ("LEFTMETA", "DOWN"), "window_snap_down"),
     ]
     for phrase, expected_combo, expected_detail in cases:
         assert phrase.lower().rstrip(".").startswith(_VALID_COMMAND_PREFIXES)

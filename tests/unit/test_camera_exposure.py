@@ -32,6 +32,8 @@ def test_stereo_capture_forwards_exposure_mode(monkeypatch) -> None:
         return _FakeCap(), _report()
 
     monkeypatch.setattr(stereo_capture, "open_locked_capture", fake_open)
+    # This test covers the V4L2 path; on macOS StereoCapture would switch to OpenCV.
+    monkeypatch.setattr(stereo_capture.sys, "platform", "linux")
 
     stereo_capture.StereoCapture(cam1_by_id="/dev/v4l/by-id/cam", mono=True, auto_exposure=True)
     assert calls[-1]["manual_exposure"] is False
