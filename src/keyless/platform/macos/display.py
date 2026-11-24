@@ -39,31 +39,64 @@ def _layout_from_profiler() -> DisplayLayout | None:
     return None
 
 
-def get_display_layout() -> DisplayLayout:
-    # Prefer AppKit NSScreen for live multi-monitor geometry (Retina-aware).
-    try:
-        from AppKit import NSScreen  # type: ignore[import-not-found]
+def _screen_monitors() -> list[MonitorInfo]:
+    """NSScreen geometry converted to CG global coordinates.
 
-        screens = NSScreen.screens()
-        monitors: list[MonitorInfo] = []
-        total_w = 0
-        total_h = 0
-        for i, screen in enumerate(screens or []):
-            frame = screen.frame()
-            scale = float(screen.backingScaleFactor() or 1.0)
-            w = int(round(float(frame.size.width)))
-            h = int(round(float(frame.size.height)))
-            x = int(round(float(frame.origin.x)))
-            y = int(round(float(frame.origin.y)))
-            monitors.append(MonitorInfo(
-                connector=f"Display-{i}", x=x, y=y, width=w, height=h,
-                physical_width=int(round(w * scale)), physical_height=int(round(h * scale)),
-                scale=scale, is_primary=(i == 0),
-            ))
-            total_w = max(total_w, x + w)
-            total_h = max(total_h, y + h)
+    Cocoa frames are bottom-left origin with y up; CGEvent locations, cua and
+    everything downstream use top-left of the primary display with y down, in
+    logical points. Panel size comes from CGDisplayScreenSize (EDID, mm).
+    """
+    from AppKit import NSScreen  # type: ignore[import-not-found]
+
+    try:
+        from Quartz import CGDisplayScreenSize  # type: ignore[import-not-found]
+    except Exception:
+        CGDisplayScreenSize = None  # noqa: N806
+
+    screens = list(NSScreen.screens() or [])
+    if not screens:
+        return []
+    primary_h = float(screens[0].frame().size.height)
+    monitors: list[MonitorInfo] = []
+    seen: dict[str, int] = {}
+    for i, screen in enumerate(screens):
+        frame = screen.frame()
+        scale = float(screen.backingScaleFactor() or 1.0)
+        w = int(round(float(frame.size.width)))
+        h = int(round(float(frame.size.height)))
+        x = int(round(float(frame.origin.x)))
+        y = int(round(primary_h - float(frame.origin.y) - float(frame.size.height)))
+        width_mm = height_mm = 0.0
+        try:
+            display_id = int(screen.deviceDescription()["NSScreenNumber"])
+            if CGDisplayScreenSize is not None:
+                size = CGDisplayScreenSize(display_id)
+                width_mm, height_mm = float(size.width), float(size.height)
+        except Exception:
+            pass
+        try:
+            name = str(screen.localizedName()) or f"Display-{i}"
+        except Exception:
+            name = f"Display-{i}"
+        seen[name] = seen.get(name, 0) + 1
+        connector = name if seen[name] == 1 else f"{name} {seen[name]}"
+        monitors.append(MonitorInfo(
+            connector=connector, x=x, y=y, width=w, height=h,
+            physical_width=int(round(w * scale)), physical_height=int(round(h * scale)),
+            scale=scale, is_primary=(i == 0), width_mm=width_mm, height_mm=height_mm,
+        ))
+    return monitors
+
+
+def get_display_layout() -> DisplayLayout:
+    try:
+        monitors = _screen_monitors()
         if monitors:
-            return DisplayLayout(monitors=tuple(monitors), total_width=total_w, total_height=total_h)
+            return DisplayLayout(
+                monitors=tuple(monitors),
+                total_width=max(m.x + m.width for m in monitors),
+                total_height=max(m.y + m.height for m in monitors),
+            )
     except Exception:
         pass
     fallback = _layout_from_profiler()

@@ -811,7 +811,9 @@ class WebGazeManager:
             from keyless.platform.router import list_cameras
 
             for cam in list_cameras():
-                devices.append({"id": str(cam.path), "name": str(cam.name)})
+                # macOS indexes shift when cameras come and go; store the AVFoundation uniqueID.
+                stable = cam.id if cam.capabilities.get("unique_id") else cam.path
+                devices.append({"id": str(stable), "name": str(cam.name)})
         except Exception as exc:
             error = f"Camera enumeration failed: {exc}"
         cfg = AppConfig.load(self.paths.settings_path)
