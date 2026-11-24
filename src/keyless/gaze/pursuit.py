@@ -323,14 +323,16 @@ def estimate_latency(
     rig: DisplayRig,
     *,
     distance_mm: float = 600.0,
-    max_ms: float = 320.0,
+    max_ms: float = 600.0,
     step_ms: float = 10.0,
 ) -> tuple[float, float, list[tuple[float, float]]]:
     """Return ``(tau_ms, confidence, curve)``: the lag that best explains sweeps.
 
     For each candidate lag the target is evaluated at ``t - tau`` and the
     rig-free joint model is fitted; the residual curve is minimised and refined
-    parabolically. Confidence = 1 - min/max residual over the curve.
+    parabolically. Confidence = 1 - min/max residual over the curve, and 0 when
+    the minimum sits on the window edge (the true lag is outside the window).
+    The window is wide because a Mac camera + browser stage measured >= 320 ms.
     """
     usable = [f for f in frames if f.blink < 0.3]
     if len(usable) < 60:
@@ -370,6 +372,8 @@ def estimate_latency(
         denom = a - 2.0 * b + c
         if denom > 1e-12:
             tau += 0.5 * step_ms * (a - c) / denom
+    if k == len(curve) - 1:
+        return float(tau), 0.0, curve
     conf = max(0.0, min(1.0, 1.0 - float(vals[k]) / max(1e-9, float(vals.max()))))
     return float(tau), conf, curve
 

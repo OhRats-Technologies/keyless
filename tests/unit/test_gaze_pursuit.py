@@ -55,6 +55,25 @@ def test_pursuit_recovers_latency_layout_and_accuracy(swap: bool) -> None:
         assert abs(got.yaw_deg - want.yaw_deg) < 4.0
 
 
+def test_slow_camera_pipeline_latency_is_not_clipped() -> None:
+    # macOS AVFoundation + browser stage measured >= 320 ms on real hardware (2026-11-24);
+    # a lag past the search window must be found, not reported as the window edge.
+    from keyless.gaze.pursuit import estimate_latency
+
+    plan, frames, base, _ = _simulate(swap=False, tau=0.42)
+    tau_ms, conf, _ = estimate_latency(plan, frames, base, distance_mm=650)
+    assert abs(tau_ms - 420.0) <= 30.0
+    assert conf > 0.0
+
+
+def test_latency_at_search_edge_has_zero_confidence() -> None:
+    from keyless.gaze.pursuit import estimate_latency
+
+    plan, frames, base, _ = _simulate(swap=False, tau=0.42)
+    tau_ms, conf, _ = estimate_latency(plan, frames, base, distance_mm=650, max_ms=200.0)
+    assert tau_ms == 200.0 and conf == 0.0
+
+
 def test_not_following_is_reported() -> None:
     plan, frames, base, _ = _simulate(swap=False)
     rng = np.random.default_rng(5)
