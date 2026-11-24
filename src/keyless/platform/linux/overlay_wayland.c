@@ -21,7 +21,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -384,11 +383,11 @@ static bool read_gaze_shm(const volatile struct gaze_shm_layout *shm, double *x,
 
 int main(int argc, char **argv) {
     const char *shm_name = (argc > 1 && argv[1][0]) ? argv[1] : "keyless_gaze_v1";
+    pid_t watch_pid = (argc > 2) ? (pid_t)atoi(argv[2]) : 0;
     char shm_path[128];
     if (shm_name[0] == '/') snprintf(shm_path, sizeof(shm_path), "%s", shm_name);
     else snprintf(shm_path, sizeof(shm_path), "/%s", shm_name);
 
-    prctl(PR_SET_PDEATHSIG, SIGTERM);
     signal(SIGINT, handle_sig);
     signal(SIGTERM, handle_sig);
 
@@ -456,7 +455,11 @@ int main(int argc, char **argv) {
     }
 
     int wl_fd = wl_display_get_fd(g_display);
+    unsigned int tick = 0;
     while (g_running) {
+        if (watch_pid > 1 && (++tick % 30u) == 0u) {
+            if (kill(watch_pid, 0) != 0 && errno == ESRCH) break;
+        }
         while (wl_display_prepare_read(g_display) != 0) {
             wl_display_dispatch_pending(g_display);
         }

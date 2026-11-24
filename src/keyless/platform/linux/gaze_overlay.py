@@ -101,7 +101,7 @@ class LinuxGazeOverlay:
             return False
         try:
             self._proc = subprocess.Popen(
-                [str(binary), self.shm_name],
+                [str(binary), self.shm_name, str(os.getpid())],
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
