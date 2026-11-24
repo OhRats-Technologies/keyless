@@ -1360,7 +1360,7 @@ function connectStreams() {
       try {
         state.gaze = JSON.parse(evt.data);
         const pred = state.gaze.prediction;
-        if (state.gaze.running && pred && pred.face_detected) {
+        if (state.gaze.running && pred && pred.face_detected && pred.kinematics !== 'blink_hold' && pred.kinematics !== 'recovery') {
           state.gazeTrail.push([pred.x, pred.y]);
           if (state.gazeTrail.length > 24) state.gazeTrail.shift();
         }

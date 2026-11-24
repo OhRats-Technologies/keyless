@@ -1,30 +1,35 @@
-"""3D angular gaze state estimator: Kalman filter + pre-blink rollback + REM suppression.
+"""Physiological 3D angular gaze state estimator (Kalman + I-VT + Blink Rollback + REM Gate).
 
-Eliminates the two dominant artifacts in webcam eye tracking:
-1. Blink-induced downward/corner drag (eyelid occlusion + Bell's phenomenon):
-   Eyelid closure begins corrupting MediaPipe iris landmarks 60-90 ms before
-   ``eyeBlink`` crosses 0.55 and lingers 80-120 ms after re-opening. A short
-   ring buffer of clean pre-blink states lets the estimator rewind to the last
-   clean state as soon as ``blink >= 0.24`` or ``d(blink)/dt > 2.2 /s``, hold
-   rock-steady through the blink, and wait out a 115 ms recovery window.
-2. Involuntary micro-saccades / REM / 1-frame landmark glitches:
-   A 4-state Constant-Velocity Kalman filter ``[az, el, v_az, v_el]`` paired
-   with a 2-frame directional saccade confirmation buffer and Mahalanobis
-   innovation gating keeps the gaze point calmly anchored during fixation
-   while snapping briskly on confirmed intentional saccades.
+Eliminates the three primary artifacts of webcam eye tracking:
+1. Blink dives (eyelid droop + Bell's phenomenon dragging iris landmarks toward
+   screen corners):
+   - Early blink entry via low blendshape threshold (default 0.25) + positive
+     blink-velocity trigger so closing-eyelid frames are caught immediately.
+   - Pre-blink rollback: reverts the filter state to the cleanest angular
+     estimate ~85 ms before blink onset and zeros angular velocity.
+   - Hysteresis exit + post-blink RECOVERY holdoff (~115 ms) while eyelids
+     reopen and Bell's phenomenon settles.
+2. Involuntary microsaccades / foveal tremor during fixation:
+   - 4-state constant-velocity Kalman filter [az, el, v_az, v_el] with dual
+     noise covariance regimes (tight FIXATION vs. responsive SACCADE) and a
+     foveal deadband.
+3. Single-frame landmark glitches & involuntary REM twitches:
+   - Ballistic jumps above the saccade threshold require 2-frame directional
+     confirmation before the filter jumps; unconfirmed 1-frame spikes are
+     rejected completely and counted in ``outliers_suppressed``.
 """
 
 from __future__ import annotations
 
+import enum
 import math
 from collections import deque
 from dataclasses import dataclass
-from enum import Enum
 
 import numpy as np
 
 
-class GazeKinematics(str, Enum):
+class GazeKinematics(str, enum.Enum):
     FIXATION = "fixation"
     SACCADE = "saccade"
     BLINK_HOLD = "blink_hold"
@@ -32,126 +37,127 @@ class GazeKinematics(str, Enum):
 
 
 @dataclass(frozen=True)
-class EstimatedGazeState:
-    """Filtered 3D angular gaze state."""
+class GazeStateEstimate:
+    """Filtered 3D gaze ray angles and physiological kinematic state."""
 
     az: float
     el: float
-    vel_az: float
-    vel_el: float
+    vel_deg_s: float
     kinematics: GazeKinematics
-    suppressed: bool
-    blinks_suppressed: int
-    outliers_suppressed: int
+    suppressed: bool = False
 
 
 class GazeStateEstimator:
-    """Kalman + blink-rollback + 2-frame saccade-confirmed angular state estimator."""
+    """4-state 3D angular Kalman filter with blink rollback and 2-frame saccade confirmation."""
 
     def __init__(
         self,
         *,
-        pre_blink_threshold: float = 0.24,
-        blink_velocity_threshold: float = 2.2,
-        pre_blink_lookback_sec: float = 0.090,
-        post_blink_recovery_sec: float = 0.115,
-        saccade_deg: float = 2.2,
+        blink_enter: float = 0.25,
+        blink_exit: float = 0.16,
+        blink_vel_enter: float = 2.0,
+        blink_vel_min_score: float = 0.14,
+        pre_blink_rollback_s: float = 0.085,
+        recovery_holdoff_s: float = 0.115,
         fixation_deadband_deg: float = 0.45,
-        confirm_frames: int = 2,
-        mahalanobis_gate: float = 4.2,
+        saccade_jump_deg: float = 2.4,
+        saccade_confirm_deg: float = 3.5,
+        saccade_exit_vel_deg_s: float = 18.0,
     ) -> None:
-        self.pre_blink_threshold = float(pre_blink_threshold)
-        self.blink_velocity_threshold = float(blink_velocity_threshold)
-        self.pre_blink_lookback_sec = float(pre_blink_lookback_sec)
-        self.post_blink_recovery_sec = float(post_blink_recovery_sec)
-        self.saccade_rad = math.radians(float(saccade_deg))
-        self.deadband_rad = math.radians(float(fixation_deadband_deg))
-        self.confirm_frames = max(2, int(confirm_frames))
-        self.mahalanobis_gate = float(mahalanobis_gate)
+        self.blink_enter = float(blink_enter)
+        self.blink_exit = float(blink_exit)
+        self.blink_vel_enter = float(blink_vel_enter)
+        self.blink_vel_min_score = float(blink_vel_min_score)
+        self.pre_blink_rollback_s = float(pre_blink_rollback_s)
+        self.recovery_holdoff_s = float(recovery_holdoff_s)
+        self.fixation_deadband_rad = math.radians(float(fixation_deadband_deg))
+        self.saccade_jump_rad = math.radians(float(saccade_jump_deg))
+        self.saccade_confirm_rad = math.radians(float(saccade_confirm_deg))
+        self.saccade_exit_vel_rad_s = math.radians(float(saccade_exit_vel_deg_s))
 
+        # Kalman state: [az, el, v_az, v_el]
         self._x: np.ndarray | None = None
-        self._P: np.ndarray = np.eye(4, dtype=np.float64) * 1e-2
-        self._last_t: float | None = None
-        self._last_blink: float = 0.0
+        self._P: np.ndarray = np.eye(4, dtype=np.float64) * 1e-3
+        self._t_prev: float | None = None
 
-        self._clean_history: deque[tuple[float, float, float]] = deque(maxlen=16)
-
+        # Blink state machine
         self._in_blink: bool = False
-        self._recovery_until: float = 0.0
-        self._hold_az: float = 0.0
-        self._hold_el: float = 0.0
+        self._reopened_at: float | None = None
+        self._prev_blink: float = 0.0
+        self._clean_history: deque[tuple[float, float, float]] = deque(maxlen=24)
 
-        self._pending_saccade: list[tuple[float, float]] = []
-        self._kinematics: GazeKinematics = GazeKinematics.FIXATION
+        # Saccade / outlier confirmation state
+        self._kin: GazeKinematics = GazeKinematics.FIXATION
+        self._pending_jump: tuple[float, float, float] | None = None
+        self._slow_frames: int = 0
 
+        # Telemetry counters
         self.blinks_suppressed: int = 0
         self.outliers_suppressed: int = 0
 
     def reset(self) -> None:
         self._x = None
-        self._P = np.eye(4, dtype=np.float64) * 1e-2
-        self._last_t = None
-        self._last_blink = 0.0
-        self._clean_history.clear()
+        self._P = np.eye(4, dtype=np.float64) * 1e-3
+        self._t_prev = None
         self._in_blink = False
-        self._recovery_until = 0.0
-        self._pending_saccade.clear()
-        self._kinematics = GazeKinematics.FIXATION
+        self._reopened_at = None
+        self._prev_blink = 0.0
+        self._clean_history.clear()
+        self._kin = GazeKinematics.FIXATION
+        self._pending_jump = None
+        self._slow_frames = 0
 
-    def _rewind_to_clean_pre_blink(self, t_sec: float) -> tuple[float, float]:
-        assert self._x is not None
-        target_t = t_sec - self.pre_blink_lookback_sec
-        best_az, best_el = float(self._x[0]), float(self._x[1])
-        for ht, haz, hel in self._clean_history:
-            best_az, best_el = haz, hel
-            if ht >= target_t:
+    def _rollback_to_pre_blink(self, now_sec: float) -> None:
+        if self._x is None or not self._clean_history:
+            return
+        target_t = now_sec - self.pre_blink_rollback_s
+        chosen = self._clean_history[0]
+        for sample in self._clean_history:
+            if sample[0] <= target_t:
+                chosen = sample
+            else:
                 break
-        self._x[0] = best_az
-        self._x[1] = best_el
+        self._x[0] = chosen[1]
+        self._x[1] = chosen[2]
         self._x[2] = 0.0
         self._x[3] = 0.0
-        return best_az, best_el
+        self._pending_jump = None
 
-    def _kalman_predict(self, dt: float, process_q: float) -> None:
+    def _kalman_step(
+        self,
+        z_az: float,
+        z_el: float,
+        dt: float,
+        *,
+        q_pos: float,
+        q_vel: float,
+        r_meas: float,
+    ) -> None:
         assert self._x is not None
+        damp = math.exp(-dt * 8.0) if self._kin is GazeKinematics.FIXATION else math.exp(-dt * 2.5)
         F = np.array(
             [
                 [1.0, 0.0, dt, 0.0],
                 [0.0, 1.0, 0.0, dt],
-                [0.0, 0.0, 0.72, 0.0],
-                [0.0, 0.0, 0.0, 0.72],
+                [0.0, 0.0, damp, 0.0],
+                [0.0, 0.0, 0.0, damp],
             ],
             dtype=np.float64,
         )
-        dt2 = dt * dt
-        Q = np.diag([process_q * dt2, process_q * dt2, process_q * dt, process_q * dt])
-        self._x = F @ self._x
-        self._P = F @ self._P @ F.T + Q
-
-    def _kalman_update(self, az: float, el: float, meas_r: float) -> None:
-        assert self._x is not None
+        Q = np.diag([q_pos * dt, q_pos * dt, q_vel * dt, q_vel * dt])
         H = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], dtype=np.float64)
-        R = np.eye(2, dtype=np.float64) * meas_r
-        z = np.array([az, el], dtype=np.float64)
-        y = z - H @ self._x
-        S = H @ self._P @ H.T + R
-        K = self._P @ H.T @ np.linalg.inv(S)
-        self._x = self._x + K @ y
+        R = np.diag([r_meas, r_meas])
+
+        x_pred = F @ self._x
+        P_pred = F @ self._P @ F.T + Q
+
+        z = np.array([z_az, z_el], dtype=np.float64)
+        y = z - (H @ x_pred)
+        S = H @ P_pred @ H.T + R
+        K = P_pred @ H.T @ np.linalg.inv(S)
+        self._x = x_pred + K @ y
         I = np.eye(4, dtype=np.float64)
-        self._P = (I - K @ H) @ self._P
-
-    def _mahalanobis(self, az: float, el: float, meas_r: float) -> float:
-        assert self._x is not None
-        H = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], dtype=np.float64)
-        R = np.eye(2, dtype=np.float64) * meas_r
-        z = np.array([az, el], dtype=np.float64)
-        y = z - H @ self._x
-        S = H @ self._P @ H.T + R
-        try:
-            d2 = float(y.T @ np.linalg.inv(S) @ y)
-        except np.linalg.LinAlgError:
-            d2 = float(np.dot(y, y)) / max(1e-6, meas_r)
-        return math.sqrt(max(0.0, d2))
+        self._P = (I - K @ H) @ P_pred
 
     def update(
         self,
@@ -161,169 +167,137 @@ class GazeStateEstimator:
         *,
         blink_level: float = 0.0,
         confidence: float = 1.0,
-    ) -> EstimatedGazeState:
+    ) -> GazeStateEstimate:
+        """Ingest one raw 3D angular observation and return the stabilized estimate."""
+        t = float(t_sec)
         az = float(raw_az)
         el = float(raw_el)
-        t = float(t_sec)
-        blink = max(0.0, min(1.0, float(blink_level)))
+        b = max(0.0, min(1.0, float(blink_level)))
+        conf = max(0.1, min(1.0, float(confidence)))
 
-        if self._x is None or self._last_t is None:
+        if self._x is None or self._t_prev is None:
             self._x = np.array([az, el, 0.0, 0.0], dtype=np.float64)
-            self._P = np.eye(4, dtype=np.float64) * 5e-3
-            self._last_t = t
-            self._last_blink = blink
-            self._hold_az, self._hold_el = az, el
-            if blink < self.pre_blink_threshold:
+            self._t_prev = t
+            self._prev_blink = b
+            if b < self.blink_enter:
                 self._clean_history.append((t, az, el))
-            return EstimatedGazeState(
-                az=az,
-                el=el,
-                vel_az=0.0,
-                vel_el=0.0,
-                kinematics=GazeKinematics.FIXATION,
-                suppressed=False,
-                blinks_suppressed=self.blinks_suppressed,
-                outliers_suppressed=self.outliers_suppressed,
-            )
+            return GazeStateEstimate(az, el, 0.0, GazeKinematics.FIXATION, suppressed=False)
 
-        dt = max(1e-3, min(0.20, t - self._last_t))
-        blink_vel = (blink - self._last_blink) / dt
-        self._last_t = t
-        self._last_blink = blink
+        dt = max(1e-3, min(0.25, t - self._t_prev))
+        self._t_prev = t
+        b_vel = (b - self._prev_blink) / dt
+        self._prev_blink = b
 
-        blink_closing = blink >= self.pre_blink_threshold or (
-            blink >= 0.14 and blink_vel >= self.blink_velocity_threshold
+        # 1. Blink / eyelid-droop state machine with pre-blink rollback + recovery holdoff
+        blink_trigger = (
+            b >= self.blink_enter
+            or (b >= self.blink_vel_min_score and b_vel >= self.blink_vel_enter)
         )
-        if blink_closing:
+        if blink_trigger:
             if not self._in_blink:
                 self._in_blink = True
                 self.blinks_suppressed += 1
-                self._pending_saccade.clear()
-                self._hold_az, self._hold_el = self._rewind_to_clean_pre_blink(t)
-            self._kinematics = GazeKinematics.BLINK_HOLD
-            return EstimatedGazeState(
-                az=self._hold_az,
-                el=self._hold_el,
-                vel_az=0.0,
-                vel_el=0.0,
-                kinematics=GazeKinematics.BLINK_HOLD,
+                self._rollback_to_pre_blink(t)
+            self._reopened_at = None
+            return GazeStateEstimate(
+                float(self._x[0]),
+                float(self._x[1]),
+                0.0,
+                GazeKinematics.BLINK_HOLD,
                 suppressed=True,
-                blinks_suppressed=self.blinks_suppressed,
-                outliers_suppressed=self.outliers_suppressed,
             )
 
         if self._in_blink:
+            if b > self.blink_exit:
+                return GazeStateEstimate(
+                    float(self._x[0]),
+                    float(self._x[1]),
+                    0.0,
+                    GazeKinematics.BLINK_HOLD,
+                    suppressed=True,
+                )
+            if self._reopened_at is None:
+                self._reopened_at = t
+            if (t - self._reopened_at) < self.recovery_holdoff_s:
+                return GazeStateEstimate(
+                    float(self._x[0]),
+                    float(self._x[1]),
+                    0.0,
+                    GazeKinematics.RECOVERY,
+                    suppressed=True,
+                )
+            # Recovery complete -> resume clean fixation
             self._in_blink = False
-            self._recovery_until = t + self.post_blink_recovery_sec
-            self._pending_saccade.clear()
+            self._reopened_at = None
+            self._x[2] = 0.0
+            self._x[3] = 0.0
+            self._pending_jump = None
+            self._kin = GazeKinematics.FIXATION
 
-        if t < self._recovery_until:
-            self._kinematics = GazeKinematics.RECOVERY
-            return EstimatedGazeState(
-                az=self._hold_az,
-                el=self._hold_el,
-                vel_az=0.0,
-                vel_el=0.0,
-                kinematics=GazeKinematics.RECOVERY,
-                suppressed=True,
-                blinks_suppressed=self.blinks_suppressed,
-                outliers_suppressed=self.outliers_suppressed,
-            )
-
-        if confidence < 0.25 or not (math.isfinite(az) and math.isfinite(el)):
-            self.outliers_suppressed += 1
-            return EstimatedGazeState(
-                az=float(self._x[0]),
-                el=float(self._x[1]),
-                vel_az=0.0,
-                vel_el=0.0,
-                kinematics=self._kinematics,
-                suppressed=True,
-                blinks_suppressed=self.blinks_suppressed,
-                outliers_suppressed=self.outliers_suppressed,
-            )
-
+        # 2. Innovation gating & 2-frame saccade confirmation (rejects 1-frame REM/glitch spikes)
         cur_az, cur_el = float(self._x[0]), float(self._x[1])
-        disp = math.hypot(az - cur_az, el - cur_el)
-        meas_r_fix = 2.2e-3 / max(0.3, min(1.0, float(confidence)))
+        innov_dist = math.hypot(az - cur_az, el - cur_el)
 
-        if disp >= self.saccade_rad:
-            m_dist = self._mahalanobis(az, el, meas_r_fix)
-            if self._kinematics != GazeKinematics.SACCADE and m_dist >= self.mahalanobis_gate * 0.45:
-                if self._pending_saccade:
-                    prev_az, prev_el = self._pending_saccade[-1]
-                    v1x, v1y = prev_az - cur_az, prev_el - cur_el
-                    v2x, v2y = az - cur_az, el - cur_el
-                    n1 = max(1e-6, math.hypot(v1x, v1y))
-                    n2 = max(1e-6, math.hypot(v2x, v2y))
-                    cos_dir = (v1x * v2x + v1y * v2y) / (n1 * n2)
-                    if cos_dir >= 0.5:
-                        self._pending_saccade.append((az, el))
-                    else:
-                        self.outliers_suppressed += 1
-                        self._pending_saccade = [(az, el)]
-                        return EstimatedGazeState(
-                            az=cur_az,
-                            el=cur_el,
-                            vel_az=float(self._x[2]),
-                            vel_el=float(self._x[3]),
-                            kinematics=GazeKinematics.FIXATION,
-                            suppressed=True,
-                            blinks_suppressed=self.blinks_suppressed,
-                            outliers_suppressed=self.outliers_suppressed,
-                        )
-                else:
-                    self._pending_saccade.append((az, el))
-
-                if len(self._pending_saccade) < self.confirm_frames:
-                    self.outliers_suppressed += 1
-                    return EstimatedGazeState(
-                        az=cur_az,
-                        el=cur_el,
-                        vel_az=0.0,
-                        vel_el=0.0,
-                        kinematics=GazeKinematics.FIXATION,
-                        suppressed=True,
-                        blinks_suppressed=self.blinks_suppressed,
-                        outliers_suppressed=self.outliers_suppressed,
-                    )
-
-                self._kinematics = GazeKinematics.SACCADE
-                self._pending_saccade.clear()
-                self._kalman_predict(dt, process_q=18.0)
-                self._kalman_update(az, el, meas_r=4e-4)
+        if innov_dist >= self.saccade_jump_rad and self._kin is not GazeKinematics.SACCADE:
+            if self._pending_jump is None:
+                self._pending_jump = (t, az, el)
+                self.outliers_suppressed += 1
+                return GazeStateEstimate(
+                    cur_az,
+                    cur_el,
+                    math.degrees(math.hypot(float(self._x[2]), float(self._x[3]))),
+                    GazeKinematics.FIXATION,
+                    suppressed=True,
+                )
+            pt, paz, pel = self._pending_jump
+            confirm_dist = math.hypot(az - paz, el - pel)
+            same_dir = ((az - cur_az) * (paz - cur_az) + (el - cur_el) * (pel - cur_el)) > 0.0
+            if (t - pt) <= 0.15 and (confirm_dist <= self.saccade_confirm_rad or same_dir):
+                # Confirmed intentional saccade
+                self._pending_jump = None
+                self._kin = GazeKinematics.SACCADE
+                self._slow_frames = 0
             else:
-                self._kinematics = GazeKinematics.SACCADE
-                self._pending_saccade.clear()
-                self._kalman_predict(dt, process_q=14.0)
-                self._kalman_update(az, el, meas_r=5e-4)
+                self._pending_jump = (t, az, el)
+                self.outliers_suppressed += 1
+                return GazeStateEstimate(
+                    cur_az,
+                    cur_el,
+                    math.degrees(math.hypot(float(self._x[2]), float(self._x[3]))),
+                    GazeKinematics.FIXATION,
+                    suppressed=True,
+                )
         else:
-            if self._pending_saccade:
-                self._pending_saccade.clear()
-            self._kinematics = GazeKinematics.FIXATION
-            if disp < self.deadband_rad:
-                self._kalman_predict(dt, process_q=0.08)
-                self._kalman_update(az, el, meas_r=meas_r_fix * 3.5)
+            self._pending_jump = None
+
+        # 3. Dual-regime Kalman update weighted by landmark confidence
+        r_scale = 1.0 / (conf * conf)
+        if self._kin is GazeKinematics.SACCADE:
+            self._kalman_step(az, el, dt, q_pos=1.8e-2, q_vel=4.0, r_meas=5e-5 * r_scale)
+            vel_rad_s = math.hypot(float(self._x[2]), float(self._x[3]))
+            if vel_rad_s < self.saccade_exit_vel_rad_s and innov_dist < self.saccade_jump_rad * 0.65:
+                self._slow_frames += 1
+                if self._slow_frames >= 2:
+                    self._kin = GazeKinematics.FIXATION
+                    self._x[2] *= 0.2
+                    self._x[3] *= 0.2
             else:
-                self._kalman_predict(dt, process_q=0.45)
-                self._kalman_update(az, el, meas_r=meas_r_fix)
+                self._slow_frames = 0
+        else:
+            if innov_dist < self.fixation_deadband_rad:
+                blend = 0.20 * (innov_dist / max(1e-6, self.fixation_deadband_rad))
+                target_az = cur_az + blend * (az - cur_az)
+                target_el = cur_el + blend * (el - cur_el)
+                self._kalman_step(target_az, target_el, dt, q_pos=2e-5, q_vel=2e-3, r_meas=6e-4 * r_scale)
+            else:
+                self._kalman_step(az, el, dt, q_pos=2.5e-4, q_vel=4e-2, r_meas=3e-4 * r_scale)
 
         out_az, out_el = float(self._x[0]), float(self._x[1])
-        self._hold_az, self._hold_el = out_az, out_el
-
-        if blink < self.pre_blink_threshold * 0.85:
+        vel_deg_s = math.degrees(math.hypot(float(self._x[2]), float(self._x[3])))
+        if b < self.blink_exit:
             self._clean_history.append((t, out_az, out_el))
 
-        return EstimatedGazeState(
-            az=out_az,
-            el=out_el,
-            vel_az=float(self._x[2]),
-            vel_el=float(self._x[3]),
-            kinematics=self._kinematics,
-            suppressed=False,
-            blinks_suppressed=self.blinks_suppressed,
-            outliers_suppressed=self.outliers_suppressed,
-        )
+        return GazeStateEstimate(out_az, out_el, vel_deg_s, self._kin, suppressed=False)
 
 
-__all__ = ["EstimatedGazeState", "GazeKinematics", "GazeStateEstimator"]
+__all__ = ["GazeKinematics", "GazeStateEstimate", "GazeStateEstimator"]
