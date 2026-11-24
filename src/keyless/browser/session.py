@@ -322,6 +322,29 @@ def _install_firefox_temp_addon(
     return None
 
 
+def _eval_firefox_chrome_js(port: int, js_expr: str, timeout_sec: float = 3.0) -> Any:
+    """Evaluate a privileged browser-chrome JS expression via Firefox's local RDP server."""
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout_sec) as sock:
+        sock.settimeout(timeout_sec)
+        _rdp_recv(sock)  # initial root greeting
+        _rdp_send(sock, {"to": "root", "type": "getProcess", "id": 0})
+        proc = _rdp_recv(sock)
+        desc = (proc.get("processDescriptor") or {}).get("actor")
+        if not desc:
+            raise RuntimeError(f"Firefox RDP missing processDescriptor: {proc}")
+        _rdp_send(sock, {"to": desc, "type": "getTarget"})
+        tgt = _rdp_recv(sock)
+        console_actor = (tgt.get("process") or {}).get("consoleActor")
+        if not console_actor:
+            raise RuntimeError(f"Firefox RDP missing consoleActor: {tgt}")
+        _rdp_send(sock, {"to": console_actor, "type": "evaluateJSAsync", "text": js_expr})
+        for _ in range(15):
+            msg = _rdp_recv(sock)
+            if msg.get("type") == "evaluationResult":
+                return msg.get("result")
+    return None
+
+
 @dataclass
 class PageObservation:
     """Structured snapshot of the currently visible browser tab."""
@@ -355,6 +378,10 @@ class PlaywrightFirefoxSession:
         self._context: BrowserContext | None = None
         self._last_page: Page | None = None
         self._installed_addon_id: str | None = None
+        self._rdp_port: int | None = None
+        self.active_window_title: str = ""
+        self.active_tab_url: str = ""
+        self.active_tab_title: str = ""
 
     @property
     def is_running(self) -> bool:
@@ -383,8 +410,9 @@ class PlaywrightFirefoxSession:
         env.setdefault("MOZ_ENABLE_WAYLAND", "1")
 
         ext_dir = _resolve_firefox_extension_dir(self.extension_dir) if self.install_extension else None
-        rdp_port: int | None = _pick_free_localhost_port() if ext_dir is not None else None
-        launch_args = ["--start-debugger-server", str(rdp_port)] if rdp_port is not None else []
+        rdp_port: int = _pick_free_localhost_port()
+        self._rdp_port = rdp_port
+        launch_args = ["--start-debugger-server", str(rdp_port)]
         user_prefs: dict[str, Any] = {
             # Restore open tabs and session cookies across browser restarts
             "browser.startup.page": 3,
@@ -396,16 +424,12 @@ class PlaywrightFirefoxSession:
             # Avoid first-run nags and default-browser prompts
             "browser.shell.checkDefaultBrowser": False,
             "browser.aboutwelcome.enabled": False,
+            # Enable local RDP debugger for extension auto-install and native Split View commands
+            "devtools.debugger.remote-enabled": True,
+            "devtools.debugger.prompt-connection": False,
+            "devtools.chrome.enabled": True,
+            "xpinstall.signatures.required": False,
         }
-        if rdp_port is not None:
-            user_prefs.update(
-                {
-                    "devtools.debugger.remote-enabled": True,
-                    "devtools.debugger.prompt-connection": False,
-                    "devtools.chrome.enabled": True,
-                    "xpinstall.signatures.required": False,
-                }
-            )
 
         self._pw = await async_playwright().start()
         self._context = await self._pw.firefox.launch_persistent_context(
@@ -415,6 +439,15 @@ class PlaywrightFirefoxSession:
             env=env,
             args=launch_args,
             firefox_user_prefs=user_prefs,
+        )
+        await self._context.add_init_script(
+            """
+            (() => {
+              window.__kkLastFocusAt = document.hasFocus() ? Date.now() : 0;
+              window.addEventListener("focus", () => { window.__kkLastFocusAt = Date.now(); }, true);
+              window.addEventListener("pointerdown", () => { window.__kkLastFocusAt = Date.now(); }, true);
+            })();
+            """
         )
         self._context.on("page", self._on_new_page)
         self._context.on("close", self._on_context_close)
@@ -454,8 +487,9 @@ class PlaywrightFirefoxSession:
         self._context = None
         self._pw = None
         self._last_page = None
+        self._rdp_port = None
 
-    async def get_active_page(self) -> Page:
+    async def get_active_page(self, active_window_title: str = "") -> Page:
         await self.start()
         assert self._context is not None
         pages = [p for p in self._context.pages if not p.is_closed()]
@@ -474,13 +508,84 @@ class PlaywrightFirefoxSession:
                 self._last_page = pages[-1] if pages else await self._context.new_page()
                 return self._last_page
 
-        for p in reversed(pages):
+        # 0. Ground-truth active tab from Firefox WebExtension (Split-View & multi-window exact)
+        target_url = (self.active_tab_url or "").strip()
+        target_title = (self.active_tab_title or "").strip().lower()
+        if target_url:
+            exact = [p for p in pages if (p.url or "").strip() == target_url]
+            if exact:
+                self._last_page = exact[-1]
+                return exact[-1]
+            norm_target = target_url.rstrip("/")
+            near = [p for p in pages if (p.url or "").strip().rstrip("/") == norm_target]
+            if near:
+                self._last_page = near[-1]
+                return near[-1]
+
+        # Inspect every open page so Split View & multi-window pick ONLY the truly focused tab
+        # instead of whichever visible tab happens to appear last in context.pages.
+        visible_entries: list[tuple[Page, bool, float, str]] = []
+        for p in pages:
             try:
-                if await p.evaluate("document.visibilityState === 'visible'"):
-                    self._last_page = p
-                    return p
+                info = await p.evaluate(
+                    """() => ({
+                        vis: document.visibilityState === 'visible',
+                        focused: document.hasFocus(),
+                        lastFocus: Number(window.__kkLastFocusAt || 0),
+                        title: String(document.title || '')
+                    })"""
+                )
+                if info.get("vis"):
+                    visible_entries.append(
+                        (
+                            p,
+                            bool(info.get("focused")),
+                            float(info.get("lastFocus") or 0.0),
+                            str(info.get("title") or ""),
+                        )
+                    )
             except Exception:
                 continue
+
+        if visible_entries:
+            if target_title:
+                ext_title_matches = [
+                    e for e in visible_entries if e[3] and e[3].strip().lower() == target_title
+                ]
+                if ext_title_matches:
+                    self._last_page = ext_title_matches[-1][0]
+                    return ext_title_matches[-1][0]
+
+            # 1. Exact focused tab (handles Firefox Split View & side-by-side windows)
+            focused_entries = [e for e in visible_entries if e[1]]
+            if focused_entries:
+                best = max(focused_entries, key=lambda e: e[2])
+                self._last_page = best[0]
+                return best[0]
+
+            # 2. Active OS window title match (e.g. when focus is in the address bar/chrome)
+            win_low = (active_window_title or self.active_window_title or "").strip().lower()
+            if win_low:
+                title_matches = [
+                    e for e in visible_entries if e[3] and e[3].strip().lower() in win_low
+                ]
+                if title_matches:
+                    best = max(title_matches, key=lambda e: (len(e[3]), e[2]))
+                    self._last_page = best[0]
+                    return best[0]
+
+            # 3. Most recently focused/clicked visible pane
+            most_recent = max(visible_entries, key=lambda e: e[2])
+            if most_recent[2] > 0:
+                self._last_page = most_recent[0]
+                return most_recent[0]
+
+            # 4. Keep _last_page if it is still among the visible panes
+            if self._last_page is not None and any(e[0] is self._last_page for e in visible_entries):
+                return self._last_page
+
+            self._last_page = visible_entries[-1][0]
+            return self._last_page
 
         if self._last_page is not None and not self._last_page.is_closed():
             return self._last_page
@@ -681,6 +786,57 @@ class PlaywrightFirefoxSession:
             await self._last_page.bring_to_front()
             return f"Switched to tab {index}: {self._last_page.url}"
         return f"Invalid tab index {index}"
+
+    async def split_view(self, action: str = "add") -> bool:
+        """Control native Firefox Split View ('add', 'separate', 'reverse', 'left', 'right', 'switch')."""
+        await self.start()
+        if self._rdp_port is None:
+            return False
+        act = (action or "add").strip().lower()
+        js = f"""(() => {{
+          const win = Services.wm.getMostRecentBrowserWindow();
+          if (!win || !win.gBrowser) return false;
+          const gb = win.gBrowser;
+          const act = {json.dumps(act)};
+          if (act === "add") {{
+            const cmd = win.document.getElementById("Browser:AddTabSplitView");
+            if (!cmd) return false;
+            cmd.doCommand();
+            return Boolean(gb.activeSplitView);
+          }}
+          if (act === "separate") {{
+            const cmd = win.document.getElementById("Browser:SeparateTabSplitView")
+              || win.document.getElementById("splitViewCmd_separateTabs");
+            if (!cmd) return false;
+            cmd.doCommand();
+            return true;
+          }}
+          if (act === "reverse") {{
+            const cmd = win.document.getElementById("splitViewCmd_reverseTabs");
+            if (!cmd) return false;
+            cmd.doCommand();
+            return true;
+          }}
+          const sv = gb.activeSplitView;
+          if (!sv || !sv.tabs || sv.tabs.length < 2) return false;
+          let targetTab = null;
+          if (act === "left") targetTab = sv.tabs[0];
+          else if (act === "right") targetTab = sv.tabs[1];
+          else if (act === "switch") {{
+            const idx = sv.tabs.indexOf(gb.selectedTab);
+            targetTab = sv.tabs[idx === 0 ? 1 : 0];
+          }}
+          if (!targetTab) return false;
+          gb.selectedTab = targetTab;
+          if (gb.selectedBrowser) gb.selectedBrowser.focus();
+          return true;
+        }})()"""
+        try:
+            res = await asyncio.to_thread(_eval_firefox_chrome_js, self._rdp_port, js)
+            return bool(res)
+        except Exception as exc:
+            logger.warning("split_view(%s) failed: %s", act, exc)
+            return False
 
     async def screenshot_jpeg(self) -> bytes:
         p = await self.get_active_page()

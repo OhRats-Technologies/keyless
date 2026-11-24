@@ -472,6 +472,31 @@ class FirefoxDOMBridge:
         except Exception:
             return False
 
+    def get_active_tab(self) -> TabInfo | None:
+        """Return the single active tab in Firefox's focused window (Split-View accurate)."""
+        if not self.is_connected or not self._loop.is_running():
+            return None
+        fut = asyncio.run_coroutine_threadsafe(
+            self._send_cmd({"req_id": str(uuid.uuid4()), "type": "get_active_tab"}, timeout=0.25),
+            self._loop,
+        )
+        try:
+            resp = fut.result(timeout=0.3)
+        except Exception:
+            resp = None
+        if resp and resp.get("ok") and resp.get("data"):
+            t = resp["data"]
+            return TabInfo(
+                tab_id=int(t["id"]),
+                window_id=int(t.get("windowId", 0)),
+                index=int(t.get("index", 0)),
+                active=True,
+                title=str(t.get("title", "")),
+                url=str(t.get("url", "")),
+            )
+        active = [t for t in self.list_tabs() if t.active]
+        return active[-1] if active else None
+
     def list_tabs(self) -> list[TabInfo]:
         """Fetch all open tabs across Firefox windows."""
         if not self.is_connected or not self._loop.is_running():

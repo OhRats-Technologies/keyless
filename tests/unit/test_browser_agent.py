@@ -476,3 +476,102 @@ def test_window_split_snap_super_arrow_keys() -> None:
         assert ptr.combos[-1] == expected_combo
 
 
+def test_split_view_active_page_picks_only_focused_tab() -> None:
+    from keyless.browser.session import PlaywrightFirefoxSession
+
+    class _FakePage:
+        def __init__(self, title: str, focused: bool, last_focus: float, url: str = "") -> None:
+            self.title = title
+            self.focused = focused
+            self.last_focus = last_focus
+            self.url = url
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def evaluate(self, _script: str) -> dict[str, Any]:
+            return {
+                "vis": True,
+                "focused": self.focused,
+                "lastFocus": self.last_focus,
+                "title": self.title,
+            }
+
+    class _FakeContext:
+        def __init__(self, pages: list[_FakePage]) -> None:
+            self.pages = pages
+
+    yt = _FakePage("Cyberpunk 2077 - YouTube", focused=True, last_focus=200.0, url="https://www.youtube.com/watch?v=123")
+    gemini = _FakePage("Gemini", focused=False, last_focus=100.0, url="https://gemini.google.com/app")
+
+    sess = PlaywrightFirefoxSession(auto_seed_on_first_run=False)
+    sess._context = _FakeContext([yt, gemini])  # type: ignore[assignment]
+
+    # 0. Ground-truth active_tab_url from firefox_ext overrides even stale document.hasFocus()
+    sess.active_tab_url = "https://gemini.google.com/app"
+    picked0 = asyncio.run(sess.get_active_page())
+    assert picked0 is gemini
+    sess.active_tab_url = ""
+
+    # 1. Even though Gemini is last in context.pages and both are visible (Split View),
+    #    get_active_page() picks YouTube because document.hasFocus() is True.
+    picked = asyncio.run(sess.get_active_page())
+    assert picked is yt
+
+    # 2. When neither has document focus (e.g. address bar focused), active_window_title breaks the tie
+    yt.focused = False
+    gemini.last_focus = 300.0
+    sess.active_window_title = "Cyberpunk 2077 - YouTube — Mozilla Firefox"
+    picked2 = asyncio.run(sess.get_active_page())
+    assert picked2 is yt
+
+    # 3. With no window title, most recent __kkLastFocusAt wins
+    sess.active_window_title = ""
+    picked3 = asyncio.run(sess.get_active_page())
+    assert picked3 is gemini
+
+
+def test_split_view_voice_commands_route_to_fast_reflex() -> None:
+    from keyless.audio.active_listener import _VALID_COMMAND_PREFIXES
+
+    class _FakeAgent:
+        is_running = False
+        awaiting_confirmation = False
+
+    class _FakeBrowserSession:
+        is_running = True
+
+    class _FakeRuntime:
+        def __init__(self) -> None:
+            self.session = _FakeBrowserSession()
+            self.agent = _FakeAgent()
+            self.fast_calls: list[tuple[str, Any]] = []
+
+        def run_fast_action(self, action_name: str, arg: Any = None) -> bool:
+            self.fast_calls.append((action_name, arg))
+            return True
+
+    rt = _FakeRuntime()
+    router = VoiceCommandRouter(
+        pointer=DryRunPointerBackend(1920, 1080),
+        browser_runtime=rt,  # type: ignore[arg-type]
+    )
+    cases = [
+        ("Split view", "add"),
+        ("Open split view", "add"),
+        ("Unsplit", "separate"),
+        ("Exit split view", "separate"),
+        ("Swap split view", "reverse"),
+        ("Left pane", "left"),
+        ("Right pane", "right"),
+        ("Switch split", "switch"),
+    ]
+    for phrase, expected_arg in cases:
+        assert phrase.lower().startswith(_VALID_COMMAND_PREFIXES)
+        res = router.dispatch(phrase)
+        assert res.route == "browser_fast"
+        assert rt.fast_calls[-1] == ("split_view", expected_arg)
+
+
+
+

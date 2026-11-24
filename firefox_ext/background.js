@@ -51,6 +51,30 @@ function connectWebSocket() {
     }
 
     try {
+      if (msg.type === "get_active_tab") {
+        let activeTabs = await browser.tabs.query({ active: true, lastFocusedWindow: true });
+        if (!activeTabs || activeTabs.length === 0) {
+          activeTabs = await browser.tabs.query({ active: true, currentWindow: true });
+        }
+        const t = activeTabs && activeTabs[0];
+        if (msg.req_id) {
+          sendResponse({
+            req_id: msg.req_id,
+            ok: Boolean(t),
+            data: t
+              ? {
+                  id: t.id,
+                  windowId: t.windowId,
+                  index: t.index,
+                  title: t.title || "",
+                  url: t.url || ""
+                }
+              : null
+          });
+        }
+        return;
+      }
+
       if (msg.type === "list_tabs") {
         const allTabs = await browser.tabs.query({});
         const mapped = allTabs.map((t) => ({

@@ -99,6 +99,8 @@ class BrowserRuntime:
                 # Works on YouTube/Twitch/HTML5 video: 'k' (play/pause), 'f' (fullscreen), 'm' (mute)
                 p = await self.session.get_active_page()
                 await p.keyboard.press(str(arg))
+            elif action_name == "split_view":
+                return await self.session.split_view(str(arg or "add"))
             else:
                 return False
             return True
