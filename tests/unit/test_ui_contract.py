@@ -251,6 +251,17 @@ def test_golden_fixture_no_capabilities() -> None:
     assert build_ui_state(**_fixture_inputs(False)) == golden
 
 
+def regenerate_golden_fixtures() -> None:
+    """Rewrite the golden fixtures from the engine builder (run manually after
+    intentional contract changes; the parity tests then pin the new shape)."""
+    for name, available in (
+        ("contract_full.json", True),
+        ("contract_cold.json", False),
+    ):
+        payload = build_ui_state(**_fixture_inputs(available))
+        (FIXTURES / name).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
 def test_golden_fixtures_use_closed_row_kind_set() -> None:
     allowed = set(ROW_KINDS)
     for name in ("contract_full.json", "contract_cold.json"):

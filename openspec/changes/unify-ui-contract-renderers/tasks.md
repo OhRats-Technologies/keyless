@@ -18,11 +18,11 @@
 - [x] 3.3 Replace SwiftUI system-color/inline-literal styling with generated tokens.
 
 ## 4. Qt becomes a contract renderer
-- [ ] 4.1 Implement a generic row dispatcher in `src/keyless/ui/components.py` for the six row kinds.
-- [ ] 4.2 Render Home from `GET /v1/ui/state` via the generic section/row views; keep the old screen until goldens pass.
-- [ ] 4.3 Render Settings and Activity from the contract; delete duplicated gating/copy in `app.py`, `settings/window.py`, `onboarding/steps.py`.
-- [ ] 4.4 Render Setup steps from the contract document (flow state already engine-owned).
-- [ ] 4.5 Regenerate and review the four `tests/ui/goldens/` PNGs per the ohrats-ui visual finish gate.
+- [x] 4.1 Implement a generic row dispatcher in `src/keyless/ui/components.py` for the six row kinds.
+- [x] 4.2 Render Home from `GET /v1/ui/state` via the generic section/row views; keep the old screen until goldens pass.
+- [x] 4.3 Render Settings and Activity from the contract; delete duplicated gating/copy in `app.py`, `settings/window.py`, `onboarding/steps.py`.
+- [x] 4.4 Render Setup steps from the contract document (flow state already engine-owned).
+- [x] 4.5 Regenerate and review the four `tests/ui/goldens/` PNGs per the ohrats-ui visual finish gate.
 
 ## 5. SwiftUI becomes a contract renderer
 - [ ] 5.1 Add Swift models decoding the schema-v1 document; XCTest against the shared golden fixture.

@@ -109,9 +109,17 @@ class ProgressRow:
 
 @dataclass(frozen=True)
 class PickerRow:
+    """Self-describing picker: selecting an option POSTs ``{action, key: value}``.
+
+    ``key`` is the config field the action patches (``set_config``) or the
+    camera slot ``select_camera`` writes.
+    """
+
     title: str
     options: tuple[dict[str, Any], ...]
     selected: Any = None
+    action: str = "set_config"
+    key: str = ""
     kind: ClassVar[str] = "picker"
 
     def as_dict(self) -> dict[str, Any]:
@@ -120,6 +128,8 @@ class PickerRow:
             "title": self.title,
             "options": list(self.options),
             "selected": self.selected,
+            "action": self.action,
+            "key": self.key,
         }
 
 
@@ -307,7 +317,13 @@ def _home_rows(
         options = _camera_options(doctor)
         if options:
             pickers.append(
-                PickerRow(title="Camera", options=options, selected=config.get("cam1_by_id"))
+                PickerRow(
+                    title="Camera",
+                    options=options,
+                    selected=config.get("cam1_by_id"),
+                    action="select_camera",
+                    key="cam1_by_id",
+                )
             )
     if _available(capabilities, "audio"):
         inputs = _audio_options(doctor)
@@ -317,6 +333,8 @@ def _home_rows(
                     title="Microphone",
                     options=({"label": "System default", "value": None},) + inputs,
                     selected=config.get("audio_device"),
+                    action="set_config",
+                    key="audio_device",
                 )
             )
     if _available(capabilities, "llm_provider"):
@@ -330,6 +348,8 @@ def _home_rows(
                         for option in provider_spec.get("options") or ()
                     ),
                     selected=config.get("llm_provider"),
+                    action="set_config",
+                    key="llm_provider",
                 )
             )
     if pickers:
@@ -438,7 +458,15 @@ def _settings_sections(
                 {"label": str(option), "value": str(option)}
                 for option in spec.get("options") or ()
             )
-            rows.append(PickerRow(title=label, options=options, selected=str(value)))
+            rows.append(
+                PickerRow(
+                    title=label,
+                    options=options,
+                    selected=str(value),
+                    action="set_config",
+                    key=key,
+                )
+            )
         else:
             rows.append(
                 TextRow(title=label, detail=f"{_display_value(value)} ({_apply_suffix(spec)})")

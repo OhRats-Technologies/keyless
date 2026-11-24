@@ -95,6 +95,8 @@
         {
           "rows": [
             {
+              "action": "set_config",
+              "key": "camera_mode",
               "kind": "picker",
               "options": [
                 {
@@ -114,6 +116,8 @@
               "title": "Camera setup"
             },
             {
+              "action": "set_config",
+              "key": "camera_backend",
               "kind": "picker",
               "options": [
                 {
@@ -154,6 +158,8 @@
               "title": "Push-to-talk key"
             },
             {
+              "action": "set_config",
+              "key": "stt_model_id",
               "kind": "picker",
               "options": [
                 {
@@ -169,6 +175,8 @@
               "title": "Speech model"
             },
             {
+              "action": "set_config",
+              "key": "stt_quantization",
               "kind": "picker",
               "options": [
                 {
@@ -184,6 +192,8 @@
               "title": "Speech precision"
             },
             {
+              "action": "set_config",
+              "key": "stt_provider",
               "kind": "picker",
               "options": [
                 {
@@ -244,6 +254,8 @@
         {
           "rows": [
             {
+              "action": "set_config",
+              "key": "llm_backend",
               "kind": "picker",
               "options": [
                 {
@@ -271,6 +283,8 @@
               "title": "Backend"
             },
             {
+              "action": "set_config",
+              "key": "llm_provider",
               "kind": "picker",
               "options": [
                 {
@@ -298,6 +312,8 @@
               "title": "Provider"
             },
             {
+              "action": "set_config",
+              "key": "llm_preset",
               "kind": "picker",
               "options": [
                 {
@@ -386,6 +402,8 @@
               "title": "Visual grounding"
             },
             {
+              "action": "set_config",
+              "key": "gaze_vlm_provider",
               "kind": "picker",
               "options": [
                 {
@@ -409,6 +427,8 @@
               "title": "Visual provider"
             },
             {
+              "action": "set_config",
+              "key": "gaze_vlm_preset",
               "kind": "picker",
               "options": [
                 {
@@ -472,6 +492,8 @@
               "title": "Check for updates"
             },
             {
+              "action": "set_config",
+              "key": "update_channel",
               "kind": "picker",
               "options": [
                 {
@@ -502,6 +524,8 @@
               "title": "Transcript overlay"
             },
             {
+              "action": "set_config",
+              "key": "action_backend",
               "kind": "picker",
               "options": [
                 {

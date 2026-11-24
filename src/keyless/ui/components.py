@@ -7,9 +7,11 @@ from collections.abc import Callable
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -142,6 +144,190 @@ class KeyCaptureButton(QPushButton):
         else:
             self._listening = False
             self._sync_label()
+
+
+_STATE_STYLE = {"ok": "Success", "warn": "Warning", "bad": "Warning", "idle": "Muted"}
+
+
+def _status_row(row: dict, on_action: Callable[[str, object], None], tokens) -> QWidget:
+    holder = QWidget()
+    line = QHBoxLayout(holder)
+    line.setContentsMargins(0, 0, 0, 0)
+    line.setSpacing(8)
+    dot = QLabel("")
+    dot.setObjectName("StatusDot")
+    color = {
+        "ok": tokens.success,
+        "warn": tokens.warning,
+        "bad": tokens.danger,
+    }.get(str(row.get("state", "idle")), tokens.muted)
+    dot.setStyleSheet(f"background: {color}; border-radius: 5px;")
+    line.addWidget(dot)
+    title = QLabel(str(row.get("title", "")))
+    title.setObjectName("BodyStrong")
+    line.addWidget(title)
+    detail = str(row.get("detail", ""))
+    if detail:
+        note = QLabel(detail)
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        line.addWidget(note, 1)
+    else:
+        line.addStretch(1)
+    return holder
+
+
+def _action_row(row: dict, on_action: Callable[[str, object], None], tokens) -> QWidget:
+    button = QPushButton(str(row.get("title", "")))
+    button.setObjectName("Primary" if row.get("style") == "primary" else "Ghost")
+    button.setEnabled(bool(row.get("enabled", True)))
+    action = str(row.get("action", ""))
+    button.clicked.connect(lambda: on_action(action, None))
+    holder = QWidget()
+    line = QHBoxLayout(holder)
+    line.setContentsMargins(0, 0, 0, 0)
+    line.addWidget(button)
+    line.addStretch(1)
+    return holder
+
+
+def _permission_row(row: dict, on_action: Callable[[str, object], None], tokens) -> QWidget:
+    holder = QWidget()
+    line = QHBoxLayout(holder)
+    line.setContentsMargins(0, 0, 0, 0)
+    line.setSpacing(8)
+    title = QLabel(str(row.get("title", "")))
+    title.setObjectName("BodyStrong")
+    line.addWidget(title)
+    state = str(row.get("state", "unknown"))
+    note = QLabel(state.replace("_", " "))
+    note.setObjectName(_STATE_STYLE.get("ok" if state == "granted" else "warn"))
+    line.addWidget(note)
+    if state != "granted":
+        button = QPushButton("Allow")
+        button.setObjectName("Ghost")
+        permission_id = str(row.get("id", ""))
+        button.clicked.connect(lambda: on_action("allow", {"permission": permission_id}))
+        line.addWidget(button)
+    line.addStretch(1)
+    return holder
+
+
+def _progress_row(row: dict, on_action: Callable[[str, object], None], tokens) -> QWidget:
+    holder = QWidget()
+    line = QHBoxLayout(holder)
+    line.setContentsMargins(0, 0, 0, 0)
+    line.setSpacing(8)
+    title = QLabel(str(row.get("title", "")))
+    title.setObjectName("BodyStrong")
+    line.addWidget(title)
+    bar = QProgressBar()
+    bar.setRange(0, 0) if row.get("indeterminate") else bar.setRange(0, 100)
+    fraction = row.get("fraction")
+    if not row.get("indeterminate") and isinstance(fraction, (int, float)):
+        bar.setValue(round(float(fraction) * 100))
+    line.addWidget(bar, 1)
+    return holder
+
+
+def _picker_row(row: dict, on_action: Callable[[str, object], None], tokens) -> QWidget:
+    holder = QWidget()
+    line = QHBoxLayout(holder)
+    line.setContentsMargins(0, 0, 0, 0)
+    line.setSpacing(8)
+    title = QLabel(str(row.get("title", "")))
+    title.setObjectName("BodyStrong")
+    line.addWidget(title)
+    combo = QComboBox()
+    selected = row.get("selected")
+    for option in row.get("options") or ():
+        value = option.get("value")
+        combo.addItem(str(option.get("label", "")), value)
+        if value == selected:
+            combo.setCurrentIndex(combo.count() - 1)
+    action = str(row.get("action", ""))
+    key = str(row.get("key", ""))
+
+    def _chosen(index: int) -> None:
+        if action and key:
+            on_action(action, {key: combo.itemData(index)})
+
+    combo.currentIndexChanged.connect(_chosen)
+    line.addWidget(combo, 1)
+    return holder
+
+
+def _text_row(row: dict, on_action: Callable[[str, object], None], tokens) -> QWidget:
+    title = QLabel(str(row.get("title", "")))
+    title.setObjectName("BodyStrong")
+    title.setWordWrap(True)
+    detail = str(row.get("detail", ""))
+    if not detail:
+        return title
+    note = QLabel(detail)
+    note.setObjectName("Muted")
+    note.setWordWrap(True)
+    holder = QWidget()
+    line = QHBoxLayout(holder)
+    line.setContentsMargins(0, 0, 0, 0)
+    line.setSpacing(8)
+    line.addWidget(title)
+    line.addWidget(note, 1)
+    return holder
+
+
+_BUILDERS: dict[str, Callable[[dict, Callable[[str, object], None], object], QWidget]] = {
+    "status": _status_row,
+    "action": _action_row,
+    "permission": _permission_row,
+    "progress": _progress_row,
+    "picker": _picker_row,
+    "text": _text_row,
+}
+
+
+def build_row(row: dict, on_action: Callable[[str, object], None], tokens) -> QWidget | None:
+    """Build the widget for one schema-v1 row; ``None`` for unknown kinds."""
+    builder = _BUILDERS.get(str(row.get("kind", "")))
+    return builder(row, on_action, tokens) if builder is not None else None
+
+
+class ContractSections(QWidget):
+    """Generic renderer for schema-v1 sections: the only Home/Settings/Activity body."""
+
+    def __init__(
+        self,
+        on_action: Callable[[str, object], None],
+        tokens_provider: Callable[[], object],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._on_action = on_action
+        self._tokens_provider = tokens_provider
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+        self._root = root
+        self._cards: list[Card] = []
+
+    def update_sections(self, sections: list[dict]) -> None:
+        for card in self._cards:
+            self._root.removeWidget(card)
+            card.deleteLater()
+        self._cards = []
+        tokens = self._tokens_provider()
+        for section in sections:
+            card = Card(subtle=True)
+            card.layout.addWidget(eyebrow(str(section.get("title", ""))))
+            for row in section.get("rows") or ():
+                widget = build_row(row, self._on_action, tokens)
+                if widget is not None:
+                    card.layout.addWidget(widget)
+            self._root.addWidget(card)
+            self._cards.append(card)
+
+    def clear_sections(self) -> None:
+        self.update_sections([])
 
 
 class DisclosureSection(QWidget):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from collections.abc import Callable
 
 from PySide6.QtCore import QThread, QUrl, Qt, QTimer, Signal
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
 from keyless.config.paths import AppPaths, current_paths
 from keyless.config.schema import AppConfig
 from keyless.platform.router import get_display_layout, resolve_camera_config
-from keyless.ui.components import Card, divider, eyebrow
+from keyless.ui.components import Card, ContractSections, divider, eyebrow
 from keyless.ui.gaze_field import GazeField
 from keyless.ui.gaze_region import gaze_region
 from keyless.core.history import HistoryStore
@@ -191,21 +192,12 @@ class HomePanel(QWidget):
 
         left.addWidget(controls)
 
-        # Progressive disclosure: Recent activity card appears ONLY when there is activity
-        self.recent_card = Card(subtle=True)
-        recent_head = QHBoxLayout()
-        recent_head.addWidget(eyebrow("Recent"))
-        recent_head.addStretch(1)
-        see_all = QPushButton("View all")
-        see_all.setObjectName("Link")
-        see_all.clicked.connect(lambda: window.show_page("Activity"))
-        recent_head.addWidget(see_all)
-        self.recent_card.layout.addLayout(recent_head)
-        self.last_heard = QLabel("")
-        self.last_heard.setWordWrap(True)
-        self.recent_card.layout.addWidget(self.last_heard)
-        self.recent_card.setVisible(False)
-        left.addWidget(self.recent_card)
+        # Readiness, Devices and provider, and Recent come from the engine-owned
+        # contract document; the hero above stays shell chrome.
+        self.contract_sections = ContractSections(
+            window.on_ui_action, lambda: window.theme_tokens
+        )
+        left.addWidget(self.contract_sections)
 
         left.addStretch(1)
         layout.addLayout(left, 3)
@@ -281,16 +273,18 @@ class HomePanel(QWidget):
         if status.state is not SessionState.ERROR:
             self.error_actions.setVisible(False)
 
-        recent = self.window.history.recent(1)
-        if recent:
-            item = recent[0]
-            heard = str(item.get("transcript") or "").strip()
-            outcome = str(item.get("target") or item.get("result") or item.get("route") or "").strip()
-            summary = f"“{heard}” → {outcome}" if (heard and outcome) else (f"“{heard}”" if heard else outcome)
-            self.last_heard.setText(summary)
-            self.recent_card.setVisible(bool(summary))
-        else:
-            self.recent_card.setVisible(False)
+        # Readiness/Devices/Recent render from the engine contract document; the
+        # hero above is the shell's own chrome and covers the Status/Action rows.
+        document = self.window.contract_document()
+        if document is not None:
+            home = document.get("screens", {}).get("home", {})
+            self.contract_sections.update_sections(
+                [
+                    section
+                    for section in home.get("sections", ())
+                    if str(section.get("title", "")) not in ("Status", "Action")
+                ]
+            )
 
         mode, _cam1, cam2 = resolve_camera_config(
             self.window.config.camera_mode,
@@ -427,6 +421,7 @@ class MainWindow(QMainWindow):
         self._updater = None
         self._instance_server = None
         self._control_server = None
+        self._contract_source = None
         self._display_layout = None
         self._shutdown = False
 
@@ -777,6 +772,43 @@ class MainWindow(QMainWindow):
     def open_error_diagnostics(self) -> None:
         self.show_page("Settings")
         self.settings.expand_error_details()
+
+    def contract_document(self) -> dict[str, object] | None:
+        """The engine-owned schema-v1 document this shell renders.
+
+        The shell never assembles contract inputs itself: it reads through the
+        running control client when one exists, otherwise through an in-process
+        control server built by the same engine factory ``keyless serve`` uses.
+        """
+        if self._control_client is not None:
+            try:
+                return self._control_client.ui_state()
+            except Exception:
+                return None
+        server = self._control_server or self._contract_source
+        if server is None:
+            from keyless.daemon import create_control_server
+
+            server = create_control_server(paths=self.paths)
+            self._contract_source = server
+        return server.ui_state()
+
+    def on_ui_action(self, action: str, arg: object = None) -> None:
+        """Dispatch a contract row action through the engine action registry."""
+        if self._control_client is not None:
+            try:
+                self._control_client.ui_action(action, arg)
+            except Exception:
+                return
+        else:
+            if self._control_server is None and self._contract_source is None:
+                self.contract_document()
+            server = self._control_server or self._contract_source
+            try:
+                server.run_ui_action({"action": action, "arg": arg})
+            except Exception:
+                return
+        self.home.poll_state()
 
     def shutdown(self) -> None:
         if self._shutdown:
