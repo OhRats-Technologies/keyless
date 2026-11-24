@@ -708,6 +708,31 @@ class VoiceCommandRouter:
             return DispatchResult("browser_cancel", raw, "Cancelled active browser task")
 
         in_browser = self._is_playwright_firefox_focused()
+        if in_browser:
+            if (
+                self.firefox_bridge is not None
+                and self.firefox_bridge.is_connected
+                and hasattr(self.firefox_bridge, "get_active_tab")
+                and hasattr(br.session, "active_tab_url")
+            ):
+                try:
+                    tab = self.firefox_bridge.get_active_tab()
+                    if tab is not None:
+                        br.session.active_tab_url = tab.url
+                        br.session.active_tab_title = tab.title
+                except Exception:
+                    pass
+            if hasattr(br.session, "active_window_title"):
+                try:
+                    if (
+                        self.gaze_vlm_clicker is not None
+                        and self.gaze_vlm_clicker.desktop_atspi is not None
+                        and self.gaze_vlm_clicker.desktop_atspi.available
+                    ):
+                        _, win_title = self.gaze_vlm_clicker.desktop_atspi.get_active_window_info()
+                        br.session.active_window_title = str(win_title or "")
+                except Exception:
+                    pass
 
         # 3. Passive Gaze-Region Scrolling (<20ms, no LLM, never moves OS cursor)
         scroll_cmd = parse_voice_scroll_command(norm) or parse_voice_scroll_command(raw)
@@ -783,6 +808,44 @@ class VoiceCommandRouter:
             if norm in ("miniplayer", "mini player", "toggle miniplayer"):
                 if br.run_fast_action("media_key", "i"):
                     return DispatchResult("browser_fast", raw, "media_key:i")
+            if norm in (
+                "split view",
+                "open split view",
+                "add split view",
+                "enter split view",
+                "split tab",
+                "split tabs",
+            ):
+                if br.run_fast_action("split_view", "add"):
+                    return DispatchResult("browser_fast", raw, "split_view:add")
+            if norm in (
+                "exit split view",
+                "close split view",
+                "separate split view",
+                "unsplit",
+                "unsplit tabs",
+                "separate tabs",
+            ):
+                if br.run_fast_action("split_view", "separate"):
+                    return DispatchResult("browser_fast", raw, "split_view:separate")
+            if norm in (
+                "swap split view",
+                "reverse split view",
+                "flip split view",
+                "swap split",
+                "reverse tabs",
+            ):
+                if br.run_fast_action("split_view", "reverse"):
+                    return DispatchResult("browser_fast", raw, "split_view:reverse")
+            if norm in ("left pane", "focus left pane", "left split", "left tab"):
+                if br.run_fast_action("split_view", "left"):
+                    return DispatchResult("browser_fast", raw, "split_view:left")
+            if norm in ("right pane", "focus right pane", "right split", "right tab"):
+                if br.run_fast_action("split_view", "right"):
+                    return DispatchResult("browser_fast", raw, "split_view:right")
+            if norm in ("switch split", "other pane", "next pane"):
+                if br.run_fast_action("split_view", "switch"):
+                    return DispatchResult("browser_fast", raw, "split_view:switch")
 
             m_tab = _TAB_SWITCH_RE.match(norm)
             if m_tab and m_tab.group(1) in _TAB_NUM_MAP:
@@ -891,7 +954,12 @@ class VoiceCommandRouter:
                             if self.on_before_click is not None:
                                 self.on_before_click(cx, cy)
                             self.pointer.move_absolute(cx, cy)
-                            if self.firefox_bridge.click_candidate(best.dom_id, action="click"):
+                            dom_click_fn = getattr(
+                                self.firefox_bridge,
+                                "execute_dom_action",
+                                getattr(self.firefox_bridge, "click_candidate", None),
+                            )
+                            if dom_click_fn is not None and dom_click_fn(best.dom_id, action="click"):
                                 return DispatchResult(
                                     "deterministic",
                                     raw,
